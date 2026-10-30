@@ -696,12 +696,18 @@ async function cmdDoctor() {
   //   连招呼都没有    → 扩展根本没加载（没装 / 没启用 / 装错目录）
   const bs = await bridgeStatus().catch(() => null);
   const hello = await readHello().catch(() => null);
+  // "没收到"有两种完全不同的原因，必须分开说，否则会误导用户去重装扩展：
+  //   ① 根本没人接（9377 服务没起）—— 扩展再正常也报不进来
+  //   ② 有人在接，但扩展没连上 —— 这才是扩展的问题
+  const receiverUp = await chatAlive(DEFAULT_CHAT_PORT).catch(() => false);
   add('extension', Boolean(bs?.fresh),
     bs?.fresh
       ? `正在上报 ${tc(bs.pos)} · ${bs.title ?? ''}`.trim()
       : (hello
         ? `扩展已加载（v${hello.version ?? '?'}，${Math.round(hello.ageMs / 1000)} 秒前连上），但还没有视频在播`
-        : '扩展没加载 —— 没装 / 没启用，跑 install-extension --steps 看步骤'));
+        : (receiverUp
+          ? '扩展没连上来 —— 没装 / 没启用，跑 install-extension --steps 看步骤'
+          : `没人接（${DEFAULT_CHAT_PORT} 上没有服务）。先让 DSH 开始陪看，或跑 bridge —— 不是扩展的问题`)));
 
   let login = null;
   if (existsSync(COOKIES)) {

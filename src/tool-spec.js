@@ -74,6 +74,14 @@ export function watchToolSpec() {
       '    e.g. "[buffer] ... write lines for this range: 03:00-06:00, 06:00-10:00".',
       '  - Then block. Do not end the turn, do not set a timer, do not spawn a background job.',
       '',
+      'INTERRUPTIONS - a wait can be cut short by the user typing in the chat box:',
+      '  - If a result carries a `chat` field, the user said something. Answer them FIRST, then call again',
+      '    with the SAME arguments - the wait resumes exactly where it left off. Nothing is lost.',
+      '  - Interrupting does NOT cancel the work: the image keeps building in the background and is waiting',
+      '    in the cache, so the follow-up call returns it immediately. Do not apologise for the delay and',
+      '    do not re-plan the batch.',
+      '  - `building: true` means the image is still on its way; the next call hands it over.',
+      '',
       'When an image arrives, say at most one sentence of your own about what changed; do not retell the plot',
       'the user just watched. Silence is a valid answer - there is no quota.',
       '',
@@ -100,13 +108,14 @@ export function watchToolSpec() {
     parameters: {
       input: {
         type: 'string',
-        description: 'Local path or Bilibili URL being watched. Omit to auto-detect: the plugin reads the title '
-          + 'and duration from the OS media session, looks for a local file with that name, then falls back to '
-          + 'a Bilibili search verified by duration. Only ask the user when both fail.',
+        description: 'Local path or Bilibili URL being watched. Omit to auto-detect: the plugin reads the page '
+          + 'URL of the tab the user is watching (browser extension, or a browser with a debug port) and uses '
+          + 'that as the source - a video page URL is enough, a file:// URL becomes the local path. '
+          + 'Only ask the user when neither channel is available.',
       },
       cursor: {
         type: 'number',
-        description: 'Where the user is, in seconds. Omit to read it from the OS media session (SMTC).',
+        description: 'Where the user is, in seconds. Omit to read it from the browser (extension or debug port).',
       },
       segment: {
         type: 'number',
@@ -267,7 +276,8 @@ export function watchToolSpec() {
       },
       title: {
         type: 'string',
-        description: 'Video title, used to pick the right media session when several are playing.',
+        description: 'Video title. Only needed when the source has to be resolved by hand; normally the page '
+          + 'URL identifies the video and no guessing is involved.',
       },
       browserPort: {
         type: 'integer',
@@ -335,7 +345,7 @@ export function watchToolSpec() {
 
 export function validateWatchArgs(args) {
   const problems = [];
-  // input 可省略 —— 省略时从系统媒体控件读"在播什么"，再反查源
+  // input 可省略 —— 省略时从浏览器（扩展 / 调试端口）读当前页面的地址当源
   if (args?.input !== undefined && (typeof args.input !== 'string' || args.input.trim() === '')) {
     problems.push('input must be a non-empty path or URL when given (omit it to auto-detect)');
   }

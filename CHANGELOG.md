@@ -56,6 +56,38 @@ one-time install it works in **your normal browser**, with your bookmarks and yo
   looks at the popup sees "not connected" — because the server only runs during `watch_together`
   or `watch.mjs chat`, and concludes the install failed.
 
+### Added — closing the remaining "no one is listening" dead ends
+
+- **Idle stop now wakes the model too.** Video-ended and video-changed already did; idle ("no movement
+  for two segments") did not — and since the loop is stopped, nothing polls the chat box afterwards,
+  so anything the user said next went nowhere. Now it wakes and says where it stopped.
+- **Waiting is polled, not slept through.** The 500 ms tick in the blocking wait now uses
+  `sleepWithChat`, so a message is noticed within ~150 ms instead of up to 500 ms later.
+- **The tool description now tells the model what an interruption is:** a result carrying `chat` means
+  "answer them first, then call again with the same arguments — the wait resumes, nothing is lost, and
+  the image is already in the cache". Without this the model had no way to know.
+- **`doctor` distinguishes "nobody is receiving" from "extension not connected".** Both look like
+  silence, and the old wording told the user to reinstall the extension — but if no server is running
+  on 9377 the extension cannot report at all, and reinstalling would have changed nothing.
+- Stale SMTC-era wording removed from the strings the *model* reads (`input`/`cursor`/`title`
+  descriptions, and the `browser:` line), which still talked about the OS media session.
+
+### Added — closing the remaining "no one is listening" dead ends
+
+- **Idle stop now wakes the model too.** Video-ended and video-changed already did; idle ("no movement
+  for two segments") did not — and since the loop is stopped, nothing polls the chat box afterwards,
+  so anything the user said next went nowhere. Now it wakes and says where it stopped.
+- **Waiting is polled, not slept through.** The 500 ms tick in the blocking wait now uses
+  `sleepWithChat`, so a message is noticed within ~150 ms instead of up to 500 ms later.
+- **The tool description now tells the model what an interruption is:** a result carrying `chat` means
+  "answer them first, then call again with the same arguments — the wait resumes, nothing is lost, and
+  the image is already in the cache". Without this the model had no way to know.
+- **`doctor` distinguishes "nobody is receiving" from "extension not connected".** Both look like
+  silence, and the old wording told the user to reinstall the extension — but if no server is running
+  on 9377 the extension cannot report at all, and reinstalling would have changed nothing.
+- Stale SMTC-era wording removed from the strings the *model* reads (`input`/`cursor`/`title`
+  descriptions, and the `browser:` line), which still talked about the OS media session.
+
 ### Added — you can interrupt almost any wait, and it picks up where it left off
 
 Every blocking wait in `watch_together` can now be interrupted by a message in the chat box, and in
@@ -79,6 +111,38 @@ New `src/interrupt.js`:
 - `chatWatcherShared()` — **one watcher for the whole process.** `makeChatWatcher()` baselines at
   creation time, so a fresh one per wait silently dropped anything the user said while the model was
   thinking, in the gap between two waits.
+
+### Added — closing the remaining "no one is listening" dead ends
+
+- **Idle stop now wakes the model too.** Video-ended and video-changed already did; idle ("no movement
+  for two segments") did not — and since the loop is stopped, nothing polls the chat box afterwards,
+  so anything the user said next went nowhere. Now it wakes and says where it stopped.
+- **Waiting is polled, not slept through.** The 500 ms tick in the blocking wait now uses
+  `sleepWithChat`, so a message is noticed within ~150 ms instead of up to 500 ms later.
+- **The tool description now tells the model what an interruption is:** a result carrying `chat` means
+  "answer them first, then call again with the same arguments — the wait resumes, nothing is lost, and
+  the image is already in the cache". Without this the model had no way to know.
+- **`doctor` distinguishes "nobody is receiving" from "extension not connected".** Both look like
+  silence, and the old wording told the user to reinstall the extension — but if no server is running
+  on 9377 the extension cannot report at all, and reinstalling would have changed nothing.
+- Stale SMTC-era wording removed from the strings the *model* reads (`input`/`cursor`/`title`
+  descriptions, and the `browser:` line), which still talked about the OS media session.
+
+### Added — closing the remaining "no one is listening" dead ends
+
+- **Idle stop now wakes the model too.** Video-ended and video-changed already did; idle ("no movement
+  for two segments") did not — and since the loop is stopped, nothing polls the chat box afterwards,
+  so anything the user said next went nowhere. Now it wakes and says where it stopped.
+- **Waiting is polled, not slept through.** The 500 ms tick in the blocking wait now uses
+  `sleepWithChat`, so a message is noticed within ~150 ms instead of up to 500 ms later.
+- **The tool description now tells the model what an interruption is:** a result carrying `chat` means
+  "answer them first, then call again with the same arguments — the wait resumes, nothing is lost, and
+  the image is already in the cache". Without this the model had no way to know.
+- **`doctor` distinguishes "nobody is receiving" from "extension not connected".** Both look like
+  silence, and the old wording told the user to reinstall the extension — but if no server is running
+  on 9377 the extension cannot report at all, and reinstalling would have changed nothing.
+- Stale SMTC-era wording removed from the strings the *model* reads (`input`/`cursor`/`title`
+  descriptions, and the `browser:` line), which still talked about the OS media session.
 
 ### Added — you can interrupt almost any wait, and it picks up where it left off
 

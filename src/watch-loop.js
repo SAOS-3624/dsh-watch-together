@@ -365,7 +365,15 @@ export function startWatchLoop({
             loop.lastMoveAt = tNow;
           } else if (loop.lastMoveAt && tNow - loop.lastMoveAt >= idleMs) {
             loop.log(`[watch] idle ${Math.round(idleMs / 60_000)} min at ${Math.round(estIdle.pos)}s - stopping`);
+            // 停表之外必须叫醒：钟停了之后就没人再轮询聊天框了，
+            // 用户之后说什么都收不到 —— 不叫的话这是一个死胡同。
             stopWatchLoop('idle');
+            void wake(loop.ctx, {
+              sessionId: loop.sessionId,
+              text: `[一起看] 看起来停了一会儿（${Math.round(estIdle.pos)} 秒的位置上，`
+                + `${Math.round(idleMs / 60_000)} 分钟没动），我先停了。`
+                + '想继续就说一声，重新调 watch_together 就接着陪。',
+            });
             return;
           }
         }

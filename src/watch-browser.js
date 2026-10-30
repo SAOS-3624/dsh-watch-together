@@ -71,8 +71,9 @@ export async function readPositionOrNull(readBrowser, browserPort, { bridge = tr
 /**
  * 一行说清"浏览器到底在不在"。
  *
- * 这行是给模型看的判据，**不能拿播放位置去倒推**：位置可能来自系统媒体会话（VLC、
- * 电影和电视、甚至另一个没开调试端口的浏览器窗口），有位置完全不代表浏览器开着。
+ * 这行是给模型看的判据，**不能拿播放位置去倒推**：位置现在还能从浏览器扩展来，
+ * 扩展报的是"用户当前可见的那个标签页"，和这个调试端口是不是同一个浏览器**无关**。
+ * 有位置完全不代表"这个端口上的浏览器开着"。
  *
  * @param {object} state `probeBrowser()` 的返回值
  * @param {string} [launchNote] 本次调用如果自己开了浏览器，附在后面
@@ -82,9 +83,9 @@ export function describeBrowser(state = {}, launchNote = '') {
   const tail = String(launchNote ?? '');
   switch (state?.state) {
     case 'unconfigured':
-      return 'browser: NOT configured — only the OS media session can be read' + tail;
+      return 'browser: NOT configured — no debug port (the extension can still report a position)' + tail;
     case 'closed':
-      return `browser: CLOSED :${port} — nothing is listening there, so any position comes from the OS media session, NOT a browser${tail}`;
+      return `browser: CLOSED :${port} — nothing is listening there; a position (if any) comes from the browser extension, not from this port${tail}`;
     case 'no-video': {
       const urls = Array.isArray(state.urls) && state.urls.length > 0
         ? ` (its tabs: ${state.urls.join(' | ')})`

@@ -2,7 +2,7 @@
  * watch-run.js — `watch_together` 的一次调用（不含宿主胶水，便于直接测）。
  *
  * 一次调用的全部逻辑：
- *   1. 拿到用户的播放位置（宿主给 / 从系统媒体控件读）
+ *   1. 拿到用户的播放位置（宿主给 / 从浏览器读）
  *   2. 算出所在段，**先把这一段算出来**（用户的播放时间就是我们的计算时间）
  *   3. 还没到交付点 → 只回一行状态（几乎不花 token）
  *      到了交付点 → 回这一段的格子图 + 清单 + 陪看行为约束
@@ -412,7 +412,9 @@ export async function runWatchPass(args, deps) {
           break;
         }
       }
-      await new Promise((r) => setTimeout(r, 500));
+      // 每拍歇 500ms —— 但**歇的时候也要听插话**，不然用户的话要等半秒才被发现。
+      const said = await sleepWithChat(500, { watcher: chatPoll, everyMs: 150 });
+      if (said) { d.chatNow = said; break; }
       waitedSec = +((Date.now() - tWaitStart) / 1000).toFixed(1);   // 没有浏览器读数也按墙钟推进
     }
   }
