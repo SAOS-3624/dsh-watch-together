@@ -54,7 +54,7 @@ let seq = 0;
  * 订阅"某句台词到点了"。返回**退订函数**（不是 index，避免调用方自己记编号）。
  *
  * 订阅者在同一进程里才收得到事件。跨进程（比如自己的 CLI）要自己读 `speech` 结果或
- * 台词槽文件 —— 那种场景下消费方自己实现引擎更简单，参考 `tools/watch-cli/tts.mjs`。
+ * 台词槽文件 —— 那种场景下消费方自己实现引擎更简单，参考本包的 `bin/tts.mjs`。
  *
  * @param {(event:{seq:number, at:number, text:string, state:'due'|'scheduled', input?:string, segment?:number}) => void} handler
  * @returns {() => boolean} 退订；返回是否真的摘掉了

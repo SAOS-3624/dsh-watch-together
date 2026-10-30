@@ -30,6 +30,8 @@ import {
 } from 'node:fs';
 import http from 'node:http';
 import net from 'node:net';
+import { homedir } from 'node:os';
+import { join } from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 
 
@@ -63,11 +65,18 @@ const STORYBOARD = (() => {
   }
 })();
 
-// 下面两个默认值保留作者本机的布局，**只有这个 CLI 用得到**，插件本体（watch_together）
-// 完全不依赖它们。别人用就设 `WATCH_COOKIES` / `WATCH_OUT`。
-const WORK = process.env.WATCH_WORK || 'D:/deepseek/3-Life';
-const COOKIES = process.env.WATCH_COOKIES || `${WORK}/.secrets/bili-cookies.txt`;
-const OUT = process.env.WATCH_OUT || `${WORK}/.tmp/watch`;
+// 下面这三个默认值**只有这个 CLI 用得到**，插件本体（watch_together）完全不依赖它们。
+//
+// 规矩：`WATCH_*` 环境变量最优先；没设就看作者本机那套布局在不在（在就沿用，别人机器上不存在，
+// 自然落到 `~/.dsh/watch`）；最后才是 `~/.dsh/watch`。
+// 以前这里写死 `D:/deepseek/3-Life`，别人装上会去一个不存在的目录里找 cookie、往那儿写图。
+const LEGACY_WORK = 'D:/deepseek/3-Life';
+const WORK = process.env.WATCH_WORK
+  || (existsSync(LEGACY_WORK) ? LEGACY_WORK : join(homedir(), '.dsh', 'watch'));
+const COOKIES = process.env.WATCH_COOKIES
+  || (WORK === LEGACY_WORK ? `${LEGACY_WORK}/.secrets/bili-cookies.txt` : join(WORK, 'bili-cookies.txt'));
+const OUT = process.env.WATCH_OUT
+  || (WORK === LEGACY_WORK ? `${LEGACY_WORK}/.tmp/watch` : join(WORK, 'out'));
 const PORT = Number(process.env.WATCH_PORT) || configuredPort() || 9333;
 
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));

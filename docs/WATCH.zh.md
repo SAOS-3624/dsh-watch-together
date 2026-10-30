@@ -188,7 +188,7 @@ watch 00:28 (browser, playing)
 插件不带任何 TTS 引擎。想让它出声，接一个消费者：
 
 ```js
-import { onSpeech } from 'dsh-video-storyboard/src/watch/voice.js';
+import { onSpeech } from 'dsh-watch-together/voice';
 
 onSpeech(({ state, text }) => { if (state === 'due') mySpeak(text); });
 ```
@@ -239,7 +239,7 @@ Linux / 容器里也带着一段 Windows 专用代码、和宿主已有的语音
 
 ```js
 // 消费方（companion 插件 / 宿主 speech service / 你自己的脚本）
-import { onSpeech } from 'dsh-video-storyboard/src/watch/voice.js';
+import { onSpeech } from 'dsh-watch-together/voice';
 onSpeech(({ state, text }) => { if (state === 'due') mySpeak(text); });
 ```
 
@@ -252,7 +252,7 @@ onSpeech(({ state, text }) => { if (state === 'due') mySpeak(text); });
 想要开箱有声，装一个适配器就行（`~/.dsh/voice.json` 写一行路径）：
 
 ```json
-{ "adapter": "D:/deepseek/3-Life/dsh-video-storyboard/examples/voice-edge-tts/index.mjs" }
+{ "adapter": "D:/deepseek/3-Life/dsh-watch-together/examples/voice-edge-tts/index.mjs" }
 ```
 
 `examples/voice-edge-tts` 是现成的：edge-tts 合成 → `ffplay` 播放 → 失败退回系统声音，

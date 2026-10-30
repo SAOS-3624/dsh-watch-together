@@ -9,7 +9,7 @@
  *
  * ```json
  * // ~/.dsh/voice.json
- * { "adapter": "D:/deepseek/3-Life/dsh-video-storyboard/examples/voice-edge-tts/index.mjs" }
+ * { "adapter": "D:/deepseek/3-Life/dsh-watch-together/examples/voice-edge-tts/index.mjs" }
  * ```
  *
  * 或者环境变量：`DSH_VOICE_ADAPTER=<同样的路径>`。
