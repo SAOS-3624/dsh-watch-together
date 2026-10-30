@@ -209,6 +209,8 @@ watch_together({ browserPort: 9333 })   // 或者单次传参
 
 念不念、用什么念、念多快，全由你（或宿主）决定。
 
+> 手把手的声音配置教程（挂载适配器、选晓萱等音色、验证、排错）见 [`docs/VOICE.zh.md`](./docs/VOICE.zh.md)。
+
 ### 事件长什么样
 
 `watch_together` 交付一段时，返回值里有：

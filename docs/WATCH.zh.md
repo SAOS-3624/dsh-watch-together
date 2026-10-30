@@ -258,6 +258,8 @@ onSpeech(({ state, text }) => { if (state === 'due') mySpeak(text); });
 `examples/voice-edge-tts` 是现成的：edge-tts 合成 → `ffplay` 播放 → 失败退回系统声音，
 而且每条台词都会在 stderr 打一行 `[voice 03:11.4] …` —— 调时序时这行比声音有用。
 
+> 怎么挂载适配器、怎么换成晓萱等音色、怎么验证出声、排错表 —— 见 [`docs/VOICE.zh.md`](./VOICE.zh.md)。
+
 ## 六、两种等待方式：定时唤醒 vs 阻塞等待
 
 插件支持两条路，**互相独立**：
