@@ -1,26 +1,26 @@
 /**
  * watch-loop.js — 陪看循环：起钟、读进度、到点叫醒。
  *
- * 进度这一层交给 `position.js`：SMTC 的 `Position` **只在事件时刷新**
- * （实测两次刷新隔过 143 s / 216 s，最长 155 s 不动），所以"位置值 + 刷新时刻"必须一起看，
- * 不能把冻结值当实时值 —— 上一版就是这么一直 `not yet` 的。
+ * 进度这一层交给 `position.js`：**读数 + 读数时刻**必须一起看。
+ * 我们每 15 秒才真读一次，中间 13 秒的位置是按时钟外推的；外推得有个上限，
+ * 太久没刷新就承认不知道（那时该问用户），而不是继续线性推下去。
  *
  * 循环只做三件事，各自频率不同：
  *   每 2 秒   本地判定（纯算术，不调模型）
- *   每 15 秒  读一次 SMTC（起 python ≈1 s），更新锚点
+ *   每 15 秒  读一次浏览器里的 `video.currentTime`，更新锚点
  *   真到点    往会话投一条极短消息（这才贵）
  */
 
 import { aheadSeconds, loadLatency } from './latency.js';
 import {
-  MAX_EXTRAPOLATE_MS, estimate, makeAnchor, shouldSpeak, updateAnchor,
+  MAX_EXTRAPOLATE_MS, estimate, makeAnchor, shouldSpeak,
 } from './position.js';
 import { startTicker, wakeSession } from './timer.js';
 import { DEFAULT_LOOKAHEAD, describePlan, makePlan, windowFor } from './batches.js';
 import { readBrowserPosition } from 'dsh-video-storyboard/browser-time';
 import { readPositionOrNull } from './watch-browser.js';
 import { emitSpeech, speechSubscribers } from './voice.js';
-import { consumeLine, dueLine, hasLine, loadLine, pickSession, probePlayback } from './watch.js';
+import { consumeLine, dueLine, hasLine, loadLine } from './watch.js';
 import { mmss } from './time.js';
 
 const TICK_MS = 2000;
@@ -31,7 +31,7 @@ const ASK_AFTER_MS = 20_000;
 const ASK_COOLDOWN_MS = 300_000;
 /** 连续多久读不到就停表，等人给 cursor（别在那儿空转 20 分钟） */
 const UNKNOWN_GIVE_UP_MS = 600_000;
-/** 浏览器和 SMTC 都没有可用源超过这么久，就停（视频关了 / 浏览器退出了） */
+/** 连续这么久读不到浏览器就先停（视频关了 / 浏览器退出了 / 页签切走了） */
 const NO_SOURCE_GIVE_UP_MS = 300_000;
 /** 余量默认值在 batches.js（批次规划的策略），这里转出给老的调用方 */
 export { DEFAULT_LOOKAHEAD };
@@ -45,6 +45,7 @@ const loop = {
   spoken: [],
   anchor: null,
   aheadSec: 0,
+  positionSource: 'browser',
   unknownSince: 0,
   askedAt: 0,
   noSourceSince: 0,
@@ -124,11 +125,13 @@ export function stopWatchLoop(reason = 'stopped') {
  * @param {string} o.sessionId
  * @param {string} o.input
  * @param {Array<{from:number,to:number,sayAt?:number}>} o.segments
- * @param {number} [o.cursor]  用户自报的真实进度 —— 传了就以它当锚点（SMTC 不可信时的兜底）
+ * @param {number} [o.cursor]  用户自报的真实进度 —— 传了就以它当锚点（读不到浏览器时的兜底）
  * @param {'playing'|'paused'} [o.status]
  */
 export function startWatchLoop({
   ctx, sessionId, input, segments, cursor = null, status = 'playing', log = () => {},
+  // 调试端口：显式参数优先，其次 deps（老调用方/handler 走这条）
+  browserPort: explicitPort = null,
   size = 120, depth = null, segment, ramp, speakEvery = 0,
   // 余量按**时间**算（秒）：当前位置之后已备好的时长不少于它。
   // 不再用"留两段"—— 批次表开头是 1/2/3 分钟，两段在最前面只有 2 分钟，等于没有余量。
@@ -141,12 +144,11 @@ export function startWatchLoop({
   // 依赖可注入：进程内默认真实实现；测试/仿真用假的，于是"到点会不会说话"可以离线验证
   deps = {},
 }) {
-  const probe = deps.probe ?? probePlayback;
   const wake = deps.wake ?? ((c, o) => wakeSession(c, o));
   const now = deps.now ?? (() => Date.now());
   const ticker = deps.ticker ?? startTicker;
   const readLatency = deps.loadLatency ?? loadLatency;
-  // 读进度的间隔可注入：真机 15 秒够了（起一次 python ≈1 s）；
+  // 读进度的间隔可注入：真机 15 秒够了（读一次 CDP 是毫秒级，主要是别太频繁）；
   // 但仿真用倍速跑，倍速越高越要读得勤，否则一整段会在两次采样之间被跳过。
   const probeEveryMs = deps.probeEveryMs ?? PROBE_EVERY_MS;
   const build = deps.build ?? null;
@@ -154,12 +156,12 @@ export function startWatchLoop({
     loop.logs.push(`${new Date().toTimeString().slice(0, 8)} ${msg}`);
     if (loop.logs.length > 20) loop.logs.shift();
   };
-  // 浏览器里有 video 元素时，`currentTime` 是**毫秒级真值**，比 SMTC 的稀疏刷新可靠得多。
-  // 拿不到（没开调试端口）就退回 SMTC，不报错。
+  // `video.currentTime` 是**毫秒级真值**。拿不到就当作"这次没读到"，
+  // 由上层决定是问用户还是停表 —— 不猜、不外推到很远。
   const readBrowser = deps.readBrowser ?? ((o) => readBrowserPosition(o));
   // 端口来源：显式参数 → ~/.dsh/video.json → 环境变量（桌面版读不到 setx 的 env，所以文件优先）
   // 端口只从调用方传进来（工具层读配置）；库层不隐式读机器配置，否则单测会被本机状态影响
-  const browserPort = deps.browserPort ?? undefined;
+  const browserPort = explicitPort ?? deps.browserPort ?? null;
   // 没有会话 id 也不许起循环 —— **除非**已经有声音订阅者：那种情况下到点的词
   // 交给订阅者念，不需要叫醒任何模型（宿主的 speech service 就属于这一类）。
   if (!sessionId && speechSubscribers() === 0) return { ok: false, reason: 'no-session-id' };
@@ -224,6 +226,11 @@ export function startWatchLoop({
       }))
       : plan.from(0, Math.min(64, (fixedDepth ?? windowFor(plan, 0, bufferSec).length) + 1)),
     spoken: [],
+    // **换源就必须清掉"上一支片子"的痕迹**：`dur` / `sourceUrl` 留着的话，
+    // 新片子第一次读数就会和旧值不一样，于是被判定成"换片"当场停掉。
+    dur: null,
+    sourceUrl: null,
+    status: 'playing',
     // 余量：fixedDepth 为 null 时按 bufferSec 动态算（段短就多备几段）。
     // 起点那几段只有 1/2/3 分钟，固定"两段"在最前面等于只有 2 分钟余量 —— 不够。
     depth: fixedDepth,
@@ -260,55 +267,38 @@ export function startWatchLoop({
 
       if (tNow - loop.lastProbeAt >= probeEveryMs) {
         loop.lastProbeAt = tNow;
-        // 1) 先问浏览器（准，但**必须显式开端口**）　2) 再问 SMTC（旧但能用）
-        // 不默认读：这台机器上 WorkBuddy 自己就占着 9222，盲读会读到它的界面元素。
+        // **唯一的来源**：浏览器调试端口里那个 <video>。
+        // 不默认读 9222：这台机器上 WorkBuddy 自己就占着它，盲读会读到宿主的界面元素。
         const b = await readPositionOrNull(readBrowser, browserPort);
         if (b) {
+          // 换片：时长或地址变了就是另一支片子，立刻停 —— 继续跑会拿旧段的边界去套新片
+          const changed = (loop.dur && Number.isFinite(b.dur) && Math.abs(loop.dur - b.dur) > 1)
+            || (loop.sourceUrl && b.url && loop.sourceUrl !== b.url);
+          if (changed) {
+            stopWatchLoop('video-changed');
+            return;
+          }
           loop.anchor = makeAnchor({
-            pos: b.pos, dur: b.dur, status: b.paused ? 5 : 4,
-            // 浏览器是刚读的，所以永远算"新鲜"
-            updated: Date.now(), title: b.title,
+            pos: b.pos, dur: b.dur, status: b.paused ? 'paused' : 'playing',
+            // 浏览器是刚读的，所以永远算"新鲜"。
+            // **用 tNow 而不是 Date.now()**：循环的时钟是注入的（仿真用虚拟时间），
+            // 两边混用会让 staleMs 变成几十万毫秒，位置立刻被判成 unknown。
+            updated: tNow, title: b.title,
           }, tNow);
           loop.status = b.paused ? 'paused' : 'playing';
           if (Number.isFinite(b.dur)) loop.dur = b.dur;
           if (b.url) loop.sourceUrl = b.url;
-          loop.positionSource = 'browser';
+          loop.noSourceSince = 0;
           if (b.ended) {
             stopWatchLoop('video-ended');
             return;
           }
         } else {
-          loop.positionSource = 'smtc';
-          const p = await probe();
-          const sg = p.ok ? pickSession(p.sessions ?? [], { input: loop.input }) : null;
-          if (sg) {
-            if (loop.anchor) {
-              const { anchor, driftSec, refreshed, changedVideo } = updateAnchor(loop.anchor, sg, tNow);
-              if (changedVideo) {
-                stopWatchLoop('video-changed');
-                return;
-              }
-              if (refreshed && Math.abs(driftSec) > 5) {
-                // 刷新给出的真值和我们的外推差得多：中间暂停/缓冲过。不惩罚，用新锚点重算。
-                note(`re-anchored, drift ${driftSec}s`);
-              }
-              loop.anchor = anchor;
-            } else {
-              loop.anchor = makeAnchor(sg, tNow);
-            }
-            if (Number.isFinite(sg.dur)) loop.dur = sg.dur;
-          }
-          // 浏览器和 SMTC 都读不到东西：可能是视频关了、也可能浏览器退出了。
-          // 这时候每 15 秒还在起一次 python，纯属白烧 CPU —— 给一个宽限期后停表。
-          if (!sg) {
-            loop.noSourceSince = loop.noSourceSince || tNow;
-            if (tNow - loop.noSourceSince > NO_SOURCE_GIVE_UP_MS) {
-              stopWatchLoop('no-source');
-              return;
-            }
-          } else {
-            loop.noSourceSince = 0;
-          }
+          // 读不到：浏览器关了 / 页签切走了 / 播放器卡死。
+          // **这里不停表** —— 交给下面两条路决定：
+          //   · 有旧锚点 → 锚点会变旧 → 判成 position-unknown → 先问用户一次，问不到再停；
+          //   · 从来没读到过（锚点为空）→ 就没有"变旧"可言，靠 noSourceSince 兜。
+          loop.noSourceSince = loop.noSourceSince || tNow;
         }
         const st = await readLatency();
         loop.aheadSec = aheadSeconds(st);
@@ -316,6 +306,12 @@ export function startWatchLoop({
 
       if (!loop.anchor) {
         loop.lastReason = 'no-anchor';
+        // 从来没读到过位置：没有锚点可变旧，只能靠这个计时器兜底。
+        // 5 分钟还没读到就不等了（正常情况下 watch_run 在开循环前就会失败）。
+        if (loop.noSourceSince && tNow - loop.noSourceSince > NO_SOURCE_GIVE_UP_MS) {
+          stopWatchLoop('position-unreadable');
+          return;
+        }
         return;
       }
 
@@ -473,7 +469,7 @@ export function startWatchLoop({
           const stale = Math.round((r.staleMs ?? 0) / 1000);
           const w = await wake(loop.ctx, {
             sessionId: loop.sessionId,
-            text: `[一起看] 读不到你的播放进度了（系统媒体控件最后一次更新在 ${stale} 秒前）。`
+            text: `[一起看] 读不到你的播放进度了（浏览器最后一次读到位置是在 ${stale} 秒前）。`
               + '问一句"你看到几分几秒了"，拿到答复就带 cursor 再调 watch_together。',
           });
           loop.log(`[watch] ask-for-cursor (${stale}s stale) → ${w.ok ? 'ok' : w.reason}`);

@@ -1,46 +1,59 @@
 /**
- * position.test.mjs — SMTC 稀疏时间轴的可信度模型。
+ * position.test.mjs — "读数 + 读数时刻"的可信度模型。
  *
- * 这些数字来自真机对表（3 次快照，误差都 ≤1 秒）：
- *   17:42:44 pos=00:01.14 Playing   ← 之后 155 秒没有任何刷新
- *   18:02:56 pos=02:08.60 Playing   ← 用户屏幕 02:09
- *   18:05:51 pos=03:33.52 Paused    ← 用户屏幕 03:34
+ * 前提：位置只来自浏览器调试端口的 `video.currentTime`，
+ * 而我们是**每 15 秒才真读一次**，中间十几秒靠外推。
  *
- * 结论：**刷新落下来的值可信，错的是"刷新时刻到此刻"那一段**。
+ * 所以两件事必须分开看：
+ *   pos     —— 最近一次读到的值（本身是准的）
+ *   updated —— 它是什么时候读到的（决定现在还准不准）
+ *
+ * > 这套模型原先是给 Windows 媒体控件（SMTC）写的：它只在事件时刷新，
+ * > 实测隔过 143 / 216 秒，外推上限得开到 180 秒。SMTC 已删除，
+ * > 上限收到 60 秒（≈ 连错过 3 次读取），FRESH_MS 涨到 20 秒（要盖住一个读取周期）。
  */
 import test from 'node:test';
 import assert from 'node:assert/strict';
 
 import {
-  MAX_EXTRAPOLATE_MS, estimate, makeAnchor, shouldSpeak, updateAnchor,
+  FRESH_MS, MAX_EXTRAPOLATE_MS, estimate, makeAnchor, shouldSpeak,
 } from '../src/position.js';
 
 const T0 = 1_700_000_000_000;   // 任意基准时刻
 
-test('刚刷新过的位置直接信（fresh）', () => {
-  const a = makeAnchor({ pos: 128.6, dur: 1087, status: 4, updated: T0 }, T0);
+test('刚读到的位置直接信（fresh）', () => {
+  const a = makeAnchor({ pos: 128.6, dur: 1087, status: 'playing', updated: T0 }, T0);
   const e = estimate(a, T0 + 3000);
   assert.equal(e.confidence, 'fresh');
-  assert.ok(Math.abs(e.pos - 128.6) < 0.01, '不该外推，直接用刷新值');
+  assert.ok(Math.abs(e.pos - 128.6) < 0.01, '不该外推，直接用读到的值');
 });
 
-test('在播但刷新旧了：按墙钟推（extrapolated）', () => {
-  const a = makeAnchor({ pos: 100, dur: 1087, status: 4, updated: T0 }, T0);
-  const e = estimate(a, T0 + 20_000);
+test('一个读取周期之内：按墙钟推，这是常态不是异常', () => {
+  // 每 15 秒才读一次，所以"读数 16 秒旧"是正常状态，推出来的位置比冻结值更准
+  const a = makeAnchor({ pos: 100, dur: 1087, status: 'playing', updated: T0 }, T0);
+  const e = estimate(a, T0 + 16_000);
   assert.equal(e.confidence, 'extrapolated');
-  assert.ok(Math.abs(e.pos - 120) < 0.2, `应推成 120，实得 ${e.pos}`);
+  assert.ok(Math.abs(e.pos - 116) < 0.2, `应推成 116，实得 ${e.pos}`);
+  assert.ok(16_000 > FRESH_MS, `FRESH_MS=${FRESH_MS} 应该只覆盖"刚刚读到"`);
+});
+
+test('在播但读数旧了：按墙钟推（extrapolated）', () => {
+  const a = makeAnchor({ pos: 100, dur: 1087, status: 'playing', updated: T0 }, T0);
+  const e = estimate(a, T0 + 30_000);
+  assert.equal(e.confidence, 'extrapolated');
+  assert.ok(Math.abs(e.pos - 130) < 0.2, `应推成 130，实得 ${e.pos}`);
 });
 
 test('推太久就承认不知道（unknown），不硬推', () => {
-  const a = makeAnchor({ pos: 100, dur: 1087, status: 4, updated: T0 }, T0);
+  const a = makeAnchor({ pos: 100, dur: 1087, status: 'playing', updated: T0 }, T0);
   const e = estimate(a, T0 + MAX_EXTRAPOLATE_MS + 60_000);
   assert.equal(e.confidence, 'unknown');
   assert.equal(e.why, 'stale');
   assert.ok(e.pos <= 100 + MAX_EXTRAPOLATE_MS / 1000 + 0.01, '位置不能无限外推');
 });
 
-test('暂停：位置就是刷新值，且永远可信（不能因为"旧"就判成读不到）', () => {
-  const a = makeAnchor({ pos: 213.5, dur: 1087, status: 5, updated: T0 }, T0);
+test('暂停：位置就是读到的值，且永远可信（不能因为"旧"就判成读不到）', () => {
+  const a = makeAnchor({ pos: 213.5, dur: 1087, status: 'paused', updated: T0 }, T0);
   const e = estimate(a, T0 + 60_000);
   assert.ok(Math.abs(e.pos - 213.5) < 0.01, '暂停一分钟位置都不该变');
   assert.equal(e.why, 'paused');
@@ -48,69 +61,47 @@ test('暂停：位置就是刷新值，且永远可信（不能因为"旧"就判
 });
 
 test('暂停时不说话（哪怕位置已经过了边界）', () => {
-  const a = makeAnchor({ pos: 118, dur: 1087, status: 5, updated: T0 }, T0);
+  const a = makeAnchor({ pos: 118, dur: 1087, status: 'paused', updated: T0 }, T0);
   const r = shouldSpeak({ anchor: a, segments: [{ from: 0, to: 120 }], now: T0 + 60_000 });
   assert.equal(r.speak, false);
   assert.equal(r.reason, 'paused');
 });
 
-test('refresh 会带来真值，并算出我们外推错了多少（drift）', () => {
-  const a1 = makeAnchor({ pos: 100, dur: 1087, status: 4, updated: T0 }, T0);
-  // 我们以为过了 30 秒（外推到 130）
-  // 但刷新说其实只有 112（用户中间暂停过）
-  const { anchor, driftSec, refreshed, changedVideo } = updateAnchor(
-    a1, { pos: 112, dur: 1087, status: 4, updated: T0 + 30_000 }, T0 + 30_000,
-  );
-  assert.equal(refreshed, true);
-  assert.equal(changedVideo, false);
-  assert.ok(driftSec < 0, `外推推快了应该得到负 drift，实得 ${driftSec}`);
-  assert.ok(Math.abs(driftSec + 18) < 1, `drift 应约 -18，实得 ${driftSec}`);
-  assert.equal(anchor.pos, 112);
-});
-
-test('换片检测：时长或标题变了就是换了片子', () => {
-  const a = makeAnchor({ pos: 10, dur: 1016, status: 4, updated: T0, title: 'A' }, T0);
-  const sameDur = updateAnchor(a, { pos: 10, dur: 1087, status: 4, updated: T0 + 1, title: 'A' }, T0 + 1);
-  assert.equal(sameDur.changedVideo, true, '时长变了应判定换片');
-  const sameTitle = updateAnchor(a, { pos: 10, dur: 1016, status: 4, updated: T0 + 1, title: 'B' }, T0 + 1);
-  assert.equal(sameTitle.changedVideo, true, '标题变了应判定换片');
-});
-
 test('该说：新鲜时到点就说', () => {
-  const a = makeAnchor({ pos: 110, dur: 1087, status: 4, updated: T0 }, T0);
+  const a = makeAnchor({ pos: 110, dur: 1087, status: 'playing', updated: T0 }, T0);
   const r = shouldSpeak({ anchor: a, segments: [{ from: 0, to: 120 }], now: T0 + 2000, lead: 15 });
   assert.equal(r.speak, true);
   assert.equal(r.segment, 0);
 });
 
 test('该说：外推的必须越过安全余量才说（不抢话）', () => {
-  // 锚点 95 秒、sayAt=105、安全余量 5 → 外推到 106 时还差 4 秒，不能开口
-  const a = makeAnchor({ pos: 95, dur: 1087, status: 4, updated: T0 }, T0);
-  const near = shouldSpeak({ anchor: a, segments: [{ from: 0, to: 120 }], now: T0 + 11_000, lead: 15 });
-  assert.equal(near.speak, false);
-  assert.equal(near.reason, 'extrapolated-not-confirmed');
-  // 外推到 111（≥ 105+5）才说
-  const past = shouldSpeak({ anchor: a, segments: [{ from: 0, to: 120 }], now: T0 + 16_000, lead: 15 });
-  assert.equal(past.speak, true);
+  // sayAt=105、安全余量 5 → 外推到 106 时还差 4 秒，不能开口
+  const near = makeAnchor({ pos: 76, dur: 1087, status: 'playing', updated: T0 }, T0);
+  const r1 = shouldSpeak({ anchor: near, segments: [{ from: 0, to: 120 }], now: T0 + 30_000, lead: 15 });
+  assert.equal(r1.speak, false);
+  assert.equal(r1.reason, 'extrapolated-not-confirmed');
+  // 外推到 116（≥ 105+5）才说
+  const r2 = shouldSpeak({ anchor: near, segments: [{ from: 0, to: 120 }], now: T0 + 40_000, lead: 15 });
+  assert.equal(r2.speak, true);
 });
 
 test('该说：完全不知道就闭嘴', () => {
-  const a = makeAnchor({ pos: 100, dur: 1087, status: 4, updated: T0 }, T0);
+  const a = makeAnchor({ pos: 100, dur: 1087, status: 'playing', updated: T0 }, T0);
   const r = shouldSpeak({ anchor: a, segments: [{ from: 0, to: 120 }], now: T0 + 10 * 60_000 });
   assert.equal(r.speak, false);
   assert.equal(r.reason, 'position-unknown');
 });
 
 test('该说：说过的段不重复，早就过去的不补', () => {
-  const a = makeAnchor({ pos: 110, dur: 1087, status: 4, updated: T0 }, T0);
+  const a = makeAnchor({ pos: 110, dur: 1087, status: 'playing', updated: T0 }, T0);
   assert.equal(shouldSpeak({ anchor: a, segments: [{ from: 0, to: 120 }], spoken: [0], now: T0 }).speak, false);
 
-  const b = makeAnchor({ pos: 600, dur: 1087, status: 4, updated: T0 }, T0);
+  const b = makeAnchor({ pos: 600, dur: 1087, status: 'playing', updated: T0 }, T0);
   assert.equal(shouldSpeak({ anchor: b, segments: [{ from: 0, to: 120 }], now: T0 }).speak, false);
 });
 
 test('提前量让判定往前挪（本机延迟补偿）', () => {
-  const a = makeAnchor({ pos: 92, dur: 1087, status: 4, updated: T0 }, T0);
+  const a = makeAnchor({ pos: 92, dur: 1087, status: 'playing', updated: T0 }, T0);
   const noAhead = shouldSpeak({ anchor: a, segments: [{ from: 0, to: 120 }], now: T0, lead: 15, aheadSec: 0 });
   assert.equal(noAhead.speak, false, '92 秒还没到 105');
   const withAhead = shouldSpeak({ anchor: a, segments: [{ from: 0, to: 120 }], now: T0, lead: 15, aheadSec: 15 });

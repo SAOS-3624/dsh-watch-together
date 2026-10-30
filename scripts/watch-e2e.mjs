@@ -59,14 +59,16 @@ console.log(`[e2e] 从 ${fmt(from)} 起看 ${minutes} 分钟，${speed}× 倍速
 console.log(`[e2e] 段长 ${segment}s，提前 ${lead}s 说\n`);
 
 const deps = {
-  // 播放头就是假的：每次返回"刚刚刷新过"的快照
-  probe: async () => ({
-    ok: true,
-    sessions: [{
-      app: 'fake-player', status: 4, pos: playhead(),
-      dur: from + minutes * 60 + 600, title: input, updated: Date.now(),
-    }],
+  // 播放头就是假的：每次读都是一次"现在"的读数（真值，不需要"刷新"概念）
+  readBrowser: async () => ({
+    pos: playhead(),
+    dur: from + minutes * 60 + 600,
+    title: input,
+    url: `file:///${input.replace(/\\/g, '/')}`,
+    paused: false,
+    ended: false,
   }),
+  browserPort: 1,          // 只用来过 readPositionOrNull 的门槛，读数由上面注入
   now: () => Date.now(),
   // 倍速跑的时候要读得勤：否则一段 120 秒会在两次采样之间被整段跳过
   probeEveryMs: Math.max(500, Math.round(2000 / Math.max(1, speed / 4))),

@@ -61,15 +61,8 @@ node scripts/install-dev.mjs                            # 再装陪看（它会�
 前置条件（ffmpeg / yt-dlp / ASR）跟 `dsh-video-storyboard` 完全一样，
 见那个包的 [README](https://github.com/SAOS-3624/dsh-video-storyboard#readme) 与 `docs/INSTALL.zh.md`。
 
-陪看自己额外需要一台装了 `winrt` 的 Python（读系统媒体控件用）：
-
-```bash
-pip install winrt-runtime winrt-Windows.Media.Control winrt-Windows.Foundation
-```
-
-插件按这个顺序找解释器：`DSH_PYTHON` 环境变量 → `~/.dsh/asr.json` 里 `manage.start` 用的那个
-（你为 ASR 配的 venv 很可能也装在这里）→ PATH 上的 `python` / `python3`。
-找到后会真的 `import` 一次验证，验证不过就当作没有，**不会因为路径对就当成能用**。
+陪看自己**没有额外依赖**：位置从浏览器调试端口读，不装 Python、不装播放器插件。
+唯一要准备的是一个带调试端口的浏览器窗口 —— 见下文「为什么要一个专用窗口」。
 
 ## 怎么用
 
@@ -120,56 +113,42 @@ watch_together({ ramp: [] })              // 全程等长，不要阶梯
 建一个批次要 2–10 秒，而看一个批次要 `segment` 秒，所以**总有时间在空闲里把它建完**。
 实测 4 次交付全部 **0.0 秒**（命中预取），批次之间无缝。
 
-## 进度从哪来：两条路，不用装播放器插件
+## 进度从哪来：只读浏览器里的 `video.currentTime`
 
-| | 你自己打开的播放器（SMTC） | 带调试端口的浏览器（CDP） |
-|---|---|---|
-| 怎么开始 | **什么都不用做**，正常开 VLC / PotPlayer / Edge 就行 | 必须**额外**启动一个带 `--remote-debugging-port` 的窗口 |
-| 位置精度 | 稀疏：播放器只在事件时刷新（实测隔过 143 / 216 秒） | 毫秒级（`pos=8.374`） |
-| 能不能知道"在放哪个片" | 只有标题，得按标题反查（本地文件名 → B 站搜索） | **页面地址就是源**，B 站拿到 BV 号、`file:///` 还原成本地路径 |
-| 需要额外装什么 | 一个装了 `winrt` 的 Python | 无 |
-| 你要付出的代价 | 位置会"几十秒不动"，靠外推补 | 那个窗口用的是**另一个 profile**，第一次要在里面重新登录 B 站 |
+位置只有一个来源：那个带调试端口的浏览器里，当前页面上 `<video>` 的 `currentTime`。
+它本身就准到毫秒，不用外推、不用猜。
 
-**两条路任意一条通就能陪看。** 插件和 CLI 都是"先问浏览器，读不到再问 SMTC"，
-所以你自己开浏览器也能用 —— 只是位置会粗一些。
+代价是**你必须用那个窗口看片**：
 
-SMTC 实测输出：
+| | 说明 |
+|---|---|
+| 怎么开始 | 双击 `scripts/start-edge-debug.cmd`（或做成桌面快捷方式），以后一直开着 |
+| 本地电影 | 直接把它拖进那个窗口（`file:///D:/x.mp4`），**不用**再按文件名去搜 |
+| 看不到的时候 | 明确告诉你"读不到"，要你报进度（`cursor: 750` 或 `"12:30"`），**不会猜** |
 
-```
-MSEdge | playing | pos=5.9s | dur=68.0s | 鲸鱼陪看：让 DSH 里的她看得见你的屏幕
-```
+> 早先还有第二条路：读 Windows 的**系统媒体控件**（SMTC），好处是"你随便用什么播放器都行"。
+> **2026-10-30 删掉了。** 它的 `Position` 只在事件发生时刷新（实测两次刷新隔过 143、216 秒），
+> 拿它当实时位置必须按墙钟外推，外推就会猜错，而猜错一次后面每一段都是错的。
+> 删掉之后少了一个 Python/`winrt` 依赖，也少了"按标题去 B 站搜片源"那个会搜错的东西。
 
-读不到时它会**明说读不到**并要你自报（`cursor: 750` 或 `"12:30"`），**不会猜**——
-猜错一次，后面每一段都是错的。
+### 为什么要一个"专用窗口"，不能直接用你现在的浏览器
 
-> SMTC 探测靠 `src/watch_smtc.py`，它**必须和 `src/watch-probe.js` 放在同一层**。
-> 早期版本把它落在上一级目录，于是 `execFile` 找不到脚本、探测恒定失败，
-> 而错误信息只说 "Command failed" —— 表现就是"我自己开浏览器它永远看不到"。
-> 搬包时已经把它放到正确位置。
+**Chromium 136 之后（这台机器的 Edge 是 152）不允许在默认 profile 上开调试端口**，
+这是微软/谷歌的安全修复，绕不过去。所以那个窗口有它自己的
+`--user-data-dir=%USERPROFILE%\.dsh\edge-watch`：
 
-需要一台装了 `winrt` 的 Python：
+- **第一次要在里面登录一次 B 站**，之后它一直记着（Cookie 存在那个 profile 里）
+- 你的日常 Edge 完全不受影响，可以同时开着
+- 书签/扩展不在里面 —— 它只是个"看片的窗口"
 
-```bash
-pip install winrt-runtime winrt-Windows.Media.Control winrt-Windows.Foundation
-```
-
-### 想要毫秒级 + 自动认出片源？用一个专用的调试端口窗口
-
-`scripts/start-edge-debug.cmd` 就是干这个的 —— **双击它**（或做成桌面快捷方式），
-以后不用让 AI 去拉起浏览器：
+`scripts/start-edge-debug.cmd` 就是干这个的，双击即可：
 
 ```bash
 scripts/start-edge-debug.cmd          # 端口 9333
 scripts/start-edge-debug.cmd 9444     # 换一个端口
 ```
 
-> **为什么必须是一个独立 profile**：Chromium 136 之后（这台机器的 Edge 是 152）
-> **不允许在默认 profile 上开调试端口**，这是微软/谷歌的安全修复，绕不过去。
-> 所以这个窗口有它自己的 `--user-data-dir=%USERPROFILE%\.dsh\edge-watch`，
-> **第一次要在里面登录一次 B 站**，之后它一直记着。
-> 你的日常 Edge 完全不受影响，可以同时开着。
-
-然后告诉插件端口（**桌面版读不到 `setx` 的环境变量，所以推荐写文件**）：
+端口写进配置（**桌面版读不到 `setx` 的环境变量，所以推荐写文件**）：
 
 ```jsonc
 // ~/.dsh/video.json
@@ -185,24 +164,18 @@ watch_together({ browserPort: 9333 })   // 或者单次传参
 
 > 端口别用 9222：那是 Chrome DevTools 的惯例端口，**WorkBuddy 自己就占着**（实测读到的会是它的界面）。
 
-开了之后：**位置毫秒级准**，而且**当前页面地址就是源**，**不用搜索、不用下载、不用问用户**。
-
 ### 为什么进度会"读不到"（重要）
 
-Edge 播网页视频时，Windows 媒体控件的 `Position` **只在事件发生时刷新**：起播、暂停、拖动、切集。
-连续播放期间它可能几分钟不动（实测两次刷新隔过 143 秒、216 秒）。
+插件每 15 秒真读一次位置，中间按墙钟外推。三种情况要分清：
 
-所以插件区分三种可信度：
-
-| 可信度 | 判断依据 | 行为 |
+| 状态 | 判断依据 | 行为 |
 |---|---|---|
-| `fresh` | 10 秒内刷新过 | 直接信 |
-| `extrapolated` | 刷新旧了但在播 | 按墙钟往前推，**说话前要多越过 15 秒**才开口 |
-| `unknown` | 超过 45 秒没刷新 | **不推、不说**，明确要你给 `cursor` |
+| 读数新鲜（≤5 秒） | 刚读到 | 直接信 |
+| 读数 6–16 秒旧 | 正常的外推窗口 | 按墙钟往前推，误差下一次读取就纠回来 |
+| 超过 20 秒没读到 | **错过了一次读取** | 推出来的位置要**多越过 5 秒**才敢开口（宁可晚，不能早） |
+| 超过 60 秒没读到 | 连错过三次 | 不再推，明确要你报进度 |
 
-位置刷新下来的那个值本身是准的（真机对表 3 次，误差都 ≤1 秒）——
-**错的是"刷新时刻到此刻"这一段**，所以不能把冻结值当实时值。
-
+读不到最常见的原因是：那个窗口被关了、页签切走了、或者播放器卡死了。
 `watch_together({ statusOnly: true })` 可以随时看钟的状态：读到第几秒、可不可信、为什么没说话。
 
 ## 接声音（核心不发声，声音你自己接）
@@ -350,15 +323,13 @@ src/
   watch-modes.js    各种等待模式
   watch-actions.js  单发命令（status / voices / speak / cookies / wake / stop）
 
-  watch.js          门面：转发下面三个
-  watch-probe.js    播放位置：起 python 读 SMTC（唯一碰平台的地方）  + watch_smtc.py
+  watch.js          门面：转发下面两个
   watch-state.js    看到哪儿了：watch.json 读写 ＋ 段长/交付点算术
   watch-lines.js    该说什么了：位置轴上的台词队列
 
-  watch-source.js   这次看的是哪个源
+  watch-source.js   这次看的是哪个源（就是当前页面的地址）
   watch-browser.js  "浏览器在不在"＋没有就拉起来＋读一次位置
   position.js       位置可信度与推算
-  resolve-playing.js  系统媒体控件在放什么
   latency.js        交付延迟记录与补偿
   batches.js        变速启动与批次窗口
   timer.js          到点提醒

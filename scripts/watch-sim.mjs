@@ -18,16 +18,16 @@ const SEG = 120;
 const segments = (n = 6) => Array.from({ length: n }, (_, i) => ({ from: i * SEG, to: (i + 1) * SEG }));
 
 const SCENARIOS = {
-  // Edge 每 30 秒刷新：最理想的情况
-  steady: { label: '每 30 秒刷新（理想）', opts: { refreshEveryMs: 30_000 }, until: 200 },
-  // 真机实测：两次刷新隔过 143 s / 216 s
-  sparse: { label: '每 150 秒刷新（Edge 真实）', opts: { refreshEveryMs: 150_000 }, until: 260 },
+  // 一切正常
+  steady: { label: '正常播放', opts: {}, until: 200 },
+  // CDP 偶发超时：每 4 次读数失败 1 次
+  flaky: { label: '每 4 次读数失败 1 次', opts: { failEvery: 4 }, until: 220 },
   // 用户中途暂停 —— 暂停时不该说话，也不该问"读不到"
-  paused: { label: '60–120 秒暂停', opts: { refreshEveryMs: 30_000, paused: [{ from: 60, to: 120 }] }, until: 260 },
+  paused: { label: '60–120 秒暂停', opts: { paused: [{ from: 60, to: 120 }] }, until: 260 },
   // 换片
-  switched: { label: '第 50 秒换片', opts: { refreshEveryMs: 30_000, changes: [{ at: 50, title: 'B', duration: 1087 }] }, until: 80 },
-  // 时间轴彻底冻结
-  frozen: { label: '时间轴冻结（从不刷新）', opts: { refreshEveryMs: 10 ** 9 }, until: 820 },
+  switched: { label: '第 50 秒换片', opts: { changes: [{ at: 50, duration: 1087 }] }, until: 80 },
+  // 浏览器被关掉（页签切走 / 窗口关了）
+  dead: { label: '第 60 秒浏览器没了', opts: { deadFrom: 60 }, until: 820 },
 };
 
 const fmt = (s) => `${String(Math.floor(s / 60)).padStart(2, '0')}:${String(Math.round(s % 60)).padStart(2, '0')}`;
@@ -39,7 +39,8 @@ async function run(name) {
 
   startWatchLoop({
     ctx: { sessionController: { prompt: async () => {} } },
-    sessionId: 'sim', input: 'A', segments: segments(),
+    // 每个场景一个独立的源名：`startWatchLoop` 对"同源同类批次表"是接着跑不重开的
+    sessionId: `sim-${name}`, input: `sim-${name}.mp4`, browserPort: 1, segments: segments(),
     deps: sim.deps,
     log: (m) => log.push(m),
   });
@@ -80,9 +81,10 @@ for (const n of names) {
   if (!SCENARIOS[n]) { console.error(`没有这个场景：${n}`); process.exit(2); }
   const r = await run(n);
   if (n === 'steady' && r.spoken !== 1) bad += 1;
+  if (n === 'flaky' && r.spoken < 1) bad += 1;
   if (n === 'paused' && (r.spoken !== 1 || r.asked !== 0)) bad += 1;
   if (n === 'switched' && !/video-changed/.test(r.status)) bad += 1;
-  if (n === 'frozen' && (r.asked < 1 || r.status !== 'position-unreadable')) bad += 1;
+  if (n === 'dead' && (r.asked < 1 || r.status !== 'position-unreadable')) bad += 1;
 }
 console.log(bad === 0 ? '\n全部场景符合预期。' : `\n${bad} 个场景不符合预期。`);
 process.exit(bad === 0 ? 0 : 1);

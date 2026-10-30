@@ -7,7 +7,7 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 
 import {
-  deliveryState, pickSession, segmentStart, WATCH_LEAD, WATCH_SEGMENT,
+  deliveryState, segmentStart, WATCH_LEAD, WATCH_SEGMENT,
 } from '../src/watch.js';
 import { validateWatchArgs, watchToolSpec } from '../src/tool-spec.js';
 
@@ -33,18 +33,6 @@ test('deliveryState: 到段末前 lead 秒才算该说', () => {
   assert.equal(over.overdue, true, '用户已经看到下一段，也要交付，否则这段永远不说');
 });
 
-test('pickSession: 只在播放/暂停里挑，多个时按标题/时长匹配', () => {
-  const sessions = [
-    { app: 'x', status: 1, pos: 0, dur: 10, title: 'closed' },      // 1 = closed，应忽略
-    { app: 'A', status: 5, pos: 5, dur: 600, title: '某个长视频' },
-    { app: 'B', status: 4, pos: 5, dur: 68, title: '鲸鱼陪看：让 DSH 里的她看得见你的屏幕' },
-  ];
-  assert.equal(pickSession(sessions, { title: '鲸鱼陪看：让 DSH 里的她看得见你的屏幕' }).app, 'B');
-  assert.equal(pickSession(sessions, { input: 'D:/x/鲸鱼陪看.mp4' }).app, 'B');
-  assert.equal(pickSession(sessions, { duration: 601 }).app, 'A');
-  assert.equal(pickSession([], {}), null);
-  assert.equal(pickSession([{ app: 'z', status: 1 }], {}), null, '关掉的会话不算');
-});
 
 test('默认参数是"120 秒一段、提前 15 秒说"', () => {
   assert.equal(WATCH_SEGMENT, 120);

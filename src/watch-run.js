@@ -18,7 +18,7 @@
  */
 
 import {
-  deliveryState, describeStatus, loadWatch, pickSession, probePlayback, readSlot, saveWatch,
+  deliveryState, loadWatch, readSlot, saveWatch,
   sessionKey, WATCH_LEAD, WATCH_SEGMENT,
 } from './watch.js';
 import { speechEvents } from './voice.js';
@@ -26,7 +26,6 @@ import { describeLatency, recordLatency } from './latency.js';
 import { DEFAULT_LOOKAHEAD, makePlan, windowFor } from './batches.js';
 import { makeChatWatcher } from './chat.js';
 import { probeBrowser, readBrowserPosition } from 'dsh-video-storyboard/browser-time';
-import { estimate, makeAnchor } from './position.js';
 import { boardOptions, charsForDetail } from 'dsh-video-storyboard/board';
 import { mmss } from './time.js';
 import { saveLines } from './watch.js';
@@ -99,7 +98,6 @@ async function latencyNote() {
 export async function runWatchPass(args, deps) {
   const {
     saveImage, runStoryboard, formatManifest, cache = new Map(),
-    probe = probePlayback,
     readBrowser = readBrowserPosition,
     /** "浏览器到底在不在"—— 只用于**如实汇报**，位置仍走 readBrowser（可注入） */
     probeBrowserState = probeBrowser,
@@ -122,15 +120,14 @@ export async function runWatchPass(args, deps) {
     : Math.max(0, Number(args.lookahead) || 0);
 
 
-  // ---- 0. 源：没给 input 就自己从"系统里在播什么"反推
-  const stateEarly = await loadWatch();
+  // ---- 0. 源：没给 input 就从浏览器里那个 <video> 所在的页面反推
   const src = await resolveWatchSource({
-    input: args.input, args, probe, readBrowser, browserPort, stateEarly,
+    input: args.input, args, readBrowser, browserPort,
   });
-  // `ok: false` 是"这次调用到此为止"的完整结果（没视频 / 等超时 / 源搜不到）
+  // `ok: false` 是"这次调用到此为止"的完整结果（没视频 / 等超时）
   if (src.ok === false) return src;
   const { resolved } = src;
-  let { input, activeSession } = src;
+  const { input } = src;
 
   // 已经交付过的段：wait 模式不能把同一段反复交出来
   const state0 = await loadWatch();
@@ -178,51 +175,23 @@ export async function runWatchPass(args, deps) {
       cursor = b.pos;
       confidence = 'browser';
       note = ` (browser, ${b.paused ? 'paused' : 'playing'})`;
-      if (b.url) {
-        activeSession = { ...(activeSession ?? {}), title: b.title, dur: b.dur };
-      }
     }
   }
   const browserLine = describeBrowser(browserState, launchNote);
   if (!Number.isFinite(cursor)) {
-    const probeRes = await probe();
-    const pick = probeRes.ok
-      ? pickSession(probeRes.sessions, { input, title: args.title ?? activeSession?.title ?? null })
-      : null;
-    if (!pick) {
-      return {
-        ok: false,
-        browser: browserState.state,
-        text: `${browserLine}\n`
-          + `cannot read your playback position (${probeRes.error ?? 'no active media session'}).\n`
-          + 'Tell me how far you are (e.g. "我看到 12:30 了") and call again with cursor: 750. '
-          + 'I will not guess — a wrong cursor makes every later segment wrong too.',
-        images: [],
-      };
-    }
-    // **不能把 SMTC 的冻结值当实时值**：Edge 只在起播/暂停/拖动时刷新，
-    // 实测两次刷新隔过 143 秒。所以先问"这个值有多旧"，再决定信不信。
-    const est = estimate(makeAnchor(pick, Date.now()));
-    confidence = est.confidence;
-
-    if (est.confidence === 'unknown') {
-      return {
-        ok: false,
-        confidence,
-        browser: browserState.state,
-        text: `${browserLine}\n`
-          + `your playback position is unreadable right now: SMTC last updated `
-          + `${Math.round(est.staleMs / 1000)}s ago (${est.why}), so I cannot tell whether you are at `
-          + `${mmss(pick.pos)} or further.\n`
-          + 'Tell me where you are and pass cursor (e.g. cursor: 750 or "12:30"). '
-          + 'I will not extrapolate that far — a wrong position makes every later segment wrong.',
-        images: [],
-      };
-    }
-
-    cursor = est.pos;
-    note = ` (${pick.app}, ${describeStatus(pick.status)}`
-      + `${est.confidence === 'extrapolated' ? `, measured ${Math.round(est.staleMs / 1000)}s ago` : ''})`;
+    // 唯一的位置来源就是浏览器。读不到就**问**，不猜 ——
+    // 以前这里还有一条"读系统媒体控件（SMTC）"的兜底，2026-10-30 删了：
+    // 它只在事件发生时刷新（实测隔过 143、216 秒），拿它当实时位置必须外推，
+    // 外推就会猜错，而猜错一次后面每一段都是错的。
+    return {
+      ok: false,
+      browser: browserState.state,
+      text: `${browserLine}\n`
+        + 'cannot read your playback position from the browser.\n'
+        + 'Tell me how far you are (e.g. "我看到 12:30 了") and call again with cursor: 750. '
+        + 'I will not guess — a wrong cursor makes every later segment wrong too.',
+      images: [],
+    };
   }
 
   const cur = plan.segmentAt(cursor);
@@ -270,8 +239,11 @@ export async function runWatchPass(args, deps) {
   // 两条路径分开处理：
   //   · 本次就要交付（already due）→ 别为了预取拖慢返回，丢后台串行建
   //   · 本次要阻塞等待 → **先把窗口建完再进入等待**，这样醒来时下一批已就绪
+  // 视频时长只有浏览器知道（`probeBrowser` 的 watching 状态带回来）。
+  // 拿不到就当无限长 —— 多排几段无害，反正窗口会被 lookahead 截住。
+  const videoDur = Number.isFinite(browserState?.dur) ? browserState.dur : null;
   const winSegs = windowFor(plan, cursor, lookahead)
-    .filter((s) => !Number.isFinite(activeSession?.dur) || s.from < activeSession.dur);
+    .filter((s) => videoDur === null || s.from < videoDur);
   const willWait = !d.due && args.wait === true;
   const pending = winSegs
     .filter((s) => s.from !== segStart)
