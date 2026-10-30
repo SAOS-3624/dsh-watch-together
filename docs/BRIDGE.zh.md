@@ -272,6 +272,40 @@ READY — 正在放 00:03（来源 浏览器扩展）
 
 ## 常见问题（照着症状找）
 
+### ⓪″ 选文件夹的时候，里面看着是空的 / 只有一个 `icons`
+
+**先说一个反直觉的**：浏览器那个「选择文件夹」对话框**经常只列子文件夹，不列文件**。
+所以看不到 `manifest.json` **不代表它不在**。
+
+**别靠眼睛，跑一句就能判**：
+
+```
+node bin/watch.mjs install-extension --verify
+```
+
+它会像这样把目录里每个文件都列出来：
+
+```
+  检查目录：C://Users//你//AppData//Local//dsh-watch-together//extension
+  ✓ background.js (3282 B)
+  ✓ content.js (2540 B)
+  ✓ icons/ (3 个文件)
+  ✓ manifest.json (824 B)
+  ✓ popup.html (1443 B)
+  ✓ popup.js (1932 B)
+  ✓ welcome.html (2665 B)
+
+  ✓ 这个目录是完整的，可以「加载解压缩的扩展」。
+```
+
+**全是 ✓ → 文件是齐的**，直接在那个对话框里点「选择文件夹」就行，别管列表里显示什么。
+
+如果它报 `✗ 缺关键文件：manifest.json, content.js, background.js`，那才是真丢了：
+
+1. 先**重跑一次** `install-extension`（新版会逐个文件核对，缺哪个当场报）；
+2. 还缺 → 多半是**杀毒软件把 `.js` 拦掉了**（"扩展目录 + js" 太像可疑脚本）。
+   把这个目录加进杀毒的信任区，再重跑。
+
 ### ① 点"加载"时提示"清单文件缺失"或"Manifest file is missing"
 
 **你选错文件夹了。** 你选的目录里没有 `manifest.json`。

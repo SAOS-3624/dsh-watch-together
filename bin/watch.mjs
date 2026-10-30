@@ -406,8 +406,106 @@ async function waitUntilInstalled() {
   return 1;
 }
 
+/** 扩展必须有这些（少一个浏览器就会报"清单文件缺失"） */
+const REQUIRED = ['manifest.json', 'content.js', 'background.js'];
+
+/**
+ * 逐个文件复制并**立刻核对落地的结果**。
+ *
+ * 为什么不用一句 `cpSync(src, dst, {recursive:true})`：那样一旦中途失败（杀毒软件
+ * 把 .js 拦掉、文件被占用、权限不够），要么整体抛错、要么留下一个不完整的目录，
+ * 而用户看到的症状是"浏览器说清单文件缺失" —— 根本不知道少了什么。
+ * 这里逐个 copy、逐个核对大小，缺哪个就报哪个。
+ */
+function copyExtension(src, dst) {
+  const rows = [];
+  mkdirSync(dst, { recursive: true });
+  for (const ent of readdirSync(src, { withFileTypes: true })) {
+    const from = join(src, ent.name);
+    const to = join(dst, ent.name);
+    try {
+      cpSync(from, to, { recursive: true, force: true });
+      const size = statSync(to).size;
+      if (size === 0 && ent.isFile()) throw new Error('文件是空的（多半被杀毒软件清掉了）');
+      rows.push({ name: ent.name, ok: true, size });
+    } catch (e) {
+      rows.push({ name: ent.name, ok: false, err: String(e?.message ?? e) });
+    }
+  }
+  return rows;
+}
+
+/**
+ * 检查一个目录是不是"能装"的扩展目录。
+ * 之所以能单独跑（`--verify`）：用户手上那个文件夹到底缺什么，得有一个不猜的答案。
+ */
+function inspectExtension(dir) {
+  if (!existsSync(dir)) return { ok: false, reason: '目录不存在', rows: [] };
+  const names = readdirSync(dir);
+  const rows = names.map((n) => {
+    const full = join(dir, n);
+    try {
+      const st = statSync(full);
+      // 目录的 size 在 Windows 上经常是 0 —— 不能拿它判断"空"。
+      // 目录要看里面有没有东西。
+      if (st.isDirectory()) {
+        const inner = readdirSync(full).length;
+        return { name: `${n}/`, ok: inner > 0, size: inner, dir: true };
+      }
+      return { name: n, ok: st.size > 0, size: st.size };
+    } catch {
+      return { name: n, ok: false, size: 0 };
+    }
+  });
+  const missing = REQUIRED.filter((r) => !names.includes(r));
+  const empty = rows.filter((r) => !r.ok).map((r) => r.name);
+  return { ok: missing.length === 0 && empty.length === 0, missing, empty, rows };
+}
+
+function reportInspect(dir, info) {
+  console.log(`  检查目录：${dir}`);
+  if (!existsSync(dir)) {
+    console.log('  ✗ 这个目录不存在。先跑一次 install-extension（不带 --verify）。');
+    return;
+  }
+  if (info.rows.length === 0) {
+    console.log('  ✗ 目录是空的。');
+  } else {
+    const shown = info.rows.map((r) => `${r.ok ? '✓' : '✗'} ${r.name}${r.ok
+      ? (r.dir ? ` (${r.size} 个文件)` : ` (${r.size} B)`)
+      : ' (空/读不到)'}`);
+    console.log(`  ${shown.join('\n  ')}`);
+  }
+  if (info.missing.length > 0) {
+    console.log(`  ✗ 缺关键文件：${info.missing.join(', ')}`);
+  }
+  if (info.empty.length > 0) {
+    console.log(`  ✗ 空的文件：${info.empty.join(', ')}`);
+  }
+  if (!info.ok) {
+    console.log('');
+    console.log('  这种情况 90% 是**杀毒软件把 .js 当脚本拦掉了**（扩展目录 + js，很像"可疑脚本"）。');
+    console.log('  处理：把这个目录加进杀毒的信任区，然后重跑一次 install-extension。');
+    console.log('  也可能只是没复制成功 —— 重跑一次通常就好。');
+  }
+}
+
 async function cmdInstallExtension(opts = {}) {
-  const dst = extensionTarget();
+  // --verify 可以带一个目录：检查**任意**一个文件夹（用户手上那个可能不在默认位置）
+  const dst = opts.verifyDir || extensionTarget();
+
+  // 只检查、不动文件：回答"我手上这个文件夹到底能不能装"
+  if (opts.verifyOnly) {
+    const info = inspectExtension(dst);
+    reportInspect(dst, info);
+    if (info.ok) {
+      console.log('');
+      console.log('  ✓ 这个目录是完整的，可以「加载解压缩的扩展」。');
+      console.log('    提示：浏览器的文件夹选择框里**可能只列子文件夹**（看不到 manifest.json 是正常的），');
+      console.log('    直接选中这个目录点「选择文件夹」就行，不用管列表里显示什么。');
+    }
+    return info.ok ? 0 : 1;
+  }
 
   // 只打印步骤：用户随时可以再问一次"到底点哪"
   if (opts.stepsOnly) {
@@ -426,9 +524,22 @@ async function cmdInstallExtension(opts = {}) {
   try {
     mkdirSync(dirname(dst), { recursive: true });
     rmSync(dst, { recursive: true, force: true });
-    cpSync(src, dst, { recursive: true });
   } catch (e) {
-    console.log(`复制失败：${String(e?.message ?? e)}\n（目标：${dst}）`);
+    console.log(`清理旧目录失败：${String(e?.message ?? e)}\n（目标：${dst}）`);
+    return 1;
+  }
+
+  const rows = copyExtension(src, dst);
+  const failed = rows.filter((r) => !r.ok);
+  const info = inspectExtension(dst);
+  // 两个路径都打出来：用户报障时，源和目标哪个不对一眼就能看出来
+  console.log(`  来源：${src}`);
+  console.log(`  目标：${dst}`);
+  console.log(`  已复制 ${rows.length - failed.length}/${rows.length} 项`);
+  if (failed.length > 0 || !info.ok) {
+    console.log('');
+    console.log('  ✗ 复制没完成，这个目录现在**装了也会报错**：');
+    reportInspect(dst, info);
     return 1;
   }
 
@@ -1495,6 +1606,8 @@ async function cli() {
         code = await cmdInstallExtension({
           open: !rest.includes('--no-open'),
           stepsOnly: rest.includes('--steps'),
+          verifyOnly: rest.includes('--verify'),
+          verifyDir: rest.find((x) => !x.startsWith('--')) || null,
           // --no-wait / --install-only：复制完就返回，不在这里等（脚本、AI 用）
           wait: rest.includes('--wait') ? true
             : (rest.includes('--no-wait') || rest.includes('--install-only') ? false : undefined),
