@@ -72,78 +72,6 @@ one-time install it works in **your normal browser**, with your bookmarks and yo
 - Stale SMTC-era wording removed from the strings the *model* reads (`input`/`cursor`/`title`
   descriptions, and the `browser:` line), which still talked about the OS media session.
 
-### Added — closing the remaining "no one is listening" dead ends
-
-- **Idle stop now wakes the model too.** Video-ended and video-changed already did; idle ("no movement
-  for two segments") did not — and since the loop is stopped, nothing polls the chat box afterwards,
-  so anything the user said next went nowhere. Now it wakes and says where it stopped.
-- **Waiting is polled, not slept through.** The 500 ms tick in the blocking wait now uses
-  `sleepWithChat`, so a message is noticed within ~150 ms instead of up to 500 ms later.
-- **The tool description now tells the model what an interruption is:** a result carrying `chat` means
-  "answer them first, then call again with the same arguments — the wait resumes, nothing is lost, and
-  the image is already in the cache". Without this the model had no way to know.
-- **`doctor` distinguishes "nobody is receiving" from "extension not connected".** Both look like
-  silence, and the old wording told the user to reinstall the extension — but if no server is running
-  on 9377 the extension cannot report at all, and reinstalling would have changed nothing.
-- Stale SMTC-era wording removed from the strings the *model* reads (`input`/`cursor`/`title`
-  descriptions, and the `browser:` line), which still talked about the OS media session.
-
-### Added — you can interrupt almost any wait, and it picks up where it left off
-
-Every blocking wait in `watch_together` can now be interrupted by a message in the chat box, and in
-all cases the answer is "reply to them, then call again with the same arguments" — the tool resumes:
-
-- **Building a segment** (8–10 s, longer with ASR) and **filling the lookahead buffer** (up to 4
-  segments serially, 30 s+) — the most pointless kind of waiting, now interruptible.
-- **Waiting for the video to appear** (`waitForVideo`, up to 2 min).
-- **Waiting for a condition** (`waitUntil`) and **waiting for the next line** (`nextLine`).
-- Waiting to the delivery point and `cue` already listened; they now share one watcher (below).
-
-The interrupted work is **not cancelled**: the storyboard keeps building in the background and lands
-in the cache, so the follow-up call returns it immediately instead of rebuilding it.
-
-New `src/interrupt.js`:
-- `raceChat(promise)` — polls the chat while a slow promise runs; returns `interrupted` with the
-  message, or `done`. Wakes on whichever happens first (the promise settling, or the next poll tick).
-  The first version slept a fixed 500 ms per tick, which added half a second to *every* build —
-  enough that playback passed the delivery point and the blocking wait returned instantly.
-- `sleepWithChat(ms)` — sleep that can be cut short by a message.
-- `chatWatcherShared()` — **one watcher for the whole process.** `makeChatWatcher()` baselines at
-  creation time, so a fresh one per wait silently dropped anything the user said while the model was
-  thinking, in the gap between two waits.
-
-### Added — closing the remaining "no one is listening" dead ends
-
-- **Idle stop now wakes the model too.** Video-ended and video-changed already did; idle ("no movement
-  for two segments") did not — and since the loop is stopped, nothing polls the chat box afterwards,
-  so anything the user said next went nowhere. Now it wakes and says where it stopped.
-- **Waiting is polled, not slept through.** The 500 ms tick in the blocking wait now uses
-  `sleepWithChat`, so a message is noticed within ~150 ms instead of up to 500 ms later.
-- **The tool description now tells the model what an interruption is:** a result carrying `chat` means
-  "answer them first, then call again with the same arguments — the wait resumes, nothing is lost, and
-  the image is already in the cache". Without this the model had no way to know.
-- **`doctor` distinguishes "nobody is receiving" from "extension not connected".** Both look like
-  silence, and the old wording told the user to reinstall the extension — but if no server is running
-  on 9377 the extension cannot report at all, and reinstalling would have changed nothing.
-- Stale SMTC-era wording removed from the strings the *model* reads (`input`/`cursor`/`title`
-  descriptions, and the `browser:` line), which still talked about the OS media session.
-
-### Added — closing the remaining "no one is listening" dead ends
-
-- **Idle stop now wakes the model too.** Video-ended and video-changed already did; idle ("no movement
-  for two segments") did not — and since the loop is stopped, nothing polls the chat box afterwards,
-  so anything the user said next went nowhere. Now it wakes and says where it stopped.
-- **Waiting is polled, not slept through.** The 500 ms tick in the blocking wait now uses
-  `sleepWithChat`, so a message is noticed within ~150 ms instead of up to 500 ms later.
-- **The tool description now tells the model what an interruption is:** a result carrying `chat` means
-  "answer them first, then call again with the same arguments — the wait resumes, nothing is lost, and
-  the image is already in the cache". Without this the model had no way to know.
-- **`doctor` distinguishes "nobody is receiving" from "extension not connected".** Both look like
-  silence, and the old wording told the user to reinstall the extension — but if no server is running
-  on 9377 the extension cannot report at all, and reinstalling would have changed nothing.
-- Stale SMTC-era wording removed from the strings the *model* reads (`input`/`cursor`/`title`
-  descriptions, and the `browser:` line), which still talked about the OS media session.
-
 ### Added — you can interrupt almost any wait, and it picks up where it left off
 
 Every blocking wait in `watch_together` can now be interrupted by a message in the chat box, and in
@@ -204,20 +132,6 @@ the already-updated anchor measures zero. That was the first (failed) version.
 
 ### Fixed
 
-- **`bin/watch.mjs chat` ran its own copy of the chat server** — an inline `http.createServer` plus
-  duplicated copies of both HTML templates (92 lines). The copies had drifted: it served `/`,
-  `/widget`, `/api/messages`, `/api/say` but **not `/api/position` or `/api/hello`**. So running
-  only `watch.mjs chat` (instead of `bridge`) meant extension reports hit 404 and the CLI path could
-  never read a position. It also never called `attachSpeechToChat()`, so that chat box showed user
-  messages but no script lines. It now uses `startChatServer()` + `attachSpeechToChat()` like the
-  plugin and `bridge` do, and the duplicated templates are deleted.
-- **`watch.mjs reply` wrote straight to the stream** with `appendChat('assistant', …)`, so the text
-  appeared in the chat box but was never handed to speech subscribers — a TTS adapter stayed silent
-  while the page showed the words. It now uses `appendAssistantSay()`, which writes the stream *and*
-  emits the speech event, matching what `watch_together({say})` does.
-
-### Fixed
-
 - **The plugin passed the browser's debug port to `ensureChatSession()`**, so the chat server tried
   to bind 9333 — the port the browser is already using. The bind failed, the error was swallowed,
   and the chat box silently never came up in DSH. It now uses the chat port (9377) as intended.
@@ -258,6 +172,20 @@ profile, so that window necessarily has its own profile and needs a one-time log
 - **The CLI's `pos()` never read SMTC at all**, so the CLI was browser-only even while the plugin
   had a fallback. Moot now that SMTC is gone, but it is why the tool seemed to demand a special
   browser.
+
+### Removed — dead code trimmed so there is one decision path
+
+Two functions that duplicated live logic and were never called in production are gone:
+
+- `dueDecision` (in `src/timer.js`) — a pure "should I speak now" decision that shadowed
+  `position.shouldSpeak`. Nothing in the loop ever called it; only a test exercised the abandoned
+  design. The "pause too long → stop" intent it carried is now not implemented (see note below).
+- `depthForBuffer` (in `src/batches.js`) — a count-based lookahead that duplicated `windowFor`,
+  which the loop actually uses (position-based, so the invariant holds at every position, not just
+  at segment starts). Its tests were redundant guards of that same invariant.
+
+Net: 13 tests removed (8 for `dueDecision`, 5 for `depthForBuffer`); `windowFor`'s existing tests
+already cover "lookahead ≥ N seconds at every position", so no coverage was lost.
 
 ## [0.1.0] — 2026-10-30
 
