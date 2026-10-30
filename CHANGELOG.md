@@ -5,6 +5,36 @@ This package starts its own version line at `0.1.0` — it is not a continuation
 
 ## [Unreleased]
 
+### Added — a browser extension, so you never open a special window again
+
+Position used to require a browser started with `--remote-debugging-port`, and Chromium 136+ refuses
+that flag on the default profile — so users had to keep a second, separate browser window open just
+for watching. That was the whole reason this package felt like it needed a "special browser".
+
+`extension/` is an MV3 extension that reads `<video>.currentTime` from the page you are actually
+watching and POSTs it to the plugin's own localhost server (`127.0.0.1:9377/api/position`). After a
+one-time install it works in **your normal browser**, with your bookmarks and your logins.
+
+- `src/position-bridge.js` — the receiving end: writes each report to
+  `<cache>/position.json` (temp file + atomic rename) and treats anything older than 5 s as absent.
+  It goes through a file rather than memory because the CLI is a **different process** and has to
+  be able to read it too.
+- `POST /api/position` and `GET /api/position` on the existing chat server, with CORS and a
+  Private-Network-Access opt-in (a page on https://bilibili.com talking to 127.0.0.1 needs both).
+- `readPositionOrNull()` now tries the extension report when CDP is not configured or returns
+  nothing, so every existing call site gets the new channel for free.
+- `doctor` grew an `extension` row and now treats "either channel works" as ready instead of
+  insisting on the debug port.
+- `docs/BRIDGE.zh.md` — step-by-step install guide written for someone who has never heard of a
+  manifest file, including the seven failure modes people actually hit.
+
+### Fixed
+
+- **The plugin passed the browser's debug port to `ensureChatSession()`**, so the chat server tried
+  to bind 9333 — the port the browser is already using. The bind failed, the error was swallowed,
+  and the chat box silently never came up in DSH. It now uses the chat port (9377) as intended.
+  This also mattered for the extension: that server is where reports land.
+
 ### Removed — the OS media session (SMTC) backend is gone
 
 Position used to have two sources: the browser's DevTools port, and Windows' system media controls

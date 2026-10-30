@@ -43,6 +43,7 @@
     "src",
     "bin",
     "examples",
+    "extension",
     "scripts",
     "docs",
     "cordis.patch.yml",

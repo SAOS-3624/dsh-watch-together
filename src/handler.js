@@ -33,7 +33,15 @@ export async function execute(ctx, args, { sessionId = null, cache = new Map() }
   const problems = validateWatchArgs(args);
 
   // 即将进入阻塞：把聊天框支起来（第一次会起服务 + 开标签，之后什么都不做）
-  if (args.wait === true) void ensureChatSession(args.browserPort ?? configuredPort());
+  //
+  // 这里踩过一个坑：原来写的是 `ensureChatSession(args.browserPort ?? configuredPort())`
+  // —— 把**浏览器调试端口**（9333）当成**聊天服务端口**传进去了。那个端口被浏览器占着，
+  // listen 必然失败，异常又被吞掉，于是 DSH 里聊天框一直没起来，而没人知道为什么。
+  // 两个端口没有任何关系：聊天框有自己固定的 9377。
+  //
+  // 顺带：这个服务也是"浏览器扩展上报位置"的落点（POST /api/position），
+  // 所以它必须在陪看期间一直活着。
+  if (args.wait === true) void ensureChatSession();
 
   // 单发命令（status / voices / speak / cookies / wake / stop）在这里分流
   const quick = await runWatchAction(args, {

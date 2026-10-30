@@ -45,6 +45,8 @@ import { runStoryboard, formatManifest } from 'dsh-video-storyboard/pipeline';
 import { boardOptions, charsForDetail } from 'dsh-video-storyboard/board';
 import { DEFAULT_LOOKAHEAD, makePlan, windowFor } from '../src/batches.js';
 import { chatFile } from '../src/chat.js';
+import { bridgeStatus } from '../src/position-bridge.js';
+import { readPositionOrNull } from '../src/watch-browser.js';
 import { lineNear, speechLag } from '../src/speech.js';
 import {
   configuredDshTts, defaultEdgeTtsBin, speak, speakViaEdgeTts,
@@ -102,7 +104,14 @@ function ps(cmd) {
  * @returns {Promise<{pos:number,dur:number|null,title:string|null,paused:boolean,url:string|null}|null>}
  */
 async function pos() {
-  return readBrowserPosition({ port: PORT, timeoutMs: 900 }).catch(() => null);
+  // 两条通道都试：CDP 优先，其次浏览器扩展上报的（见 position-bridge.js）。
+  // CLI 是**另一个进程**，所以扩展上报的位置只能从磁盘上那个小 json 读。
+  // 前提是有人起着 9377 服务（`node watch.mjs chat`，或者 DSH 里的插件）；
+  // 否则扩展没地方上报，这条通道就是空的。
+  const b = await readPositionOrNull(
+    (o) => readBrowserPosition({ ...o, timeoutMs: 900 }), PORT,
+  ).catch(() => null);
+  return b;
 }
 
 /**
@@ -296,7 +305,16 @@ async function cmdDoctor() {
    * （scripts/start-edge-debug.cmd 就是为它准备的，双击即可）。
    */
   const port = await hasDebugPort({ port: PORT });
-  add('debug-port', port, `${PORT}${port ? '' : ' —— 没开，双击 scripts/start-edge-debug.cmd'}`);
+  add('debug-port', port, `${PORT}${port ? '' : ' —— 没开（装了浏览器扩展就不用开）'}`);
+
+  // 浏览器扩展那条通道：只要它在报，就不需要调试端口
+  const bs = await bridgeStatus().catch(() => null);
+  add('extension', Boolean(bs?.fresh),
+    bs?.fresh
+      ? `正在上报 ${tc(bs.pos)} · ${bs.title ?? ''}`.trim()
+      : (bs?.ageMs !== null && bs?.ageMs !== undefined
+        ? `有上报但已经 ${Math.round(bs.ageMs / 1000)} 秒没更新了 —— 浏览器关了吗？`
+        : '没有上报 —— 扩展没装 / 没启用 / 9377 服务没起'));
 
   let login = null;
   if (existsSync(COOKIES)) {
@@ -309,8 +327,10 @@ async function cmdDoctor() {
     p ? `${p.title ?? '(没有标题)'} @${tc(p.pos)}`
       : '读不到：调试端口没开，或者页面里没有 <video>');
 
-  const required = ['plugin', 'cookie-file', 'ffmpeg', 'debug-port'];
+  const required = ['plugin', 'cookie-file', 'ffmpeg'];
   const hardOk = checks.filter((c) => required.includes(c.name)).every((c) => c.ok);
+  // 位置只要有一条通就行：调试端口，或者浏览器扩展在报
+  const canLocate = port || Boolean(bs?.fresh);
 
   console.log(checks.map((c) => `${c.ok ? 'OK  ' : 'FAIL'} ${c.name.padEnd(12)} ${c.detail}`).join('\n'));
 
@@ -318,7 +338,13 @@ async function cmdDoctor() {
     console.log(`\nNOT READY — 先修 FAIL 项。${existsSync(COOKIES) ? '' : 'cookie 没有就跑: node watch.mjs login'}`);
     return 1;
   }
-  console.log(`\nREADY — ${p ? `正在放 ${tc(p.pos)}` : '端口通了，但页面上还没有 <video>'}`
+  if (!canLocate) {
+    console.log('\nNOT READY — 两条位置通道都不通：\n'
+      + '  · 装浏览器扩展（docs/BRIDGE.zh.md，一次就好），或者\n'
+      + `  · 双击 scripts/start-edge-debug.cmd 起一个带调试端口的窗口（端口 ${PORT}）`);
+    return 1;
+  }
+  console.log(`\nREADY — ${p ? `正在放 ${tc(p.pos)}（来源 ${p.source === 'bridge' ? '浏览器扩展' : '调试端口'}）` : '通道通了，但页面上还没有 <video>'}`
     + '，下一步: node watch.mjs wait 150');
   return 0;
 }
@@ -388,9 +414,10 @@ async function cmdWait(maxSec = 120) {
 
 async function cmdStatus() {
   const s = await pos();
-  if (!s) { console.log('读不到位置：浏览器没开调试端口，系统媒体控件也没有活跃会话。\n'
-    + '  两条路任选：① 用它自己的浏览器播（任意播放器都行）；② 双击 scripts/start-edge-debug.cmd。\n'
-    + '  都试过还不行就跑 doctor，看是哪一环断了。'); return 1; }
+  if (!s) { console.log('读不到位置。两条通道都没有：\n'
+    + '  ① 浏览器扩展没在报（没装 / 没启用 / 陪看服务没在跑 → 见 docs/BRIDGE.zh.md）\n'
+    + '  ② 调试端口也没开（双击 scripts/start-edge-debug.cmd 可以临时顶上）\n'
+    + '  跑 doctor 能看到具体是哪一环断了。'); return 1; }
   const { plan, cur, remain } = segmentInfo(s.pos, s.dur);
   const nxt = plan.segmentAt(cur.to);
   const src = await inputFor(s);

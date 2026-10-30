@@ -1,0 +1,38 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<title>陪看位置桥</title>
+<style>
+  :root { color-scheme: light dark; }
+  body {
+    margin: 0; padding: 14px 16px; width: 300px;
+    font: 13px/1.6 "Microsoft YaHei UI", "PingFang SC", system-ui, sans-serif;
+  }
+  h1 { margin: 0 0 10px; font-size: 14px; font-weight: 600; }
+  .row { display: flex; gap: 8px; margin-bottom: 6px; }
+  .k { color: #888; min-width: 54px; }
+  .v { flex: 1; word-break: break-all; }
+  .big { font-size: 15px; font-weight: 600; }
+  .ok { color: #17803d; }
+  .bad { color: #c0392b; }
+  .hint { margin-top: 10px; padding-top: 8px; border-top: 1px solid #0002; color: #777; font-size: 12px; }
+  code { background: #00000010; padding: 0 3px; border-radius: 3px; }
+</style>
+</head>
+<body>
+<h1>陪看位置桥</h1>
+
+<div class="row"><span class="k">状态</span><span class="v big" id="state">检查中…</span></div>
+<div class="row"><span class="k">进度</span><span class="v" id="pos">—</span></div>
+<div class="row"><span class="k">页面</span><span class="v" id="title">—</span></div>
+<div class="row"><span class="k">本机</span><span class="v" id="server">—</span></div>
+
+<div class="hint">
+  这里的"已连上"表示陪看服务收到了你正在看的进度。<br>
+  没连上的话：先确认 DSH 里正在陪看（或命令行里跑着 <code>watch.mjs chat</code>）。
+</div>
+
+<script src="popup.js"></script>
+</body>
+</html>

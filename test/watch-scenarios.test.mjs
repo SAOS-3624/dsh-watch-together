@@ -19,6 +19,10 @@ import { saveLines } from '../src/watch.js';
 import { onSpeech } from '../src/voice.js';
 import { createSim } from './helpers/sim.mjs';
 
+// 这些用例要的是"读不到就是读不到"。关掉扩展通道，免得读到这台机器上真实的播放位置
+// （开发机上装了扩展、正好在放片时，不关会偶发失败）。
+process.env.DSH_WATCH_BRIDGE = '0';
+
 const SEGMENTS = [
   { from: 0, to: 120 }, { from: 120, to: 240 }, { from: 240, to: 360 },
 ];

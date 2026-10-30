@@ -18,6 +18,10 @@ import { join } from 'node:path';
 
 import { runWatchPass } from '../src/watch-run.js';
 
+// 这些用例要的是"读不到就是读不到"。关掉扩展通道，免得读到这台机器上真实的播放位置
+// （开发机上装了扩展、正好在放片时，不关会偶发失败）。
+process.env.DSH_WATCH_BRIDGE = '0';
+
 const makeDeps = ({ reading = null, closed = false } = {}) => ({
   cache: new Map(),
   saveImage: async () => Buffer.from('x'),

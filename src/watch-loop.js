@@ -286,6 +286,7 @@ export function startWatchLoop({
             updated: tNow, title: b.title,
           }, tNow);
           loop.status = b.paused ? 'paused' : 'playing';
+          loop.positionSource = b.source ?? 'cdp';
           if (Number.isFinite(b.dur)) loop.dur = b.dur;
           if (b.url) loop.sourceUrl = b.url;
           loop.noSourceSince = 0;

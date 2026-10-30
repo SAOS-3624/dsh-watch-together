@@ -1,11 +1,13 @@
 /**
  * chat-server.js — 聊天框的 localhost 服务：两条页面路由 + 两个 API + 生命周期。
  *
- * 路由一共四条，没有第五条：
+ * 路由：
  *   GET  /              完整版页面（消息列表 + 输入框）
  *   GET  /widget        胶囊版（只有输入框）
  *   GET  /api/messages  自 `since` 起的增量，给页面每 600ms 轮询
  *   POST /api/say       用户说的话，写进流并回调 onUser
+ *   POST /api/position  浏览器扩展上报播放位置（见 position-bridge.js）
+ *   GET  /api/position  查最近一次上报（popup / doctor 用）
  *
  * 页面内容在 `chat-view.js`，流在 `chat-store.js`。这里只做"收请求、派给谁"。
  * CLI（`watch.mjs`）和 DSH 插件（`watch_together`）都读同一个文件、同一套 watcher，
@@ -16,6 +18,7 @@ import { createServer } from 'node:http';
 
 import { CHAT_PAGE, WIDGET_PAGE, renderPage } from './chat-view.js';
 import { appendChat, readChat } from './chat-store.js';
+import { readBridge, writeBridge } from './position-bridge.js';
 
 export const DEFAULT_CHAT_PORT = 9377;
 
@@ -30,9 +33,48 @@ export async function startChatServer({
   const page = renderPage(CHAT_PAGE, port);
   const widget = renderPage(WIDGET_PAGE, port);
 
-  const server = createServer((req, res) => {
+  // 扩展从**网页的源**发请求，属于跨域；而且是从公网页面访问本地地址，
+  // Chrome 的 Private Network Access 还要求预检里看到 allow-private-network。
+  // 我们只暴露"上报位置"和"读位置"，没有敏感信息，所以直接放开。
+  const cors = {
+    'access-control-allow-origin': '*',
+    'access-control-allow-methods': 'GET, POST, OPTIONS',
+    'access-control-allow-headers': 'content-type',
+    'access-control-allow-private-network': 'true',
+    'cache-control': 'no-store',
+  };
+
+  const server = createServer(async (req, res) => {
     let u;
     try { u = new URL(req.url, 'http://127.0.0.1'); } catch { res.writeHead(400); res.end(); return; }
+
+    // 扩展直接 fetch（不经过 service worker）时会有这一趟预检
+    if (req.method === 'OPTIONS') {
+      res.writeHead(204, cors);
+      res.end();
+      return;
+    }
+
+    // ---- 浏览器扩展上报位置
+    if (u.pathname === '/api/position') {
+      if (req.method === 'POST') {
+        let body = '';
+        req.on('data', (c) => { body += c; if (body.length > 16_000) req.destroy(); });
+        req.on('end', async () => {
+          let sample = null;
+          try { sample = await writeBridge(JSON.parse(body), { env }); } catch { /* 坏请求就当没收到 */ }
+          res.writeHead(sample ? 200 : 400, { ...cors, 'content-type': 'application/json; charset=utf-8' });
+          res.end(JSON.stringify(sample ? { ok: true, pos: sample.pos } : { ok: false }));
+        });
+        return;
+      }
+      // 这个处理器是 async 的，异常必须自己收住 —— 否则会在 server 里变成
+      // unhandledRejection，把整个进程带下去（Node 15 起默认行为）。
+      const b = await readBridge({ env }).catch(() => null);
+      res.writeHead(200, { ...cors, 'content-type': 'application/json; charset=utf-8' });
+      res.end(JSON.stringify(b ?? { ok: false, reason: 'no-fresh-position' }));
+      return;
+    }
 
     if (u.pathname === '/' || u.pathname === '/index.html') {
       res.writeHead(200, { 'content-type': 'text/html; charset=utf-8' });

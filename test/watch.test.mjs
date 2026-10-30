@@ -53,7 +53,8 @@ test('watchToolSpec: 告诉模型"别复述剧情"和"读不到就问，不要�
   const spec = watchToolSpec();
   assert.equal(spec.name, 'watch_together');
   assert.match(spec.description, /do not retell the plot/i);
-  assert.match(spec.description, /SMTC|media session/i);
+  assert.match(spec.description, /extension/i, '要告诉模型位置也能从扩展来');
+  assert.match(spec.description, /do not guess/i, '读不到就问，别猜');
   assert.equal(spec.parameters.input.required, undefined, 'input 不再必填：可以自动探测');
   assert.ok(spec.output?.schema, '输出 schema 必须存在，否则注册就崩');
 });
