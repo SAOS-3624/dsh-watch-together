@@ -187,6 +187,14 @@ Two functions that duplicated live logic and were never called in production are
 Net: 13 tests removed (8 for `dueDecision`, 5 for `depthForBuffer`); `windowFor`'s existing tests
 already cover "lookahead ≥ N seconds at every position", so no coverage was lost.
 
+### Changed — idle auto-stop now also covers a paused-and-abandoned video
+
+The loop used to only stop itself on "no movement" when the last reading was a *playing* sample
+(`why === 'recent-refresh'`). A paused video reports a frozen position forever — `estimate` returns
+`why: 'paused'`, never stale — so pausing and walking away left the loop polling indefinitely. The
+idle check now also fires on a frozen *paused* position, after the same `2 × segment` grace period,
+and wakes you with "停了一会儿" so you can resume by calling `watch_together` again.
+
 ## [0.1.0] — 2026-10-30
 
 First release as a standalone plugin. The feature existed inside `dsh-video-storyboard` 0.4.x as

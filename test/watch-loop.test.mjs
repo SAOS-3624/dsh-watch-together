@@ -87,3 +87,33 @@ test('没有会话 id 又没有订阅者：照旧拒绝（没人可叫，也没�
   assert.equal(r.ok, false);
   assert.equal(r.reason, 'no-session-id');
 });
+
+test('暂停且不动 → 空闲超时后自动停并叫醒（冻住的暂停态也算空闲）', async () => {
+  let nowMs = 1_000_000;
+  const now = () => nowMs;
+  let tickFn = null;
+  const ticker = (opts) => { tickFn = opts.tick; return { dispose() {} }; };
+  // 浏览器一直报"暂停在 100 秒"，位置冻住 —— 人已经走了
+  const readBrowser = async () => ({ pos: 100, dur: 600, paused: true, title: '暂停的片' });
+  let woke = null;
+  const wake = async (ctx, o) => { woke = o; return { ok: true }; };
+
+  const r = startWatchLoop({
+    ctx: ctxStub, sessionId: 's-pause', input: 'p.mp4',
+    segments: segs,
+    browserPort: 1,            // 让 readPositionOrNull 走注入的 readBrowser，不碰真 CDP
+    deps: { now, ticker, readBrowser, wake, probeEveryMs: 0, loadLatency: async () => null },
+  });
+  assert.equal(r.ok, true);
+
+  await tickFn();              // 第一拍：建 anchor（paused @100），记 lastMoveAt
+  assert.equal(loopStatus().active, true, '第一拍不该停');
+
+  nowMs += 250_000;           // 推进 250s，远超 idleMs（2×120s=240s），位置仍冻在 100
+  await tickFn();
+
+  assert.equal(loopStatus().active, false, '暂停冻住超过 2×分段应自动停');
+  assert.ok(woke, '停表时应叫醒模型');
+  assert.match(woke.text, /没动|停了一会儿/);
+  stopWatchLoop('cleanup');
+});

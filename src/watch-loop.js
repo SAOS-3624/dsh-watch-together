@@ -351,15 +351,16 @@ export function startWatchLoop({
       }
 
       // ---- 空闲自关：位置两倍最长分段都没动过，就别再空转。
-      // 正常播放（哪怕在缓冲）两段之内总会推进一次；两段都没动静，
-      // 多半是页签被挂起、播放器崩了、或者人已经走了。继续跑只会白烧 CPU。
+      // 两种"位置冻住"都算：① 在播但不推进（页签挂起 / 播放器崩 / 人走了）；
+      // ② **视频被暂停且没人动** —— 暂停时位置本来就不会走，模型不知道人还看不看，
+      //    得靠这个判定它走开了。读不到（stale/unknown）是另一条路（先问一次再停表），别在这儿抢。
       {
         const estIdle = estimate(loop.anchor, tNow);
         const idleMs = Math.max(60_000, 2 * Number(plan.segment) * 1000);
-        // 只在"读得到、而且是刚刷新过的读数"时判空闲：
-        // 读不到（stale/unknown）是另一条路（先问一次，再停表），别在这里抢它的活儿。
+        // 只在"位置已知且新鲜"时判空闲：刚刷到的在播读数（recent-refresh）或暂停读数（paused）。
+        // 两者位置都是真值、只是没动；读不到（stale/unknown）交给下面的 position-unknown 处理。
         if (Number.isFinite(estIdle.pos) && estIdle.confidence === 'fresh'
-          && estIdle.why === 'recent-refresh') {
+          && (estIdle.why === 'recent-refresh' || estIdle.why === 'paused')) {
           if (Math.abs(estIdle.pos - (loop.lastIdlePos ?? -1)) >= 0.5) {
             loop.lastIdlePos = estIdle.pos;
             loop.lastMoveAt = tNow;
