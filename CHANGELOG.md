@@ -56,6 +56,54 @@ one-time install it works in **your normal browser**, with your bookmarks and yo
   looks at the popup sees "not connected" — because the server only runs during `watch_together`
   or `watch.mjs chat`, and concludes the install failed.
 
+### Added — you can interrupt almost any wait, and it picks up where it left off
+
+Every blocking wait in `watch_together` can now be interrupted by a message in the chat box, and in
+all cases the answer is "reply to them, then call again with the same arguments" — the tool resumes:
+
+- **Building a segment** (8–10 s, longer with ASR) and **filling the lookahead buffer** (up to 4
+  segments serially, 30 s+) — the most pointless kind of waiting, now interruptible.
+- **Waiting for the video to appear** (`waitForVideo`, up to 2 min).
+- **Waiting for a condition** (`waitUntil`) and **waiting for the next line** (`nextLine`).
+- Waiting to the delivery point and `cue` already listened; they now share one watcher (below).
+
+The interrupted work is **not cancelled**: the storyboard keeps building in the background and lands
+in the cache, so the follow-up call returns it immediately instead of rebuilding it.
+
+New `src/interrupt.js`:
+- `raceChat(promise)` — polls the chat while a slow promise runs; returns `interrupted` with the
+  message, or `done`. Wakes on whichever happens first (the promise settling, or the next poll tick).
+  The first version slept a fixed 500 ms per tick, which added half a second to *every* build —
+  enough that playback passed the delivery point and the blocking wait returned instantly.
+- `sleepWithChat(ms)` — sleep that can be cut short by a message.
+- `chatWatcherShared()` — **one watcher for the whole process.** `makeChatWatcher()` baselines at
+  creation time, so a fresh one per wait silently dropped anything the user said while the model was
+  thinking, in the gap between two waits.
+
+### Added — you can interrupt almost any wait, and it picks up where it left off
+
+Every blocking wait in `watch_together` can now be interrupted by a message in the chat box, and in
+all cases the answer is "reply to them, then call again with the same arguments" — the tool resumes:
+
+- **Building a segment** (8–10 s, longer with ASR) and **filling the lookahead buffer** (up to 4
+  segments serially, 30 s+) — the most pointless kind of waiting, now interruptible.
+- **Waiting for the video to appear** (`waitForVideo`, up to 2 min).
+- **Waiting for a condition** (`waitUntil`) and **waiting for the next line** (`nextLine`).
+- Waiting to the delivery point and `cue` already listened; they now share one watcher (below).
+
+The interrupted work is **not cancelled**: the storyboard keeps building in the background and lands
+in the cache, so the follow-up call returns it immediately instead of rebuilding it.
+
+New `src/interrupt.js`:
+- `raceChat(promise)` — polls the chat while a slow promise runs; returns `interrupted` with the
+  message, or `done`. Wakes on whichever happens first (the promise settling, or the next poll tick).
+  The first version slept a fixed 500 ms per tick, which added half a second to *every* build —
+  enough that playback passed the delivery point and the blocking wait returned instantly.
+- `sleepWithChat(ms)` — sleep that can be cut short by a message.
+- `chatWatcherShared()` — **one watcher for the whole process.** `makeChatWatcher()` baselines at
+  creation time, so a fresh one per wait silently dropped anything the user said while the model was
+  thinking, in the gap between two waits.
+
 ### Added — it now reacts to what you do mid-video
 
 Auditing the whole flow against the user's checklist surfaced three gaps where the plugin behaved

@@ -14,6 +14,7 @@
 import { consumeLine, dueLine, hasLine, loadWatch, saveWatch, sessionKey } from './watch.js';
 import { mmss } from './time.js';
 import { readPositionOrNull } from './watch-browser.js';
+import { chatWatcherShared, sleepWithChat } from './interrupt.js';
 
 export async function runWatchMode({ args, input, plan, browserPort, readBrowser }) {
   // ---- 0.4 两种"阻塞到条件成立"的等待（模型侧的节奏由它自己掌握）
@@ -61,7 +62,9 @@ export async function runWatchMode({ args, input, plan, browserPort, readBrowser
           images: [],
         };
       }
-      await new Promise((r) => setTimeout(r, 2000));
+      // 等条件成立这段时间（最长 capSec）也听得见插话 —— 干等没意义
+      const said = await sleepWithChat(2000, { watcher: chatWatcherShared() });
+      if (said) return chatResult(said, last);
     }
     return {
       ok: true, reason: 'wait-timeout', at: last,
@@ -83,7 +86,9 @@ export async function runWatchMode({ args, input, plan, browserPort, readBrowser
     let waited = 0;
     // 阻塞到点；中途暂停/视频结束就提前返回，让模型能说话
     while (Date.now() < due) {
-      await new Promise((r) => setTimeout(r, 1000));
+      // 等到这一句到点期间也听得见插话
+      const said = await sleepWithChat(1000, { watcher: chatWatcherShared(), everyMs: 300 });
+      if (said) return chatResult(said, null);
       waited += 1;
       const b = await readPositionOrNull(readBrowser, browserPort);
       if (b?.paused) break;

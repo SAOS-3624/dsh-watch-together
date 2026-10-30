@@ -24,7 +24,7 @@ import {
 import { speechEvents } from './voice.js';
 import { describeLatency, recordLatency } from './latency.js';
 import { DEFAULT_LOOKAHEAD, makePlan, windowFor } from './batches.js';
-import { makeChatWatcher } from './chat.js';
+import { raceChat, sleepWithChat, chatWatcherShared } from './interrupt.js';
 import { probeBrowser, readBrowserPosition } from 'dsh-video-storyboard/browser-time';
 import { boardOptions, charsForDetail } from 'dsh-video-storyboard/board';
 import { pathToFileURL } from 'node:url';
@@ -217,9 +217,34 @@ export async function runWatchPass(args, deps) {
   if (!entry?.png) {
     const t0 = Date.now();
     try {
-      entry = await buildSegment({
-        input, segStart, size, args, runStoryboard, formatManifest, cache,
-      });
+      // **一边建图一边听插话**：建一段要 8–10 秒（带 ASR 更久），这段时间干等没意义。
+      // 注意不是"掐掉它" —— 图让它继续建完（结果会落进缓存），我们先回去回应用户；
+      // 用户回完再调一次工具，缓存里已经有了，立刻就拿到。
+      const built = await raceChat(
+        buildSegment({ input, segStart, size, args, runStoryboard, formatManifest, cache }),
+        { watcher: chatWatcherShared() },
+      );
+      if (built.kind === 'interrupted') {
+        // 注意：`head` / `measuredAt` 是**这一段建完之后**才算的（下面第 2 步之后），
+        // 这里提前返回会踩到 TDZ（const 的暂时性死区），所以就地拼一行。
+        return {
+          ok: true,
+          speaking: false,
+          confidence,
+          input,
+          size,
+          cursor,
+          measuredAt: new Date().toTimeString().slice(0, 8),
+          segment: segStart,
+          chat: { text: built.text, at: built.at },
+          building: true,
+          text: `[一起看] 用户插话 @${new Date().toTimeString().slice(0, 8)}：`
+            + `「${built.text}」\n`
+            + '先回这一句。这一段的图还在后台建（不用等它），回完**再调一次我就把图和清单给你** —— 已经在缓存里了，不会再重跑。',
+          images: [],
+        };
+      }
+      entry = built.value;
     } catch (e) {
       // 取流失败（比如地址是"首页"、站点 yt-dlp 不支持）不该把栈抛给宿主：
       // 说清楚是哪一步、什么地址、下一步怎么办。
@@ -259,10 +284,33 @@ export async function runWatchPass(args, deps) {
   // 一次调用最多补 4 段：再多就是"用户其实不在看"，别把一次工具调用拖成几分钟
   const toBuild = pending.slice(0, 4);
   if (willWait) {
-    for (const s of toBuild) {
-      try {
-        await buildOne(s);
-      } catch { /* 备不上就算了，到点再建 */ }
+    // 补余量是**串行**的（一次只建一段，别把 CPU 打满），最多 4 段 —— 三十秒往上。
+    // 这段时间也要听得见插话：图让它接着建完，我们先回去回应用户。
+    const fill = (async () => {
+      for (const s of toBuild) {
+        try {
+          await buildOne(s);
+        } catch { /* 备不上就算了，到点再建 */ }
+      }
+    })();
+    const race = await raceChat(fill, { watcher: chatWatcherShared() });
+    if (race.kind === 'interrupted') {
+      return {
+        ok: true,
+        speaking: false,
+        confidence,
+        input,
+        size,
+        cursor,
+        measuredAt: new Date().toTimeString().slice(0, 8),
+        segment: segStart,
+        chat: { text: race.text, at: race.at },
+        building: true,
+        text: `[一起看] 用户插话 @${new Date().toTimeString().slice(0, 8)}：`
+          + `「${race.text}」\n`
+          + '先回这一句。余量还在后台补（不用等它），回完**再调一次我就接着陪** —— 已经建好的都在缓存里，不会重跑。',
+        images: [],
+      };
     }
   } else if (args.prefetch !== false && toBuild.length > 0) {
     setTimeout(() => {
@@ -326,7 +374,9 @@ export async function runWatchPass(args, deps) {
     let lastMoveAt = Date.now();
     // 外部聊天框：宿主输入框在阻塞期间不会把话送到这里（实测事后补写），
     // 但 chat.jsonl 是我们自己 append 的，写盘即时 —— 这是唯一"边等边能听见"的通道。
-    const chatPoll = makeChatWatcher();
+    // 用**共享**的那个：每次等待都新建的话，模型思考期间用户说的话
+    // 会落在两次等待的缝隙里，谁都不报，永远丢掉。
+    const chatPoll = chatWatcherShared();
     while (Date.now() < deadline) {
       const chatHit = chatPoll();
       if (chatHit) { d.chatNow = chatHit; break; }

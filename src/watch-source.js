@@ -19,6 +19,7 @@
  */
 
 import { fileUrlToPath, hasDebugPort, looksLikeVideoUrl } from 'dsh-video-storyboard/browser-time';
+import { chatWatcherShared, sleepWithChat } from './interrupt.js';
 import { readPositionOrNull } from './watch-browser.js';
 
 /**
@@ -103,7 +104,10 @@ export async function resolveWatchSource({ input: given, args, readBrowser, brow
         ({ input, resolved } = hit);
         break;
       }
-      await new Promise((r) => setTimeout(r, 300));
+      // 等用户开视频这段时间最长 2 分钟，**干等最没意义** —— 顺手看着聊天框，
+      // 用户随时可以插一句（比如"我找不到那个片"），立刻就能回他。
+      const said = await sleepWithChat(300, { watcher: chatWatcherShared(), everyMs: 150 });
+      if (said) return { ok: false, reason: 'chat', chat: said, input: null, resolved: null };
     }
     if (!input) {
       return noVideoResult({
