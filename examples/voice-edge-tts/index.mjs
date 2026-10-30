@@ -25,6 +25,10 @@
  *
  * 音色 / 引擎路径从 `~/.dsh/tts.json` 读（`voice` / `edgeTts` / `rate`）——
  * **那是适配器自己的配置，核心完全不看**。
+ *
+ * 本文件**不内置任何具体音色**：`voice` 没配时退回中性默认 `zh-CN-YunxiNeural`，
+ * 用户应在自己的 `~/.dsh/tts.json` 里写明想用的音色（例如 `zh-CN-XiaoxuanNeural`）。
+ * 这样打包发布时不会把某个人的音色带进包里 —— 每个人自己配自己的。
  */
 
 import { execFile } from 'node:child_process';
@@ -106,7 +110,11 @@ const mmss = (t) => {
  */
 export function attach(api) {
   const cfg = config();
-  const voice = cfg.voice || 'zh-CN-XiaoxuanNeural';
+  // 不内置任何具体音色：从 ~/.dsh/tts.json 读 `voice`；没配就用中性默认并提示用户自己换。
+  // 发布时不带任何人的音色，用户按喜好在 tts.json 里配（如 "zh-CN-XiaoxuanNeural"）。
+  const voice = cfg.voice || 'zh-CN-YunxiNeural';
+  if (!cfg.voice) console.error('[voice] 未配置 voice（~/.dsh/tts.json），用中性默认 zh-CN-YunxiNeural；'
+    + '想用晓萱等音色请在该文件加 "voice": "zh-CN-XiaoxuanNeural"');
   const rate = Number(cfg.rate) || 0;
   const bin = edgeBin(cfg);
   let chain = Promise.resolve();            // 串行：两句绝不重叠着念

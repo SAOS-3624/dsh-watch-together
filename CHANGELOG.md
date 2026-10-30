@@ -195,6 +195,15 @@ The loop used to only stop itself on "no movement" when the last reading was a *
 idle check now also fires on a frozen *paused* position, after the same `2 × segment` grace period,
 and wakes you with "停了一会儿" so you can resume by calling `watch_together` again.
 
+### Fixed — voice adapter no longer hard-codes a voice
+
+`examples/voice-edge-tts/index.mjs` used to fall back to `zh-CN-XiaoxuanNeural` when
+`~/.dsh/tts.json` had no `voice`. That baked one person's voice into the example, so shipping it
+would have dragged that choice into everyone's install. It now falls back to the neutral
+`zh-CN-YunxiNeural` and prints a one-line hint telling you to set `voice` in `~/.dsh/tts.json`
+(e.g. `"voice": "zh-CN-XiaoxuanNeural"`). Nothing about the voice ships in the package — you mount
+the adapter via `~/.dsh/voice.json` (or `DSH_VOICE_ADAPTER`) and pick the voice yourself.
+
 ## [0.1.0] — 2026-10-30
 
 First release as a standalone plugin. The feature existed inside `dsh-video-storyboard` 0.4.x as
