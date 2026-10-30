@@ -27,6 +27,8 @@ import { DEFAULT_LOOKAHEAD, makePlan, windowFor } from './batches.js';
 import { makeChatWatcher } from './chat.js';
 import { probeBrowser, readBrowserPosition } from 'dsh-video-storyboard/browser-time';
 import { boardOptions, charsForDetail } from 'dsh-video-storyboard/board';
+import { pathToFileURL } from 'node:url';
+
 import { mmss } from './time.js';
 import { saveLines } from './watch.js';
 import { describeBrowser, ensureWatchBrowser, readPositionOrNull } from './watch-browser.js';
@@ -157,7 +159,10 @@ export async function runWatchPass(args, deps) {
   // 都是"没有位置"，它只能拿位置去倒推浏览器 —— 猜错就对着空气写台词。
   let launchNote = '';
   if (!Number.isFinite(cursor) && browserPort && autoLaunch && args.attachOnly !== true) {
-    const br = await ensureWatchBrowser(browserPort);
+    // 把"要看什么"一起交给浏览器：链接原样，本地路径转成 file:///
+    const wanted = !args.input ? ''
+      : (/^https?:/i.test(args.input) ? args.input : pathToFileURL(args.input).href);
+    const br = await ensureWatchBrowser(browserPort, wanted);
     if (br.launched) {
       launchNote = br.ok
         ? ` · I JUST STARTED a watch browser on :${browserPort} (its own profile, ~/.dsh/edge-watch) — `

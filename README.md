@@ -126,9 +126,12 @@ watch_together({ ramp: [] })              // 全程等长，不要阶梯
 | 手工步骤 | 装扩展（一次性） | 双击 `scripts/start-edge-debug.cmd` |
 | 适合 | 所有人 | 不想装扩展 / 扩展读不到的站点 |
 
-> **装扩展**：双击 `scripts\install-extension.cmd`，它会复制好扩展、把路径放进剪贴板、打开扩展管理页，
-> 你只需要点三下。完整步骤和常见错误：[docs/BRIDGE.zh.md](docs/BRIDGE.zh.md)。
-> 验证通没通：双击 `scripts\bridge.cmd`（或 `node bin/watch.mjs bridge`），它收到一条上报就会说"通了"。
+> **装扩展**：双击 `scripts\install-extension.cmd` —— 它复制好扩展、把路径放进剪贴板、打开扩展管理页，
+> 然后**一直在那儿等**：你点完三下它自己会说「✓ 扩展装上了」，播个视频它再说「✅ 全部完成」。
+> 一个文件、一次双击，装和验证都在里面。步骤与常见错误：[docs/BRIDGE.zh.md](docs/BRIDGE.zh.md)。
+>
+> **连三下都不想点？** `~/.dsh/video.json` 里加 `{ "launchBrowser": true }`，
+> 说一句「陪我看这个 <链接>」，插件自己开窗口把片子打开 —— 不用装任何东西，代价是在那个窗口里看。
 
 装了之后：你正常打开 Edge 播 B 站，插件就能看到你在第几秒。**不用开专用窗口，不用配端口。**
 

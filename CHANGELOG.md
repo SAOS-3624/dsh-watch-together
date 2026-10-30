@@ -38,11 +38,19 @@ one-time install it works in **your normal browser**, with your bookmarks and yo
   outside — both are silence. `doctor` and `bridge` can now tell them apart.
 - `extension/welcome.html` opens on install/update: the three verification steps, plus what each
   popup state means. Install is the one moment the user has no idea what to expect.
+- `install-extension` no longer just prints and quits: it keeps the window open and **watches until
+  the extension proves it is loaded** (`✓ 扩展装上了`), then until a real position arrives
+  (`✅ 全部完成`). One double-click now covers install *and* verification, and the window cannot
+  vanish mid-instruction because it is still polling.
 - `node watch.mjs install-extension --steps` re-prints just the three clicks without touching any
   file — for when the window scrolled past or was closed.
 - `install-extension` now waits for Enter when it has a TTY, so the instructions cannot vanish
   before being read (running it from an IDE "Run" button has no TTY, which is the common way this
   happened).
+- `ensureWatchBrowser(port, url)` now passes the film through: with `launchBrowser: true`, saying
+  "陪我看这个 <link>" opens the dedicated window **at that link** instead of the Bilibili homepage.
+  That is the zero-install path — no extension, no port config, at the cost of watching in that
+  window. Both paths coexist; neither requires the other.
 - `node watch.mjs bridge` (and `scripts/bridge.cmd`) starts just the position receiver and says
   "✓ 收到上报" on the first report. Without it, a user who installs the extension and immediately
   looks at the popup sees "not connected" — because the server only runs during `watch_together`

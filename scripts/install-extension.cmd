@@ -19,11 +19,11 @@ if errorlevel 1 (
   exit /b 1
 )
 
-REM --no-wait：让 node 不自己等回车，统一由下面的 pause 兜住（只按一次）
-node "%ROOT%\bin\watch.mjs" install-extension --no-wait
-echo.
+REM 不加 --no-wait：装完它会一直等，确认装好了才打印“全部完成”
+node "%ROOT%\bin\watch.mjs" install-extension
 echo  --------------------------------------------
-echo   装好之后，再双击 scripts\bridge.cmd 可以验证通不通。
+echo   不用再开别的窗口了：这个窗口自己会等到装好，
+echo   并且告诉你「全部完成」。
 echo  --------------------------------------------
 echo.
 pause

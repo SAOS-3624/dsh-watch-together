@@ -18,11 +18,16 @@ import { mmss } from './time.js';
  * 把插件自己拉起来的浏览器准备好。
  * 只在"读不到位置 + 配了端口 + 允许自动开 + 不是 attachOnly"时才调用。
  *
+ * @param {number} port 调试端口
+ * @param {string} [url] 要打开的地址（`file:///…` 或 http 链接）—— 直接落到用户要看的那一页
+ *
  * @returns {Promise<{ok:boolean, launched:boolean, via?:string|null, reason?:string|null}>}
  */
-export async function ensureWatchBrowser(port) {
+export async function ensureWatchBrowser(port, url = '') {
   if (!port) return { ok: false, launched: false, reason: 'no-port' };
-  const r = launchBrowser({ port });
+  // 带上要看的那个片子：用户说了"陪我看这个链接"，就别让他再在这个窗口里手动打开一次。
+  // 这是"零安装"那条路的体验关键 —— 插件开的窗口直接就是要看的片。
+  const r = launchBrowser({ port, url });
   if (!r.ok) return { ok: false, launched: true, via: null, reason: r.reason ?? 'launch-failed' };
   const up = await waitForPort(port);
   return {

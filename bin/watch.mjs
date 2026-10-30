@@ -342,6 +342,70 @@ function printSteps(dst, { clipOk = false } = {}) {
   console.log('> 以前从仓库目录装过旧版的，先把那张旧卡片「移除」，否则会有两个。');
 }
 
+/**
+ * 装完之后**一直等着**，直到能确认扩展真的装上了。
+ *
+ * 为什么要等：装扩展这件事有两个"没有反馈"的死角 ——
+ *   ① 用户没点完就以为做完了；
+ *   ② 点完了但扩展报错没加载，看起来和没装一样。
+ * 两个死角都表现为"窗口没反应"。所以这里不猜、不催，就一直轮询到有证据为止：
+ *   有心跳 = 扩展加载了；有位置 = 连视频都通了。
+ * 窗口也因此**不会一闪就没** —— 它还在忙。
+ */
+async function waitUntilInstalled() {
+  const { startChatServer, chatAlive } = await import('../src/chat.js');
+  let srv = null;
+  try {
+    srv = await startChatServer({ port: DEFAULT_CHAT_PORT });
+  } catch {
+    if (!(await chatAlive(DEFAULT_CHAT_PORT))) {
+      console.log('（提示：本机 9377 端口被别的程序占着，我没法确认。装完点一下扩展图标也能看。）');
+    }
+  }
+
+  console.log('现在去浏览器里点那三下。这个窗口会一直等着，装好了它自己会说。');
+  console.log('');
+
+  const started = Date.now();
+  const deadline = started + 10 * 60_000;
+  let announcedHello = false;
+  let lastNudge = started;
+
+  const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+  while (Date.now() < deadline) {
+    const bs = await bridgeStatus().catch(() => null);
+    if (bs?.fresh) {
+      console.log('');
+      console.log('='.repeat(52));
+      console.log('  ✅ 全部完成');
+      console.log(`     正在读到：${bs.title ?? '(没有标题)'} @ ${tc(bs.pos)}`);
+      console.log('     以后正常开浏览器就行，这个窗口可以关掉了。');
+      console.log('='.repeat(52));
+      if (srv) await srv.close().catch(() => {});
+      return 0;
+    }
+
+    const h = await readHello().catch(() => null);
+    if (h && !announcedHello) {
+      announcedHello = true;
+      console.log(`✓ 扩展装上了（v${h.version ?? '?'}）。`);
+      console.log('  再打开一个视频、按播放 —— 通了我会立刻告诉你。');
+      console.log('');
+    } else if (!h && Date.now() - lastNudge > 30_000) {
+      lastNudge = Date.now();
+      console.log(`  还在等…（${Math.round((Date.now() - started) / 1000)} 秒）如果已经点完了还是这里没动静，`);
+      console.log('  看扩展管理页上那张卡片有没有红色「错误」，或者把它的开关关掉再打开。');
+    }
+    await sleep(2000);
+  }
+
+  console.log('');
+  console.log('10 分钟没等到。要么还没装，要么装的时候出错了。');
+  console.log('重新看一遍步骤：node bin/watch.mjs install-extension --steps');
+  if (srv) await srv.close().catch(() => {});
+  return 1;
+}
+
 async function cmdInstallExtension(opts = {}) {
   const dst = extensionTarget();
 
@@ -391,17 +455,12 @@ async function cmdInstallExtension(opts = {}) {
   }
   printSteps(dst, { clipOk });
 
-  // 从"运行"按钮、非交互终端跑的时候没有 pause，窗口会一闪而过。
-  // 只要还有可交互的输入，就停下来等人看完 —— 别让那三行字溜走。
-  if (process.stdin.isTTY && !opts.noWait) {
-    await new Promise((resolve) => {
-      process.stdout.write('按回车关掉这个窗口… ');
-      process.stdin.resume();
-      process.stdin.once('data', () => resolve());
-    });
-    console.log('');
-  }
-  return 0;
+  // 有交互终端就**接着等**到装好为止：窗口一直在忙，所以不会一闪而过，
+  // 而且用户不需要自己判断"我装成了没有"。
+  // 非交互（脚本/AI 调用）就到此为止，别把调用方挂住。
+  const shouldWait = opts.wait === true || (process.stdin.isTTY && opts.wait !== false);
+  if (!shouldWait) return 0;
+  return await waitUntilInstalled();
 }
 
 /**
@@ -1436,7 +1495,9 @@ async function cli() {
         code = await cmdInstallExtension({
           open: !rest.includes('--no-open'),
           stepsOnly: rest.includes('--steps'),
-          noWait: rest.includes('--no-wait'),
+          // --no-wait / --install-only：复制完就返回，不在这里等（脚本、AI 用）
+          wait: rest.includes('--wait') ? true
+            : (rest.includes('--no-wait') || rest.includes('--install-only') ? false : undefined),
         });
         break;
       case 'reply': code = await cmdReply(rest.join(' ')); break;
