@@ -1,0 +1,12 @@
+{
+  "name": "dsh-watch-together",
+  "description": "Watch a video together with a text-only agent: follow the user's real playback position and hand over one segment at a time, just before the segment ends.",
+  "version": "0.1.0",
+  "entry": {
+    "name": "dsh-watch-together",
+    "inject": [
+      "tools",
+      "attachments"
+    ]
+  }
+}

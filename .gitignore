@@ -1,0 +1,23 @@
+node_modules/
+*.log
+package-lock.json
+
+# CLI / 诊断产物：别把生成物提交进仓库
+*.png
+manifest*.json
+.evidence.json
+watch.json
+chat.jsonl
+quiet-until.json
+latency.json
+
+# 本地临时/调试产物
+.tmp/
+_probe/
+
+# 凭证与本地配置：永远不要进仓库
+.secrets/
+cookies.txt
+* cookies*.txt
+video.json
+voice.json
