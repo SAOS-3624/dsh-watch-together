@@ -23,15 +23,16 @@
  *
  * 环境：端口 9333（9222 被别的应用占着）；cookie 文件见 COOKIES；产物落 .tmp/watch。
  */
-import { execFile, execFileSync } from 'node:child_process';
+import { execFile, execFileSync, spawn } from 'node:child_process';
 import { createHash } from 'node:crypto';
 import {
-  appendFileSync, closeSync, existsSync, mkdirSync, openSync, readdirSync, readFileSync, readSync, statSync, writeFileSync,
+  appendFileSync, closeSync, cpSync, existsSync, mkdirSync, openSync, readdirSync, readFileSync,
+  readSync, rmSync, statSync, writeFileSync,
 } from 'node:fs';
 import http from 'node:http';
 import net from 'node:net';
 import { homedir } from 'node:os';
-import { join } from 'node:path';
+import { dirname, join } from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 
 
@@ -44,7 +45,7 @@ import { checkBiliLogin, fetchRemoteSubtitles } from 'dsh-video-storyboard/subti
 import { runStoryboard, formatManifest } from 'dsh-video-storyboard/pipeline';
 import { boardOptions, charsForDetail } from 'dsh-video-storyboard/board';
 import { DEFAULT_LOOKAHEAD, makePlan, windowFor } from '../src/batches.js';
-import { chatFile } from '../src/chat.js';
+import { DEFAULT_CHAT_PORT, chatFile } from '../src/chat.js';
 import { bridgeStatus } from '../src/position-bridge.js';
 import { readPositionOrNull } from '../src/watch-browser.js';
 import { lineNear, speechLag } from '../src/speech.js';
@@ -285,6 +286,148 @@ function segBase(input, from, to) {
 }
 
 // ---------------------------------------------------------------- 命令
+
+// ---------------------------------------------------------------- 装扩展
+
+const PKG_ROOT = dirname(dirname(fileURLToPath(import.meta.url)));
+
+/** 把扩展复制到一个**稳定的**位置：仓库挪走/删掉都不影响已经装好的扩展 */
+function extensionTarget() {
+  const base = process.env.LOCALAPPDATA || join(homedir(), 'AppData', 'Local');
+  return join(base, 'dsh-watch-together', 'extension');
+}
+
+/** 找浏览器。顺序和 launchBrowser 一致，别自己发明 */
+function findBrowser() {
+  const CANDIDATES = [
+    ['C:/Program Files (x86)/Microsoft/Edge/Application/msedge.exe', 'edge'],
+    ['C:/Program Files/Microsoft/Edge/Application/msedge.exe', 'edge'],
+    ['C:/Program Files/Google/Chrome/Application/chrome.exe', 'chrome'],
+    ['C:/Program Files (x86)/Google/Chrome/Application/chrome.exe', 'chrome'],
+  ];
+  for (const [exe, kind] of CANDIDATES) {
+    if (existsSync(exe)) return { exe, kind };
+  }
+  return null;
+}
+
+/**
+ * 装扩展：**能自动的都自动，剩下三下必须你点**。
+ *
+ * 为什么不能全自动：从 Chrome 137 起，正式版浏览器**移除了** `--load-extension`
+ * （`--enable-unsafe-extension-debugging` 也救不回来），而扩展设置存在一个带 HMAC 的
+ * 文件里，外部程序改不动。这是浏览器故意的 —— 能静默装扩展的通道就是恶意软件用的通道。
+ * 所以最后"选文件夹 + 点确定"只能人来做。
+ *
+ * 这个命令负责把其它的都干掉：复制到固定路径、路径塞进剪贴板、帮你打开扩展管理页。
+ */
+async function cmdInstallExtension(opts = {}) {
+  const src = join(PKG_ROOT, 'extension');
+  if (!existsSync(join(src, 'manifest.json'))) {
+    console.log(`找不到扩展源码：${src}\n（这个命令得在装好的包里跑）`);
+    return 1;
+  }
+
+  const dst = extensionTarget();
+  try {
+    mkdirSync(dirname(dst), { recursive: true });
+    rmSync(dst, { recursive: true, force: true });
+    cpSync(src, dst, { recursive: true });
+  } catch (e) {
+    console.log(`复制失败：${String(e?.message ?? e)}\n（目标：${dst}）`);
+    return 1;
+  }
+
+  // 路径塞剪贴板：下一步要粘到"选择文件夹"的地址栏里
+  let clipOk = true;
+  try {
+    execFileSync('clip', [], { input: dst, timeout: 5000 });
+  } catch { clipOk = false; }
+
+  const br = findBrowser();
+  let opened = false;
+  if (br && opts.open !== false) {
+    try {
+      spawn(br.exe, [`${br.kind}://extensions`], { detached: true, stdio: 'ignore' }).unref();
+      opened = true;
+    } catch { /* 开不开得起来都不影响后面 */ }
+  }
+
+  console.log('');
+  console.log('扩展已经准备好了。剩下的三步必须你亲手点 ——');
+  console.log('浏览器不允许任何程序偷偷装扩展（这条限制是防恶意软件的，绕不过去）。');
+  console.log('');
+  console.log(`  扩展位置：${dst}`);
+  console.log(`            ${clipOk ? '（已经复制到剪贴板，下一步直接粘）' : '（没能复制到剪贴板，请手动复制上面这行）'}`);
+  console.log('');
+  if (opened) {
+    console.log(`  1. 浏览器应该已经打开了扩展管理页（${br.kind === 'edge' ? 'edge' : 'chrome'}://extensions）`);
+  } else {
+    console.log('  1. 打开浏览器的扩展管理页：Edge 输入 edge://extensions ，Chrome 输入 chrome://extensions');
+  }
+  console.log('     打开左下角（Edge）/ 右上角（Chrome）的「开发人员模式」开关');
+  console.log('  2. 点「加载解压缩的扩展」/「加载已解压的扩展程序」');
+  console.log('  3. 在弹出的选择框里，把上面那个路径粘到地址栏 → 回车 → 点「选择文件夹」');
+  console.log('');
+  console.log('装完点工具栏上的蓝色图标：显示「已连上」就成。');
+  console.log('');
+  console.log('> 以前从仓库目录里装过旧版的，先把那张旧卡片「移除」，否则会有两个。');
+  console.log('> 图标看不见？点右上角拼图图标 🧩，把「陪看位置桥」固定出来。');
+  console.log('');
+  console.log('下一步：跑 `node bin/watch.mjs bridge`（或者照常让 DSH 陪看），');
+  console.log('        然后点扩展图标看是不是「已连上」。');
+  return 0;
+}
+
+/**
+ * 只起"接位置"的那个服务，不陪看、不出图 —— 专门用来**验证扩展装好没有**。
+ *
+ * 为什么需要它：扩展是往 9377 上报的，而这个服务平时只在 DSH 陪看期间、
+ * 或者 `watch.mjs chat` 时才有。用户刚装完扩展就点图标，看到的必然是"未连上"，
+ * 然后以为自己装错了。这条命令把那个变量消掉：起服务、等一条上报、确认通了。
+ */
+async function cmdBridge(arg) {
+  const port = Number(arg) || Number(process.env.WATCH_PORT) || DEFAULT_CHAT_PORT;
+  const { startChatServer, chatAlive } = await import('../src/chat.js');  // 懒加载：只有这条命令需要起服务
+
+  let srv = null;
+  try {
+    srv = await startChatServer({ port });
+  } catch (e) {
+    if (await chatAlive(port)) {
+      console.log(`端口 ${port} 上已经有一个服务在跑，直接用它。`);
+    } else {
+      console.log(`起不来（${String(e?.message ?? e)}）。端口被别的程序占了？换一个：node watch.mjs bridge 9378`);
+      return 1;
+    }
+  }
+
+  console.log(`接位置的服务已启动： http://127.0.0.1:${port}`);
+  console.log('这个窗口别关。装好扩展后随便播个视频，它一收到就会在这里说一声。');
+  console.log('（按 Ctrl+C 退出）\n');
+
+  let seen = false;
+  let quietSince = Date.now();
+  const timer = setInterval(async () => {
+    const bs = await bridgeStatus().catch(() => null);
+    if (bs?.fresh) {
+      if (!seen) {
+        seen = true;
+        console.log(`✓ 收到上报：${bs.title ?? '(没有标题)'} @ ${tc(bs.pos)}`);
+        console.log('  通了。以后正常开浏览器就行，这个窗口可以关掉。');
+      }
+    } else if (!seen && Date.now() - quietSince > 60_000) {
+      quietSince = Date.now();
+      console.log('  还没收到上报。检查：扩展装了吗？启用了吗？那个标签页里真的有视频在播吗？');
+    }
+  }, 2000);
+
+  // 常驻：等用户看完 / 验证完
+  await new Promise(() => {});
+  clearInterval(timer);
+  if (srv) await srv.close();
+  return 0;
+}
 
 async function cmdDoctor() {
   const checks = [];
@@ -1161,8 +1304,10 @@ async function cmdCue(json, args = []) {
 function usage() {
   console.log(`陪看唯一入口 —— 所有能力都在这一个文件里。
 
+  node watch.mjs install-extension     装浏览器扩展（把它复制到固定位置 + 打开扩展页）
+  node watch.mjs bridge [port]         只起"接位置"的服务，用来验证扩装好没有
   node watch.mjs doctor                环境自检（先跑这个）
-  node watch.mjs start [url]           起调试浏览器（9333）
+  node watch.mjs start [url]           起调试浏览器（9333）—— 备用通道，装了扩展就不用
   node watch.mjs login                 读 cookie + 验登录
   node watch.mjs wait [秒]             等用户放起视频
   node watch.mjs status                位置 / 当前段 / 该跑什么
@@ -1216,6 +1361,10 @@ async function cli() {
         break;
       }
       case 'chat': code = await cmdChat(rest[0] ? Number(rest[0]) : 9377); break;
+      case 'bridge': code = await cmdBridge(rest[0]); break;
+      case 'install-extension': case 'install-ext':
+        code = await cmdInstallExtension({ open: !rest.includes('--no-open') });
+        break;
       case 'reply': code = await cmdReply(rest.join(' ')); break;
       case 'voices': code = await cmdVoices(); break;
       case 'cue': code = await cmdCue(rest[0], rest.slice(1)); break;

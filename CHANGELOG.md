@@ -26,7 +26,17 @@ one-time install it works in **your normal browser**, with your bookmarks and yo
 - `doctor` grew an `extension` row and now treats "either channel works" as ready instead of
   insisting on the debug port.
 - `docs/BRIDGE.zh.md` — step-by-step install guide written for someone who has never heard of a
-  manifest file, including the seven failure modes people actually hit.
+  manifest file, including the eight failure modes people actually hit.
+- `node watch.mjs install-extension` (and `scripts/install-extension.cmd`) does everything that
+  *can* be automated: copies the extension to `%LOCALAPPDATA%\\dsh-watch-together\\extension` so it
+  survives moving the repo, puts that path on the clipboard, and opens `edge://extensions`.
+  The last three clicks cannot be automated — Chrome 137 removed `--load-extension` from branded
+  builds and extension installs are HMAC-protected, deliberately, because silent install is the
+  malware channel. The guide says so plainly instead of pretending otherwise.
+- `node watch.mjs bridge` (and `scripts/bridge.cmd`) starts just the position receiver and says
+  "✓ 收到上报" on the first report. Without it, a user who installs the extension and immediately
+  looks at the popup sees "not connected" — because the server only runs during `watch_together`
+  or `watch.mjs chat`, and concludes the install failed.
 
 ### Fixed
 
