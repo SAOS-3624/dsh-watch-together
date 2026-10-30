@@ -316,3 +316,53 @@ test('⑰ 有声音订阅者时，到点的台词交给它念，不叫醒模型'
     stopWatchLoop('test');
   }
 });
+
+// ---------------------------------------------------------------- 半路发生的事
+
+test('⑱ 换片：停表之外还要叫醒模型一次，否则它会一直沉默', async () => {
+  const sim = createSim({ changes: [{ at: 50, duration: 1087 }] });
+  boot(sim);
+  await sim.runTo(60);
+  assert.equal(loopStatus().active, false);
+  assert.match(loopStatus().reason, /video-changed/);
+  const changed = sim.wakes.filter((w) => /换片了/.test(w.text));
+  assert.equal(changed.length, 1, `换片要叫醒一次，实得 ${changed.length}`);
+  assert.match(changed[0].text, /watch_together/, '要说清下一步该做什么');
+});
+
+test('⑲ 播完：同样要叫醒一次，让模型收尾', async () => {
+  const sim = createSim({ duration: 150 });
+  startWatchLoop({
+    ctx: ctxStub, sessionId: 's-end', input: INPUT(), browserPort: PORT,
+    segments: [{ from: 0, to: 120 }], size: 120, depth: 2,
+    deps: sim.deps, log: () => {},
+  });
+  // 位置每 15 秒才读一次，所以要跑到片尾之后**再等一拍**才会读到 ended
+  await sim.runTo(180);
+  assert.equal(loopStatus().active, false);
+  assert.equal(loopStatus().reason, 'video-ended');
+  const ended = sim.wakes.filter((w) => /播完了/.test(w.text));
+  assert.equal(ended.length, 1, `片尾要叫醒一次，实得 ${ended.length}`);
+});
+
+test('⑳ 拖进度条（前进）：叫醒一次，告诉模型位置跳到哪了', async () => {
+  const sim = createSim({ duration: 900, seeks: [{ at: 100, to: 300 }] });
+  boot(sim);
+  await sim.runTo(140);
+  const jumps = sim.wakes.filter((w) => /拖了进度条/.test(w.text));
+  assert.equal(jumps.length, 1, `大跳转要叫醒一次，实得 ${jumps.length}`);
+  assert.match(jumps[0].text, /跳到 \d{2}:\d{2}（原来到 \d{2}:\d{2}）/, '要说清跳到第几秒、原来到第几秒');
+  stopWatchLoop('test');
+});
+
+test('㉑ 回看：位置对得上，但说过的段不复读', async () => {
+  // 先正常看到 110 秒（第 1 段说过一次），再拖回 20 秒
+  const sim = createSim({ duration: 900, seeks: [{ at: 120, to: 20 }] });
+  boot(sim);
+  await sim.runTo(130);
+  const jumps = sim.wakes.filter((w) => /回看到/.test(w.text));
+  assert.equal(jumps.length, 1, `回看也要叫醒一次，实得 ${jumps.length}`);
+  const spoke = sim.wakes.filter((w) => /该说话了/.test(w.text));
+  assert.equal(spoke.length, 1, `回到看过的段不该再说一遍，实得 ${spoke.length}`);
+  stopWatchLoop('test');
+});

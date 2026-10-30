@@ -29,6 +29,7 @@ export function createSim({
   deadFrom = null,      // 秒：之后读不到（模拟浏览器关掉）
   failEvery = 0,        // 每 N 次读数失败一次（0 = 不失败）
   stalledFrom = null,   // 秒：之后位置不再前进（模拟播放器卡死）
+  seeks = [],           // [{at, to}] 秒：at 时刻用户把进度条拖到 to
 } = {}) {
   let t = 0;                                  // 虚拟时间（毫秒）
   const start = Date.now();                   // 真实基准，只用于"看起来像时间戳"
@@ -48,12 +49,29 @@ export function createSim({
     return acc;
   }
 
-  /** 第 ms 毫秒时播放器停在第几秒 */
-  function positionAt(ms) {
+  /** 第 ms 毫秒时播放器停在第几秒（不含拖动偏移） */
+  function rawAt(ms) {
     const sec = ms / 1000;
     const moving = stalledFrom === null || sec < stalledFrom;
     const elapsed = moving ? sec : stalledFrom;
     return Math.min(playingFrom + Math.max(0, elapsed - pausedSeconds(elapsed)), current.duration);
+  }
+
+  // 拖进度条：越过 at 那一刻起，位置整体偏移（to - 当时的位置）
+  let seekOffset = 0;
+  const firedSeeks = new Set();
+  function applySeeks(ms) {
+    for (const sk of seeks) {
+      const at = Math.round(sk.at * 1000);
+      if (ms >= at && !firedSeeks.has(at)) {
+        firedSeeks.add(at);
+        seekOffset += sk.to - rawAt(at);
+      }
+    }
+  }
+
+  function positionAt(ms) {
+    return Math.max(0, Math.min(rawAt(ms) + seekOffset, current.duration));
   }
 
   /** 换片：过了那个时刻就换成另一支片子 */
@@ -71,6 +89,7 @@ export function createSim({
 
   const readBrowser = async () => {
     applyChanges(t);
+    applySeeks(t);
     reads += 1;
     if (deadFrom !== null && t >= deadFrom * 1000) return null;
     if (failEvery > 0 && reads % failEvery === 0) return null;

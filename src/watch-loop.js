@@ -241,6 +241,7 @@ export function startWatchLoop({
     refillBelow: Math.max(0, Number(refillBelow) || 0),
     refillAskedAt: 0,
     lastSpeakAt: 0,
+    lastJumpWakeAt: 0,
     built: new Set(),        // 已经建好的批次（按 from 记）
     building: null,          // 正在建的那一个（同时只建一个，别把 CPU 打满）
     aheadSec: 0,
@@ -275,9 +276,36 @@ export function startWatchLoop({
           const changed = (loop.dur && Number.isFinite(b.dur) && Math.abs(loop.dur - b.dur) > 1)
             || (loop.sourceUrl && b.url && loop.sourceUrl !== b.url);
           if (changed) {
+            // **停表之外还要叫醒一次**：不叫的话模型还阻塞在上一段的等待里，
+            // 它不知道片子换了，会一直沉默到用户来戳它。
             stopWatchLoop('video-changed');
+            void wake(loop.ctx, {
+              sessionId: loop.sessionId,
+              text: `[一起看] 换片了（现在在放：${(b.title ?? '').slice(0, 60) || '未知片子'} @ ${mmss(b.pos)}）。`
+                + '跟用户确认一下要不要接着陪这支：要的话重新调 watch_together 就会从头开始跟。',
+            });
             return;
           }
+          // **大跳转（拖进度条，前进或后退）**：位置对不对由锚点自然纠正，
+          // 但模型得知道用户跳了，否则它还在按旧进度准备台词。
+          // 阈值 60 秒 + 3 分钟冷却：拖一下就问一句会烦死人。
+          if (loop.anchor && Number.isFinite(b.pos) && loop.status !== 'paused') {
+            const elapsedSec = Math.max(0, (tNow - loop.anchor.updated) / 1000);
+            const expected = loop.anchor.pos + elapsedSec;
+            const jump = b.pos - expected;
+            if (Math.abs(jump) > 60 && tNow - (loop.lastJumpWakeAt || 0) > 180_000) {
+              loop.lastJumpWakeAt = tNow;
+              void wake(loop.ctx, {
+                sessionId: loop.sessionId,
+                text: `[一起看] 用户拖了进度条：${jump > 0 ? '跳到' : '回看到'} ${mmss(b.pos)}`
+                  + `（原来到 ${mmss(expected)}）。`
+                  + (jump < 0
+                    ? '回看的部分不会再重说一遍（避免复读）；要不要简单补一句，你自己判断。'
+                    : '跳过的部分不补；从新位置接着跟就行。'),
+              });
+            }
+          }
+
           loop.anchor = makeAnchor({
             pos: b.pos, dur: b.dur, status: b.paused ? 'paused' : 'playing',
             // 浏览器是刚读的，所以永远算"新鲜"。
@@ -291,7 +319,13 @@ export function startWatchLoop({
           if (b.url) loop.sourceUrl = b.url;
           loop.noSourceSince = 0;
           if (b.ended) {
+            // 片尾和换片一样：停表 + 叫醒。模型收个尾、问下一支看什么。
             stopWatchLoop('video-ended');
+            void wake(loop.ctx, {
+              sessionId: loop.sessionId,
+              text: '[一起看] 视频播完了。跟用户收个尾，或者问下一支看什么 —— '
+                + '用户开了新片之后重新调 watch_together 就会接着陪。',
+            });
             return;
           }
         } else {

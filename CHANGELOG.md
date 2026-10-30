@@ -56,6 +56,26 @@ one-time install it works in **your normal browser**, with your bookmarks and yo
   looks at the popup sees "not connected" — because the server only runs during `watch_together`
   or `watch.mjs chat`, and concludes the install failed.
 
+### Added — it now reacts to what you do mid-video
+
+Auditing the whole flow against the user's checklist surfaced three gaps where the plugin behaved
+correctly but **never told the model**, leaving it silent until the user poked it:
+
+- **Video ended / video changed now wake the model once.** Previously they only stopped the loop, so
+  the model sat blocked on the previous segment with no idea the film was over or had been replaced.
+- **Large seeks (>60 s, forward or backward) wake the model once** with where the user jumped to and
+  from, with a 3-minute cooldown. Position tracking was already correct — it was the model that had
+  no idea. Rewatching does not re-speak already-spoken segments (no immediate-repeat chatter).
+- **Only the visible tab reports** (`document.visibilityState`), plus a report on `visibilitychange`.
+  Every tab with a `<video>` reports once per second; with two such tabs open the server received
+  alternating positions and the plugin interpreted it as the user scrubbing wildly.
+- The simulator can now jump the playhead (`seeks: [{at, to}]`), and there are four new scenario
+  tests covering: video changed wakes once, video ended wakes once, seek forward wakes once, rewatch
+  wakes once and does not re-speak.
+
+Note the jump check must run **before** the anchor is refreshed — comparing the new reading against
+the already-updated anchor measures zero. That was the first (failed) version.
+
 ### Fixed
 
 - **The plugin passed the browser's debug port to `ensureChatSession()`**, so the chat server tried

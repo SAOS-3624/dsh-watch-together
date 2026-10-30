@@ -27,10 +27,17 @@
     }, pool[0]);
   }
 
-  let lastSent = 0;
-
+  /**
+   * **只在这个标签页可见的时候上报。**
+   *
+   * 为什么：页面里每个标签页都会跑这份脚本。如果用户开了两个带视频的标签页
+   * （比如看片看到一半，又点开一支新的），两边会每秒各报一次，
+   * 服务端收到的位置就会来回跳 —— 陪看会以为用户在疯狂拖进度条。
+   * "当前可见的那个标签页"就是用户正在看的那个，以它为准。
+   */
   function report() {
     if (!chrome?.runtime?.id) return;      // 扩展被重新加载/停用了
+    if (document.visibilityState !== 'visible') return;
     const v = pickVideo();
     if (!v || !Number.isFinite(v.currentTime)) return;
 
@@ -61,5 +68,9 @@
 
   // 3) 有些站点是单页应用，切视频不刷新页面 —— 视频元素可能后来才出现
   document.addEventListener('DOMContentLoaded', report, true);
+  // 4) 切回这个标签页的瞬间立刻报一次：换片检测靠的就是这一拍
+  document.addEventListener('visibilitychange', () => {
+    if (document.visibilityState === 'visible') report();
+  });
   report();
 })();
