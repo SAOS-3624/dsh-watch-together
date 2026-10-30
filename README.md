@@ -120,14 +120,20 @@ watch_together({ ramp: [] })              // 全程等长，不要阶梯
 建一个批次要 2–10 秒，而看一个批次要 `segment` 秒，所以**总有时间在空闲里把它建完**。
 实测 4 次交付全部 **0.0 秒**（命中预取），批次之间无缝。
 
-## 进度从哪来（不需要装播放器插件）
+## 进度从哪来：两条路，不用装播放器插件
 
-读 Windows 的**系统媒体控件**（SMTC）。任何接了它的播放器都行：
+| | 你自己打开的播放器（SMTC） | 带调试端口的浏览器（CDP） |
+|---|---|---|
+| 怎么开始 | **什么都不用做**，正常开 VLC / PotPlayer / Edge 就行 | 必须**额外**启动一个带 `--remote-debugging-port` 的窗口 |
+| 位置精度 | 稀疏：播放器只在事件时刷新（实测隔过 143 / 216 秒） | 毫秒级（`pos=8.374`） |
+| 能不能知道"在放哪个片" | 只有标题，得按标题反查（本地文件名 → B 站搜索） | **页面地址就是源**，B 站拿到 BV 号、`file:///` 还原成本地路径 |
+| 需要额外装什么 | 一个装了 `winrt` 的 Python | 无 |
+| 你要付出的代价 | 位置会"几十秒不动"，靠外推补 | 那个窗口用的是**另一个 profile**，第一次要在里面重新登录 B 站 |
 
-- **本地文件**：VLC / PotPlayer / 电影和电视
-- **网页**：Edge / Chrome 播 B 站
+**两条路任意一条通就能陪看。** 插件和 CLI 都是"先问浏览器，读不到再问 SMTC"，
+所以你自己开浏览器也能用 —— 只是位置会粗一些。
 
-实测输出：
+SMTC 实测输出：
 
 ```
 MSEdge | playing | pos=5.9s | dur=68.0s | 鲸鱼陪看：让 DSH 里的她看得见你的屏幕
@@ -138,19 +144,32 @@ MSEdge | playing | pos=5.9s | dur=68.0s | 鲸鱼陪看：让 DSH 里的她看得
 
 > SMTC 探测靠 `src/watch_smtc.py`，它**必须和 `src/watch-probe.js` 放在同一层**。
 > 早期版本把它落在上一级目录，于是 `execFile` 找不到脚本、探测恒定失败，
-> 而错误信息只说 "Command failed"。搬包时已经把它放到正确位置。
+> 而错误信息只说 "Command failed" —— 表现就是"我自己开浏览器它永远看不到"。
+> 搬包时已经把它放到正确位置。
 
-### 想要毫秒级准？开浏览器的调试端口
-
-SMTC 的刷新是稀疏的。浏览器里那个 `<video>.currentTime` 才是**真值**，只要求浏览器带调试端口启动：
+需要一台装了 `winrt` 的 Python：
 
 ```bash
-# 用一个独立 profile，这样不会影响你正在开的 Edge
-"C:/Program Files (x86)/Microsoft/Edge/Application/msedge.exe" ^
-  --remote-debugging-port=9333 --user-data-dir="%USERPROFILE%/.dsh/edge-watch"
+pip install winrt-runtime winrt-Windows.Media.Control winrt-Windows.Foundation
 ```
 
-然后告诉插件端口 —— 三种写法任选（**桌面版读不到 `setx` 的环境变量，所以推荐写文件**）：
+### 想要毫秒级 + 自动认出片源？用一个专用的调试端口窗口
+
+`scripts/start-edge-debug.cmd` 就是干这个的 —— **双击它**（或做成桌面快捷方式），
+以后不用让 AI 去拉起浏览器：
+
+```bash
+scripts/start-edge-debug.cmd          # 端口 9333
+scripts/start-edge-debug.cmd 9444     # 换一个端口
+```
+
+> **为什么必须是一个独立 profile**：Chromium 136 之后（这台机器的 Edge 是 152）
+> **不允许在默认 profile 上开调试端口**，这是微软/谷歌的安全修复，绕不过去。
+> 所以这个窗口有它自己的 `--user-data-dir=%USERPROFILE%\.dsh\edge-watch`，
+> **第一次要在里面登录一次 B 站**，之后它一直记着。
+> 你的日常 Edge 完全不受影响，可以同时开着。
+
+然后告诉插件端口（**桌面版读不到 `setx` 的环境变量，所以推荐写文件**）：
 
 ```jsonc
 // ~/.dsh/video.json
@@ -166,8 +185,7 @@ watch_together({ browserPort: 9333 })   // 或者单次传参
 
 > 端口别用 9222：那是 Chrome DevTools 的惯例端口，**WorkBuddy 自己就占着**（实测读到的会是它的界面）。
 
-开了之后：**位置毫秒级准**（实测 `pos=8.374`），而且**当前页面地址就是源**：
-B 站页面直接拿到 BV 链接；`file:///D:/x.mp4` 直接还原成本地路径。**不用搜索、不用下载、不用问用户。**
+开了之后：**位置毫秒级准**，而且**当前页面地址就是源**，**不用搜索、不用下载、不用问用户**。
 
 ### 为什么进度会"读不到"（重要）
 

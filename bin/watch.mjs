@@ -45,6 +45,8 @@ import { runStoryboard, formatManifest } from 'dsh-video-storyboard/pipeline';
 import { boardOptions, charsForDetail } from 'dsh-video-storyboard/board';
 import { DEFAULT_LOOKAHEAD, makePlan, windowFor } from '../src/batches.js';
 import { chatFile } from '../src/chat.js';
+import { PLAYBACK, pickSession, probePlayback, probePython } from '../src/watch.js';
+import { resolvePlayingSource } from '../src/resolve-playing.js';
 import { lineNear, speechLag } from '../src/speech.js';
 import {
   configuredDshTts, defaultEdgeTtsBin, speak, speakViaEdgeTts,
@@ -92,9 +94,60 @@ function ps(cmd) {
   }
 }
 
-/** 读播放位置；读不到返回 null */
+/**
+ * 读播放位置。**两路**：先问浏览器调试端口，读不到再问系统媒体控件（SMTC）。
+ *
+ * 以前这里只有浏览器那一路，于是"你自己打开 Edge 播 B 站"这条路**根本不存在** ——
+ * 想用 CLI 就非得让插件拉起一个带调试端口的浏览器不可。而带调试端口的浏览器必须用
+ * 独立 profile（Chromium 136+ 的安全限制），也就是"另一个浏览器窗口"。
+ *
+ * SMTC 的代价是位置稀疏（播放器只在事件时刷新，实测隔过 143 / 216 秒），
+ * 而且**拿不到页面地址** —— 源要靠标题反查。收益是：你平时怎么开浏览器都行。
+ *
+ * @returns {Promise<{pos:number,dur:number|null,title:string|null,paused:boolean,url:string|null,source:'browser'|'smtc'}|null>}
+ */
 async function pos() {
-  return readBrowserPosition({ port: PORT, timeoutMs: 900 }).catch(() => null);
+  const b = await readBrowserPosition({ port: PORT, timeoutMs: 900 }).catch(() => null);
+  if (b) return { ...b, source: 'browser' };
+
+  const p = await probePlayback().catch(() => null);
+  const s = p?.ok ? pickSession(p.sessions ?? []) : null;
+  if (!s) return null;
+  const st = typeof s.status === 'number' ? s.status : String(s.status ?? '').toLowerCase();
+  return {
+    pos: Number(s.pos),
+    dur: Number.isFinite(Number(s.dur)) ? Number(s.dur) : null,
+    title: s.title ?? null,
+    paused: st === PLAYBACK.PAUSED || st === 'paused',
+    ended: false,
+    url: null,
+    source: 'smtc',
+  };
+}
+
+/**
+ * 从位置结果推出**这次在看什么**。
+ *
+ * 浏览器那条路页面地址就是源；SMTC 没有地址，只能拿标题去反查
+ * （先本地文件名，再 B 站按标题+时长搜）。反查结果缓存住 ——
+ * B 站搜索最慢能到 90 秒，不能每跑一次 status 就搜一遍。
+ */
+const inputCache = new Map();
+async function inputFor(s) {
+  if (!s) return null;
+  if (s.url) return normalizeInput(s);
+  if (!s.title) return null;
+  const key = `${s.title}|${Math.round(Number(s.dur) || 0)}`;
+  if (inputCache.has(key)) return inputCache.get(key);
+  const r = await resolvePlayingSource({ title: s.title, duration: s.dur });
+  if (r.kind === 'failed') {
+    console.log(`[源] 按标题找不到：${s.title}（${r.reason}）—— 可以让用户直接给 input`);
+    inputCache.set(key, null);   // 失败也记住：一条命令里可能问好几次，别反复搜
+    return null;
+  }
+  console.log(`[源] ${r.matchedBy} → ${r.input}`);
+  inputCache.set(key, r.input);
+  return r.input;
 }
 
 // 台词后延 / 附近句查找都由插件 src/speech.js 提供（曲线只有一份实现）
@@ -267,8 +320,22 @@ async function cmdDoctor() {
   try { ff = execFileSync('ffmpeg', ['-version'], { encoding: 'utf8', timeout: 8000 }).split('\n')[0]; } catch { /* 下面报 */ }
   add('ffmpeg', Boolean(ff), ff.slice(0, 60) || 'not on PATH (set DSH_FFMPEG_PATH)');
 
+  /*
+   * 位置有**两条**来源，任意一条通就能陪看，所以它们不参与 ready 的硬性判定：
+   *
+   *   debug-port  浏览器调试端口 —— 准到毫秒，还能直接拿到页面地址（不用搜不用问）；
+   *               但 Chromium 136+ 不允许在默认 profile 上开，只能是一个独立窗口。
+   *   smtc       系统媒体控件 —— 你平时怎么开浏览器/播放器都行；
+   *               代价是位置稀疏（播放器只在事件时刷新），而且拿不到地址。
+   *
+   * 以前这里只查 debug-port，于是"我自己开浏览器"这条路上 doctor 永远 NOT READY。
+   */
   const port = await hasDebugPort({ port: PORT });
-  add('debug-port', port, `${PORT}${port ? '' : ' —— 先跑 start'}`);
+  add('debug-port', port, `${PORT}${port ? '' : ' —— 没开（走 SMTC 也行，位置刷新会稀疏一些）'}`);
+
+  const py = await probePython().catch(() => null);
+  add('smtc-python', Boolean(py), py ?? '没有装了 winrt 的 python（pip install winrt-runtime '
+    + 'winrt-Windows.Media.Control winrt-Windows.Foundation）');
 
   let login = null;
   if (existsSync(COOKIES)) {
@@ -276,15 +343,30 @@ async function cmdDoctor() {
     add('bili-login', Boolean(login?.ok), login?.ok ? login.uname : (login?.reason ?? 'unknown'));
   }
 
-  const p = port ? await pos() : null;
-  add('playing', Boolean(p), p ? `${p.title} @${tc(p.pos)}` : 'no page with <video>');
+  const p = await pos();
+  add('playing', Boolean(p),
+    p ? `${p.title ?? '(没有标题)'} @${tc(p.pos)} · 来源 ${p.source}`
+      : '两条来源都没有：浏览器没开调试端口，SMTC 也没有活跃会话');
 
-  const ready = checks.every((c) => c.ok);
+  const required = ['plugin', 'cookie-file', 'ffmpeg'];
+  const hardOk = checks.filter((c) => required.includes(c.name)).every((c) => c.ok);
+  const canLocate = port || Boolean(py);
+
   console.log(checks.map((c) => `${c.ok ? 'OK  ' : 'FAIL'} ${c.name.padEnd(12)} ${c.detail}`).join('\n'));
-  console.log(ready
-    ? '\nREADY — 下一步: node watch.mjs wait 150'
-    : `\nNOT READY — 先修 FAIL 项。端口没起就跑: node watch.mjs start${existsSync(COOKIES) ? '' : '；cookie 没有就跑: node watch.mjs login'}`);
-  return ready ? 0 : 1;
+
+  if (!hardOk) {
+    console.log(`\nNOT READY — 先修 FAIL 项。${existsSync(COOKIES) ? '' : 'cookie 没有就跑: node watch.mjs login'}`);
+    return 1;
+  }
+  if (!canLocate) {
+    console.log('\nNOT READY — 两条位置来源都不通：'
+      + `要么双击 scripts/start-edge-debug.cmd 起一个带调试端口的浏览器（端口 ${PORT}），`
+      + '要么装上面那三个 winrt 包。');
+    return 1;
+  }
+  console.log(`\nREADY — 位置来源: ${p ? p.source : (port ? 'browser（现在没有视频）' : 'smtc（现在没有会话）')}`
+    + '，下一步: node watch.mjs wait 150');
+  return 0;
 }
 
 async function cmdStart(url) {
@@ -352,11 +434,16 @@ async function cmdWait(maxSec = 120) {
 
 async function cmdStatus() {
   const s = await pos();
-  if (!s) { console.log('读不到位置：浏览器没开 / 没开调试端口 / 页面上没有 <video>。先跑 start。'); return 1; }
+  if (!s) { console.log('读不到位置：浏览器没开调试端口，系统媒体控件也没有活跃会话。\n'
+    + '  两条路任选：① 用它自己的浏览器播（任意播放器都行）；② 双击 scripts/start-edge-debug.cmd。\n'
+    + '  都试过还不行就跑 doctor，看是哪一环断了。'); return 1; }
   const { plan, cur, remain } = segmentInfo(s.pos, s.dur);
   const nxt = plan.segmentAt(cur.to);
-  const src = normalizeInput(s);
-  const have = (seg) => existsSync(`${segBase(src, seg.from, seg.to)}.png`);
+  const src = await inputFor(s);
+  // src 可能为 null（走 SMTC 时只有标题，按标题又没搜到片源）。
+  // 这时候不能拿 null 去算产物文件名 —— md5("null") 会指向一个不存在的 key，
+  // 于是"图已建好"永远为假。干脆如实说"不知道源"，别假装查过了。
+  const have = (seg) => Boolean(src) && existsSync(`${segBase(src, seg.from, seg.to)}.png`);
 
   // 余量：从当前段往后，**连续**建好的段能覆盖到哪。
   // 这个指标是插件的 windowFor 定义的（DEFAULT_LOOKAHEAD = 300），CLI 以前完全没搬 ——
@@ -381,7 +468,7 @@ async function cmdStatus() {
   console.log([
     `title  ${s.title}`,
     `pos    ${tc(s.pos)}${s.paused ? '  (PAUSED)' : ''}   dur ${tc(s.dur ?? 0)}${remain !== null ? `   remain ${tc(remain)}` : ''}`,
-    `src    ${src}`,
+    `src    ${src ?? '(未解析 — 走 SMTC 只有标题，按标题又没搜到片源；可以让用户直接给 input)'}`,
     `seg    ${tc(cur.from)}–${tc(cur.to)}  (剩 ${Math.round(Math.max(0, cur.to - s.pos))}s)   图: ${have(cur) ? '已有' : '未建'}`,
     `next   ${nxt.from >= dur ? '—（已到片尾）' : `${tc(nxt.from)}–${tc(nxt.to)}   图: ${have(nxt) ? '已有' : '未建'}`}`,
     `buffer 就绪到 ${tc(bufTo)}（余 ${mmss(buffer)} / 目标 ${mmss(DEFAULT_LOOKAHEAD)}）${short ? `  ← 还差 ${win.length - ready} 段` : (atEnd ? '  已到片尾' : '  OK')}`,
@@ -794,8 +881,8 @@ async function cmdSeg(args) {
   }
   if (s?.dur && from > s.dur) { console.log(`段起点 ${from}s 超过视频时长 ${Math.round(s.dur)}s`); return 1; }
 
-  const input = s ? normalizeInput(s) : null;
-  if (!input) { console.log('没有输入源：先让用户在浏览器里打开视频。'); return 1; }
+  const input = await inputFor(s);
+  if (!input) { console.log('没有输入源：先让用户在播放器里打开视频（任意播放器都行，SMTC 能读到就不必开调试端口）。'); return 1; }
 
   const r = await buildSeg(input, from, to, cells, detail);
   console.log(JSON.stringify({
@@ -832,7 +919,8 @@ async function cmdFill(args) {
   const lookahead = Number(args[0]) || DEFAULT_LOOKAHEAD;
   const cells = Number(args[1]) || 5;
   const detail = args[2] || 'med';
-  const input = normalizeInput(s);
+  const input = await inputFor(s);
+  if (!input) { console.log('没有输入源：先让用户在播放器里打开视频。'); return 1; }
 
   const plan = makePlan({});
   const dur = Number.isFinite(s.dur) && s.dur > 0 ? s.dur : Infinity;
@@ -865,8 +953,8 @@ async function cmdFill(args) {
 
 async function cmdSubs(from = 0, to = 1e9) {
   const s = await pos();
-  const input = s ? normalizeInput(s) : null;
-  if (!input || !/^https?:/i.test(input)) { console.log('需要浏览器里正在放一个 B 站视频。'); return 1; }
+  const input = await inputFor(s);
+  if (!input || !/^https?:/i.test(input)) { console.log('需要正在放一个 B 站视频（字幕只从 B 站接口取）。'); return 1; }
   const r = await fetchRemoteSubtitles({ url: input, cookies: COOKIES }).catch(() => null);
   if (!r?.ok) { console.log(JSON.stringify({ ok: false, reason: r?.reason })); return 1; }
   const segs = (r.segments ?? []).filter((x) => x.to >= from && x.from <= to);
@@ -928,7 +1016,7 @@ async function cmdCue(json, args = []) {
   const maxWait = Number((strArgs.find((x) => x.startsWith('max-wait=')) ?? '').split('=')[1]) || 0;
 
   const s0 = await pos();
-  const src0 = s0 ? normalizeInput(s0) : null;
+  const src0 = await inputFor(s0);
 
   // 上次超时没念完的，接着念（只接同一支片子，换片就作废）
   const carried = src0 ? loadPending(src0) : [];
