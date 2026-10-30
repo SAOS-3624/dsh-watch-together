@@ -24,11 +24,39 @@
 
 想只要视频识别、不要陪看：装 `dsh-video-storyboard` 就行，本包不会被拖进来。
 
+## 发布顺序（必须遵守）
+
+本包依赖 `dsh-video-storyboard@^0.5.0`，而 **0.5.0 里有本包需要的子路径导出**
+（`./browser-time`、`./board`、`./cache` 等）。所以：
+
+```
+1) npm publish dsh-video-storyboard@0.5.0   ← 先
+2) npm publish dsh-watch-together@0.1.0     ← 后
+```
+
+反过来会装不上：`npm i dsh-watch-together` 找不到满足 `^0.5.0` 的版本。
+那个依赖范围**不能放宽到 `^0.4.5`** —— 0.4.5 的 `package.json` 只有 11 条 `exports`，
+本包 `import 'dsh-video-storyboard/browser-time'` 会直接 `ERR_PACKAGE_PATH_NOT_EXPORTED`。
+
 ## 安装
 
 ```bash
 npm i dsh-watch-together        # 会一并装 dsh-video-storyboard
 ```
+
+### 从"陪看还在 storyboard 里"的旧版本升级（重要）
+
+旧版 `dsh-video-storyboard@0.4.x` 自己就注册了 `watch_together`。如果宿主 profile 里还留着那份旧副本，
+而这个包装上之后**同一个工具会被注册两遍**。升级顺序：
+
+```bash
+node ../dsh-video-storyboard/scripts/install-dev.mjs   # 先把 storyboard 更新到 0.5.0（只剩 4 个 video_*）
+node scripts/install-dev.mjs                            # 再装陪看（它会连带把 storyboard 再同步一次）
+```
+
+本包的 `scripts/install-dev.mjs` 会把**自己**和同级目录里的 `dsh-video-storyboard`
+一起复制进 profile —— 因为陪看是裸包名 import 后者的，profile 里缺了它就会
+`ERR_MODULE_NOT_FOUND`。`--check` 只读，`--remove` 只卸自己、不动 storyboard。
 
 前置条件（ffmpeg / yt-dlp / ASR）跟 `dsh-video-storyboard` 完全一样，
 见那个包的 [README](https://github.com/SAOS-3624/dsh-video-storyboard#readme) 与 `docs/INSTALL.zh.md`。
