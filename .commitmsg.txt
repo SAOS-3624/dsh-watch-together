@@ -1,0 +1,26 @@
+fix: CLI 的聊天框缺两条路由、看不到台词；reply 只进框不进声音
+
+用户问：聊天框的时机对不对、包不包含台词和回话、TTS 接进去念的是不是框里的文字。
+
+核对结果：
+- 时机 ✅。流里每条有 at（墙钟毫秒，用来排序）和 t（播放位置秒，用来对画面），
+  剧本台词由 attachSpeechToChat 在 state 为 due 时写入，和视频同一刻。
+- 预设台词 ✅（插件入口 index.js 接了订阅）。用户插话 ✅（/api/say 写 role:user）。
+  模型的回话要模型走 say/reply 才进流 —— 设计如此。
+- TTS ✅ 念的是同一条事件里的文字，并排除 role:user（用户的话不念，这是对的）。
+
+但查出两个真 bug：
+
+1. bin/watch.mjs chat 自己复制了一份 HTTP 服务和两个 HTML 模板（92 行）。
+   复制品缺 /api/position 和 /api/hello —— 只跑 watch.mjs chat（而不是 bridge）时，
+   扩展上报会 404，CLI 这条路根本读不到位置；而且它没调 attachSpeechToChat，
+   那个聊天框里看不到剧本。现在统一用 startChatServer + attachSpeechToChat，
+   重复的模板删掉。
+
+2. watch.mjs reply 直接 appendChat —— 页面显示出来了，但声音订阅者收不到，
+   接了 TTS 就会"框里有字、没声音"。改成 appendAssistantSay（写流 + 发事件），
+   和 watch_together({say}) 走同一条路。
+
+验证：起 chat 9378，页面 200、/api/hello、/api/position、/api/say 全通；
+reply 后 chat.jsonl 里出现 role:assistant 且 say:true。160/160 通过。
+profile 与扩展副本已刷新。

@@ -78,6 +78,34 @@ the already-updated anchor measures zero. That was the first (failed) version.
 
 ### Fixed
 
+- **`bin/watch.mjs chat` ran its own copy of the chat server** — an inline `http.createServer` plus
+  duplicated copies of both HTML templates (92 lines). The copies had drifted: it served `/`,
+  `/widget`, `/api/messages`, `/api/say` but **not `/api/position` or `/api/hello`**. So running
+  only `watch.mjs chat` (instead of `bridge`) meant extension reports hit 404 and the CLI path could
+  never read a position. It also never called `attachSpeechToChat()`, so that chat box showed user
+  messages but no script lines. It now uses `startChatServer()` + `attachSpeechToChat()` like the
+  plugin and `bridge` do, and the duplicated templates are deleted.
+- **`watch.mjs reply` wrote straight to the stream** with `appendChat('assistant', …)`, so the text
+  appeared in the chat box but was never handed to speech subscribers — a TTS adapter stayed silent
+  while the page showed the words. It now uses `appendAssistantSay()`, which writes the stream *and*
+  emits the speech event, matching what `watch_together({say})` does.
+
+### Fixed
+
+- **`bin/watch.mjs chat` ran its own copy of the chat server** — an inline `http.createServer` plus
+  duplicated copies of both HTML templates (92 lines). The copies had drifted: it served `/`,
+  `/widget`, `/api/messages`, `/api/say` but **not `/api/position` or `/api/hello`**. So running
+  only `watch.mjs chat` (instead of `bridge`) meant extension reports hit 404 and the CLI path could
+  never read a position. It also never called `attachSpeechToChat()`, so that chat box showed user
+  messages but no script lines. It now uses `startChatServer()` + `attachSpeechToChat()` like the
+  plugin and `bridge` do, and the duplicated templates are deleted.
+- **`watch.mjs reply` wrote straight to the stream** with `appendChat('assistant', …)`, so the text
+  appeared in the chat box but was never handed to speech subscribers — a TTS adapter stayed silent
+  while the page showed the words. It now uses `appendAssistantSay()`, which writes the stream *and*
+  emits the speech event, matching what `watch_together({say})` does.
+
+### Fixed
+
 - **The plugin passed the browser's debug port to `ensureChatSession()`**, so the chat server tried
   to bind 9333 — the port the browser is already using. The bind failed, the error was swallowed,
   and the chat box silently never came up in DSH. It now uses the chat port (9377) as intended.

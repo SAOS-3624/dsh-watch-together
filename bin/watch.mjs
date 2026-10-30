@@ -45,7 +45,9 @@ import { checkBiliLogin, fetchRemoteSubtitles } from 'dsh-video-storyboard/subti
 import { runStoryboard, formatManifest } from 'dsh-video-storyboard/pipeline';
 import { boardOptions, charsForDetail } from 'dsh-video-storyboard/board';
 import { DEFAULT_LOOKAHEAD, makePlan, windowFor } from '../src/batches.js';
-import { DEFAULT_CHAT_PORT, chatFile } from '../src/chat.js';
+import {
+  DEFAULT_CHAT_PORT, appendAssistantSay, attachSpeechToChat, chatAlive, chatFile, startChatServer,
+} from '../src/chat.js';
 import { bridgeStatus, readHello } from '../src/position-bridge.js';
 import { readPositionOrNull } from '../src/watch-browser.js';
 import { lineNear, speechLag } from '../src/speech.js';
@@ -963,144 +965,37 @@ function makeChatWatcher() {
   };
 }
 
-const CHAT_PAGE = `<!doctype html><html lang="zh"><head><meta charset="utf-8"><title>陪看</title>
-<meta name="viewport" content="width=device-width,initial-scale=1">
-<style>
-body{background:#161616;color:#e0e0e0;font:16px/1.65 system-ui,-apple-system,"Segoe UI",sans-serif;margin:0;padding:14px;max-width:680px}
-#log{height:calc(100vh - 140px);overflow-y:auto;padding-bottom:8px}
-.m{margin:8px 0;padding:9px 12px;border-radius:10px;white-space:pre-wrap;word-break:break-word}
-.u{background:#26384a;margin-left:44px}
-.a{background:#242424;margin-right:44px}
-.t{font-size:11px;opacity:.45;margin-bottom:3px}
-form{display:flex;gap:8px;margin-top:10px}
-input{flex:1;padding:11px;background:#202020;border:1px solid #3a3a3a;color:#eee;border-radius:9px;font-size:16px;outline:none}
-input:focus{border-color:#4a7ab5}
-#send{padding:11px 18px;background:#3a6ea5;color:#fff;border:0;border-radius:9px;font-size:15px}
-#pop{padding:11px 14px;background:#2f4a66;color:#dfe9f5;border:0;border-radius:9px;font-size:15px}
-</style></head><body>
-<div id="log"></div>
-<form id="f"><input id="i" placeholder="说点什么…（回车发送）" autocomplete="off">
-<button type="button" id="pop" title="浮到最上层（画中画小窗）">↑</button>
-<button type="submit" id="send">发送</button></form>
-<script>
-(function(){
-  var SEND="http://127.0.0.1:9377/api/say";
-  var f=document.getElementById("f"), i=document.getElementById("i"), log=document.getElementById("log");
-  function esc(s){return String(s).replace(/[<>&]/g,function(c){return {"<":"&lt;",">":"&gt;","&":"&amp;"}[c];});}
-  function add(m){var d=document.createElement("div");d.className="m "+(m.role==="user"?"u":"a");
-    d.innerHTML="<div class=t>"+(m.role==="user"?"我":"陪看")+"</div>"+esc(m.text);
-    log.appendChild(d);log.scrollTop=log.scrollHeight;}
-  function send(){var v=i.value.trim();if(!v)return;i.value="";
-    fetch(SEND,{method:"POST",headers:{"content-type":"application/json"},body:JSON.stringify({text:v})}).catch(function(){});}
-  f.addEventListener("submit",function(e){e.preventDefault();send();});
-  var n=0;
-  function poll(){
-    fetch("http://127.0.0.1:9377/api/messages?since="+n+"&t="+Date.now()).then(function(r){return r.json();}).then(function(j){
-      for(var k=0;k<j.msgs.length;k++)add(j.msgs[k]);
-      n=j.total;setTimeout(poll,600);
-    }).catch(function(){setTimeout(poll,1500);});
-  }
-  var pip=null;
-  document.getElementById("pop").addEventListener("click",function(){
-    if(pip){try{pip.focus();}catch(e){}return;}
-    if(!("documentPictureInPicture" in window)){alert("这个浏览器不支持置顶小窗，需要 Edge/Chrome 116+");return;}
-    documentPictureInPicture.requestWindow({width:440,height:92}).then(function(w){
-      pip=w;
-      var st=w.document.createElement("style");st.textContent=document.querySelector("style").textContent;
-      w.document.head.appendChild(st);
-      w.document.body.style.cssText="margin:0;height:100vh;overflow:hidden";
-      w.document.body.appendChild(f);i.focus();
-      w.addEventListener("pagehide",function(){document.body.appendChild(f);pip=null;i.focus();});
-    }).catch(function(e){pip=null;alert("悬浮失败: "+e.message);});
-  });
-  poll();i.focus();
-})();
-</script></body></html>`;
+/* 页面模板不再在这里复制一份 —— 只有一份，在 src/chat-view.js */
 
-
-// 胶囊版：只有一个输入框，配合独立小窗（--app）用，不挡视野
-const WIDGET_PAGE = `<!doctype html><html lang="zh"><head><meta charset="utf-8"><title>陪看</title>
-<style>
-html,body{margin:0;height:100%;background:#1b1b1b;overflow:hidden;font-family:system-ui,sans-serif}
-form{height:100%;display:flex;align-items:center;padding:0 8px;gap:6px}
-input{flex:1;height:42px;background:#262626;border:1px solid #3a3a3a;color:#eee;border-radius:21px;padding:0 16px;font-size:15px;outline:none}
-input:focus{border-color:#4a8cd0;background:#2a2a2a}
-input::placeholder{color:#666}
-#pop{width:42px;height:42px;padding:0;border:0;border-radius:21px;background:#2f4a66;color:#dfe9f5;font-size:17px;cursor:pointer}
-</style></head><body>
-<form id="f"><input id="i" placeholder="说点什么…（回车发送）" autocomplete="off">
-<button type="button" id="pop" title="浮到最上层（画中画小窗）">↑</button></form>
-<script>
-(function(){
-  var SEND="http://127.0.0.1:9377/api/say";
-  var f=document.getElementById("f"), i=document.getElementById("i");
-  function send(){var v=i.value.trim();if(!v)return;i.value="";
-    fetch(SEND,{method:"POST",headers:{"content-type":"application/json"},body:JSON.stringify({text:v})}).catch(function(){});}
-  f.addEventListener("submit",function(e){e.preventDefault();send();});
-  var pip=null;
-  document.getElementById("pop").addEventListener("click",function(){
-    if(pip){try{pip.focus();}catch(e){}return;}
-    if(!("documentPictureInPicture" in window)){alert("这个浏览器不支持置顶小窗，需要 Edge/Chrome 116+");return;}
-    documentPictureInPicture.requestWindow({width:440,height:92}).then(function(w){
-      pip=w;
-      var st=w.document.createElement("style");st.textContent=document.querySelector("style").textContent;
-      w.document.head.appendChild(st);
-      w.document.body.style.cssText="margin:0;height:100vh;overflow:hidden";
-      w.document.body.appendChild(f);i.focus();
-      w.addEventListener("pagehide",function(){document.body.appendChild(f);pip=null;i.focus();});
-    }).catch(function(e){pip=null;alert("悬浮失败: "+e.message);});
-  });
-  i.focus();
-})();
-</script></body></html>`;
-
-/** 起一个独立的聊天框（localhost），它才是插话入口 —— 不经过宿主，落盘即时 */
 async function cmdChat(port = 9377) {
-  const server = http.createServer((req, res) => {
-    let u;
-    try { u = new URL(req.url, 'http://127.0.0.1'); } catch { res.writeHead(400); res.end(); return; }
+  // **用 chat-server 那份服务，不再自己手搓一份。**
+  // 以前这里复制了一份 HTTP 服务和两个 HTML 模板，结果两边慢慢跑偏：
+  // 缺了 /api/position 和 /api/hello —— 只跑 `watch.mjs chat` 时，
+  // 浏览器扩展上报的位置会 404，陪看在 CLI 这条路下根本读不到位置。
+  // 现在和 `bridge`、和插件共用同一份实现。
+  const { startChatServer: serve } = await import('../src/chat.js');
 
-    if (u.pathname === '/' || u.pathname === '/index.html') {
-      res.writeHead(200, { 'content-type': 'text/html; charset=utf-8' });
-      res.end(CHAT_PAGE);
-      return;
-    }
-    if (u.pathname === '/widget') {
-      res.writeHead(200, { 'content-type': 'text/html; charset=utf-8' });
-      res.end(WIDGET_PAGE);
-      return;
-    }
-    if (u.pathname === '/api/messages') {
-      const since = Math.max(0, Number(u.searchParams.get('since')) || 0);
-      const all = chatRead();
-      res.writeHead(200, { 'content-type': 'application/json; charset=utf-8', 'cache-control': 'no-store' });
-      res.end(JSON.stringify({ total: all.length, msgs: all.slice(since) }));
-      return;
-    }
-    if (u.pathname === '/api/say' && req.method === 'POST') {
-      let body = '';
-      req.on('data', (c) => { body += c; if (body.length > 8000) req.destroy(); });
-      req.on('end', () => {
-        try {
-          const j = JSON.parse(body);
-          const text = String(j?.text ?? '').trim().slice(0, 500);
-          if (text) { chatAppend('user', text); console.log(`[用户] ${text}`); }
-        } catch { /* 坏请求就算了 */ }
-        res.writeHead(200, { 'content-type': 'application/json' });
-        res.end('{"ok":true}');
-      });
-      return;
-    }
-    res.writeHead(404, { 'content-type': 'text/plain' });
-    res.end('not found');
-  });
+  // 台词也要进聊天框。插件入口 index.js 里接了同一份，CLI 这里得自己接一次，
+  // 否则聊天框里只有用户说的话，看不到剧本。
+  const detach = attachSpeechToChat();
 
-  await new Promise((resolve, reject) => {
-    server.once('error', reject);
-    server.listen(port, '127.0.0.1', resolve);
-  });
+  let srv = null;
+  try {
+    srv = await serve({ port, onUser: (text) => console.log(`[用户] ${text}`) });
+  } catch (e) {
+    if (await chatAlive(port)) {
+      console.log(`端口 ${port} 上已经有一个服务在跑，直接用它。`);
+    } else {
+      console.log(`起不来（${String(e?.message ?? e)}）。换个端口：node watch.mjs chat ${Number(port) + 1}`);
+      detach?.();
+      return 1;
+    }
+  }
+
   console.log(`聊天框已就绪 → http://127.0.0.1:${port}`);
   console.log('在这个页面里打字，阻塞中的 cue 会立刻收到（自己写盘，不经过宿主，没有延迟）');
+  console.log('剧本台词也会实时出现在这里 —— 和视频同一时刻。');
+
   // 浏览器在的话顺手开一个标签，省得用户手动找地址
   const tabUrl = `http://127.0.0.1:${port}/`;
   if (await hasDebugPort({ port: PORT })) {
@@ -1111,11 +1006,13 @@ async function cmdChat(port = 9377) {
   await new Promise(() => {});   // 常驻，直到被 kill
 }
 
-/** 把模型的话写进聊天框（页面轮询就能看到） */
+/** 把模型的话写进聊天框（页面轮询就能看到） *//** 把模型的话写进聊天框（页面轮询就能看到） */
 async function cmdReply(text) {
   const t = String(text ?? '').trim();
   if (!t) { console.log('用法: node watch.mjs reply "要说的话"'); return 2; }
-  chatAppend('assistant', t.slice(0, 2000));
+  // 走 appendAssistantSay 而不是直接写流：同一条事件既进聊天框、又交给声音订阅者。
+  // 直接 appendChat 的话，页面看得到，但 TTS 不会念 —— 两处消费会不一致。
+  appendAssistantSay(t.slice(0, 2000), { t: null });
   console.log(JSON.stringify({ ok: true, text: t.slice(0, 60) }));
   return 0;
 }
