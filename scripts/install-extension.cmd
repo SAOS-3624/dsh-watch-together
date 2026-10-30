@@ -19,7 +19,8 @@ if errorlevel 1 (
   exit /b 1
 )
 
-node "%ROOT%\bin\watch.mjs" install-extension
+REM --no-wait：让 node 不自己等回车，统一由下面的 pause 兜住（只按一次）
+node "%ROOT%\bin\watch.mjs" install-extension --no-wait
 echo.
 echo  --------------------------------------------
 echo   装好之后，再双击 scripts\bridge.cmd 可以验证通不通。

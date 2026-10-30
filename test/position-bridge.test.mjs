@@ -13,7 +13,8 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
 import {
-  BRIDGE_FILE, bridgeEnabled, bridgePath, normalizeBridgeSample, readBridge, writeBridge,
+  BRIDGE_FILE, bridgeEnabled, bridgePath, normalizeBridgeSample, readBridge, readHello,
+  writeBridge, writeHello,
 } from '../src/position-bridge.js';
 import { startChatServer } from '../src/chat-server.js';
 
@@ -127,6 +128,47 @@ test('HTTP：坏数据返回 400，不污染已有的位置', async () => {
     assert.equal(bad.status, 400);
     const still = await readBridge({ env });
     assert.equal(still.pos, 30, '坏请求不该把上一次的好位置冲掉');
+  } finally {
+    await srv.close();
+    await rm(dir, { recursive: true, force: true });
+  }
+});
+
+
+// ---------------------------------------------------------------- 心跳
+
+test('心跳：扩展打过招呼就留痕，没打过就是没有', async () => {
+  const { dir, env } = await tempEnv();
+  try {
+    assert.equal(await readHello({ env }), null, '什么都没发生的时候必须是 null');
+    await writeHello({ version: '0.1.0' }, { env, now: 5000 });
+    const h = await readHello({ env, now: 8000 });
+    assert.equal(h.version, '0.1.0');
+    assert.equal(h.ageMs, 3000);
+    // 心跳**没有**过期概念：它证明的是"曾经连通过"，几小时前也算数
+    assert.ok(await readHello({ env, now: 5000 + 6 * 3600_000 }));
+  } finally {
+    await rm(dir, { recursive: true, force: true });
+  }
+});
+
+test('HTTP：扩展打招呼 → 能查到一个版本号，用来区分"没装"和"没视频"', async () => {
+  const { dir, env } = await tempEnv();
+  const srv = await startChatServer({ port: 0, env });
+  const port = srv.server.address().port;
+  try {
+    const before = await fetch(`http://127.0.0.1:${port}/api/hello`).then((r) => r.json());
+    assert.equal(before.ok, false);
+
+    await fetch(`http://127.0.0.1:${port}/api/hello`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ version: '0.1.0' }),
+    });
+
+    const after = await fetch(`http://127.0.0.1:${port}/api/hello`).then((r) => r.json());
+    assert.equal(after.ok, true);
+    assert.equal(after.version, '0.1.0');
   } finally {
     await srv.close();
     await rm(dir, { recursive: true, force: true });

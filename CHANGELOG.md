@@ -33,6 +33,16 @@ one-time install it works in **your normal browser**, with your bookmarks and yo
   The last three clicks cannot be automated — Chrome 137 removed `--load-extension` from branded
   builds and extension installs are HMAC-protected, deliberately, because silent install is the
   malware channel. The guide says so plainly instead of pretending otherwise.
+- **The extension now says hello on load** (`POST /api/hello`, persisted as `extension.json`).
+  Without it, "extension not installed" and "installed but no video playing" look identical from the
+  outside — both are silence. `doctor` and `bridge` can now tell them apart.
+- `extension/welcome.html` opens on install/update: the three verification steps, plus what each
+  popup state means. Install is the one moment the user has no idea what to expect.
+- `node watch.mjs install-extension --steps` re-prints just the three clicks without touching any
+  file — for when the window scrolled past or was closed.
+- `install-extension` now waits for Enter when it has a TTY, so the instructions cannot vanish
+  before being read (running it from an IDE "Run" button has no TTY, which is the common way this
+  happened).
 - `node watch.mjs bridge` (and `scripts/bridge.cmd`) starts just the position receiver and says
   "✓ 收到上报" on the first report. Without it, a user who installs the extension and immediately
   looks at the popup sees "not connected" — because the server only runs during `watch_together`

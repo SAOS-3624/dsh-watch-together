@@ -46,7 +46,7 @@ import { runStoryboard, formatManifest } from 'dsh-video-storyboard/pipeline';
 import { boardOptions, charsForDetail } from 'dsh-video-storyboard/board';
 import { DEFAULT_LOOKAHEAD, makePlan, windowFor } from '../src/batches.js';
 import { DEFAULT_CHAT_PORT, chatFile } from '../src/chat.js';
-import { bridgeStatus } from '../src/position-bridge.js';
+import { bridgeStatus, readHello } from '../src/position-bridge.js';
 import { readPositionOrNull } from '../src/watch-browser.js';
 import { lineNear, speechLag } from '../src/speech.js';
 import {
@@ -321,14 +321,44 @@ function findBrowser() {
  *
  * 这个命令负责把其它的都干掉：复制到固定路径、路径塞进剪贴板、帮你打开扩展管理页。
  */
+const STEPS = [
+  '  1. 打开浏览器的扩展管理页：Edge 输入 edge://extensions ，Chrome 输入 chrome://extensions',
+  '     把「开发人员模式」/「开发者模式」的开关打开（Edge 在左下角，Chrome 在右上角）',
+  '  2. 点「加载解压缩的扩展」/「加载已解压的扩展程序」',
+  '  3. 弹出的选择框里，把上面「扩展位置」那条路径粘到地址栏 → 回车 → 点「选择文件夹」',
+];
+
+function printSteps(dst, { clipOk = false } = {}) {
+  console.log('');
+  console.log(`  扩展位置：${dst}`);
+  console.log(`            ${clipOk ? '（已经复制到剪贴板，第 3 步直接 Ctrl+V）' : '（没能复制到剪贴板，请手动抄下这条路径）'}`);
+  console.log('');
+  // 别写死下标 —— 步骤文本一改就漏印（第一版就漏了第 3 步）
+  for (const line of STEPS) console.log(line);
+  console.log('');
+  console.log('装完点工具栏上的蓝色图标：显示「已连上」就成。');
+  console.log('');
+  console.log('> 看不到图标？点右上角拼图图标 🧩，把「陪看位置桥」固定出来。');
+  console.log('> 以前从仓库目录装过旧版的，先把那张旧卡片「移除」，否则会有两个。');
+}
+
 async function cmdInstallExtension(opts = {}) {
+  const dst = extensionTarget();
+
+  // 只打印步骤：用户随时可以再问一次"到底点哪"
+  if (opts.stepsOnly) {
+    printSteps(dst, { clipOk: false });
+    console.log('');
+    console.log('（这条路不会再复制文件。第一次装请不加 --steps 跑一遍。）');
+    return 0;
+  }
+
   const src = join(PKG_ROOT, 'extension');
   if (!existsSync(join(src, 'manifest.json'))) {
     console.log(`找不到扩展源码：${src}\n（这个命令得在装好的包里跑）`);
     return 1;
   }
 
-  const dst = extensionTarget();
   try {
     mkdirSync(dirname(dst), { recursive: true });
     rmSync(dst, { recursive: true, force: true });
@@ -338,7 +368,7 @@ async function cmdInstallExtension(opts = {}) {
     return 1;
   }
 
-  // 路径塞剪贴板：下一步要粘到"选择文件夹"的地址栏里
+  // 路径塞剪贴板：第 3 步要粘到"选择文件夹"的地址栏里
   let clipOk = true;
   try {
     execFileSync('clip', [], { input: dst, timeout: 5000 });
@@ -354,28 +384,23 @@ async function cmdInstallExtension(opts = {}) {
   }
 
   console.log('');
-  console.log('扩展已经准备好了。剩下的三步必须你亲手点 ——');
-  console.log('浏览器不允许任何程序偷偷装扩展（这条限制是防恶意软件的，绕不过去）。');
-  console.log('');
-  console.log(`  扩展位置：${dst}`);
-  console.log(`            ${clipOk ? '（已经复制到剪贴板，下一步直接粘）' : '（没能复制到剪贴板，请手动复制上面这行）'}`);
-  console.log('');
+  console.log('文件准备好了。剩下三下必须你亲手点 ——');
+  console.log('浏览器不允许任何程序偷偷装扩展（这是防恶意软件的，绕不过去）。');
   if (opened) {
-    console.log(`  1. 浏览器应该已经打开了扩展管理页（${br.kind === 'edge' ? 'edge' : 'chrome'}://extensions）`);
-  } else {
-    console.log('  1. 打开浏览器的扩展管理页：Edge 输入 edge://extensions ，Chrome 输入 chrome://extensions');
+    console.log(`（已经帮你打开了 ${br.kind}://extensions）`);
   }
-  console.log('     打开左下角（Edge）/ 右上角（Chrome）的「开发人员模式」开关');
-  console.log('  2. 点「加载解压缩的扩展」/「加载已解压的扩展程序」');
-  console.log('  3. 在弹出的选择框里，把上面那个路径粘到地址栏 → 回车 → 点「选择文件夹」');
-  console.log('');
-  console.log('装完点工具栏上的蓝色图标：显示「已连上」就成。');
-  console.log('');
-  console.log('> 以前从仓库目录里装过旧版的，先把那张旧卡片「移除」，否则会有两个。');
-  console.log('> 图标看不见？点右上角拼图图标 🧩，把「陪看位置桥」固定出来。');
-  console.log('');
-  console.log('下一步：跑 `node bin/watch.mjs bridge`（或者照常让 DSH 陪看），');
-  console.log('        然后点扩展图标看是不是「已连上」。');
+  printSteps(dst, { clipOk });
+
+  // 从"运行"按钮、非交互终端跑的时候没有 pause，窗口会一闪而过。
+  // 只要还有可交互的输入，就停下来等人看完 —— 别让那三行字溜走。
+  if (process.stdin.isTTY && !opts.noWait) {
+    await new Promise((resolve) => {
+      process.stdout.write('按回车关掉这个窗口… ');
+      process.stdin.resume();
+      process.stdin.once('data', () => resolve());
+    });
+    console.log('');
+  }
   return 0;
 }
 
@@ -388,7 +413,7 @@ async function cmdInstallExtension(opts = {}) {
  */
 async function cmdBridge(arg) {
   const port = Number(arg) || Number(process.env.WATCH_PORT) || DEFAULT_CHAT_PORT;
-  const { startChatServer, chatAlive } = await import('../src/chat.js');  // 懒加载：只有这条命令需要起服务
+  const { startChatServer, chatAlive } = await import('../src/chat.js');
 
   let srv = null;
   try {
@@ -403,26 +428,65 @@ async function cmdBridge(arg) {
   }
 
   console.log(`接位置的服务已启动： http://127.0.0.1:${port}`);
-  console.log('这个窗口别关。装好扩展后随便播个视频，它一收到就会在这里说一声。');
-  console.log('（按 Ctrl+C 退出）\n');
+  console.log('这个窗口别关。');
+  console.log('');
+  console.log('接下来的判断，全靠这个窗口自己说 —— 它每 3 秒检查一次，');
+  console.log('会明确告诉你是"扩展没装"还是"扩展装了但没在播"。');
+  console.log('（按 Ctrl+C 退出）');
+  console.log('');
 
-  let seen = false;
-  let quietSince = Date.now();
-  const timer = setInterval(async () => {
+  let lastStage = null;
+  let okOnce = false;
+
+  const stage = async () => {
     const bs = await bridgeStatus().catch(() => null);
-    if (bs?.fresh) {
-      if (!seen) {
-        seen = true;
-        console.log(`✓ 收到上报：${bs.title ?? '(没有标题)'} @ ${tc(bs.pos)}`);
+    if (bs?.fresh) return { kind: 'ok', bs };
+    const h = await readHello().catch(() => null);
+    if (h) return { kind: 'no-video', h };
+    return { kind: 'no-extension' };
+  };
+
+  const explain = {
+    ok: (x) => `✓ 收到上报：${x.bs.title ?? '(没有标题)'} @ ${tc(x.bs.pos)}`,
+    'no-video': (x) => [
+      `… 扩展已经连上了（版本 ${x.h.version ?? '?'}，${Math.round(x.h.ageMs / 1000)} 秒前打过招呼），`,
+      '  但还没收到播放位置。三种可能：',
+      '   · 当前标签页里没有正在播的视频 → 点开一个视频、按播放；',
+      '   · 视频暂停着 → 陪看只在播放时更新位置（暂停时不动是正常的）；',
+      '   · 播放器嵌在别人的网页里（iframe）→ 这种读不到，只能用 start-edge-debug.cmd。',
+    ].join('\n'),
+    'no-extension': () => [
+      '… 还没收到扩展的任何消息。说明扩展**没有被加载**，不是位置的问题。',
+      '  照这个顺序查：',
+      '   1. 浏览器地址栏输入 edge://extensions —— 列表里有「陪看位置桥」吗？',
+      '      没有 → 还没装，跑：node watch.mjs install-extension --steps',
+      '   2. 有，但开关是灰的 → 点一下把它打开；',
+      '   3. 有、也开着，但这里还是没消息 → 把扩展那张卡片上的「重新加载」点一下。',
+    ].join('\n'),
+  };
+
+  const timer = setInterval(async () => {
+    const st = await stage();
+    if (st.kind === 'ok') {
+      if (!okOnce) {
+        okOnce = true;
+        console.log(explain.ok(st));
         console.log('  通了。以后正常开浏览器就行，这个窗口可以关掉。');
       }
-    } else if (!seen && Date.now() - quietSince > 60_000) {
-      quietSince = Date.now();
-      console.log('  还没收到上报。检查：扩展装了吗？启用了吗？那个标签页里真的有视频在播吗？');
+      lastStage = 'ok';
+      return;
     }
-  }, 2000);
+    // 一旦通过就不再唠叨：位置文件 5 秒过期，用户暂停一下就会变回"没有位置"，
+    // 这时候再刷一遍「三种可能」纯属添乱。
+    if (okOnce) return;
+    // 只在这一阶段第一次出现时说一遍，别每 3 秒刷一次同样的字
+    if (st.kind !== lastStage) {
+      lastStage = st.kind;
+      console.log(explain[st.kind](st));
+      console.log('');
+    }
+  }, 3000);
 
-  // 常驻：等用户看完 / 验证完
   await new Promise(() => {});
   clearInterval(timer);
   if (srv) await srv.close();
@@ -451,13 +515,19 @@ async function cmdDoctor() {
   add('debug-port', port, `${PORT}${port ? '' : ' —— 没开（装了浏览器扩展就不用开）'}`);
 
   // 浏览器扩展那条通道：只要它在报，就不需要调试端口
+  //
+  // 三种情况必须分开说，否则用户没法判断该修什么：
+  //   在报位置        → 全通
+  //   只打过招呼      → 扩展装了、能连上服务，问题在"这个页面没视频"
+  //   连招呼都没有    → 扩展根本没加载（没装 / 没启用 / 装错目录）
   const bs = await bridgeStatus().catch(() => null);
+  const hello = await readHello().catch(() => null);
   add('extension', Boolean(bs?.fresh),
     bs?.fresh
       ? `正在上报 ${tc(bs.pos)} · ${bs.title ?? ''}`.trim()
-      : (bs?.ageMs !== null && bs?.ageMs !== undefined
-        ? `有上报但已经 ${Math.round(bs.ageMs / 1000)} 秒没更新了 —— 浏览器关了吗？`
-        : '没有上报 —— 扩展没装 / 没启用 / 9377 服务没起'));
+      : (hello
+        ? `扩展已加载（v${hello.version ?? '?'}，${Math.round(hello.ageMs / 1000)} 秒前连上），但还没有视频在播`
+        : '扩展没加载 —— 没装 / 没启用，跑 install-extension --steps 看步骤'));
 
   let login = null;
   if (existsSync(COOKIES)) {
@@ -1363,7 +1433,11 @@ async function cli() {
       case 'chat': code = await cmdChat(rest[0] ? Number(rest[0]) : 9377); break;
       case 'bridge': code = await cmdBridge(rest[0]); break;
       case 'install-extension': case 'install-ext':
-        code = await cmdInstallExtension({ open: !rest.includes('--no-open') });
+        code = await cmdInstallExtension({
+          open: !rest.includes('--no-open'),
+          stepsOnly: rest.includes('--steps'),
+          noWait: rest.includes('--no-wait'),
+        });
         break;
       case 'reply': code = await cmdReply(rest.join(' ')); break;
       case 'voices': code = await cmdVoices(); break;

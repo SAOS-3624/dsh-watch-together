@@ -1,0 +1,66 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<title>陪看位置桥 · 装好了</title>
+<style>
+  :root { color-scheme: light dark; }
+  body {
+    margin: 0; padding: 56px 24px;
+    font: 15px/1.8 "Microsoft YaHei UI", "PingFang SC", system-ui, sans-serif;
+    background: Canvas; color: CanvasText;
+  }
+  .wrap { max-width: 620px; margin: 0 auto; }
+  h1 { font-size: 22px; font-weight: 600; margin: 0 0 6px; }
+  .sub { color: #888; margin-bottom: 28px; }
+  ol { padding-left: 22px; margin: 0 0 28px; }
+  li { margin-bottom: 12px; }
+  .box { border: 1px solid #0002; border-radius: 10px; padding: 16px 18px; margin-bottom: 16px; }
+  .box h2 { font-size: 15px; font-weight: 600; margin: 0 0 8px; }
+  code { background: #0000000f; padding: 1px 5px; border-radius: 4px; font-size: 13px; }
+  .ok { color: #17803d; font-weight: 600; }
+  .bad { color: #c0392b; font-weight: 600; }
+  .tip { color: #888; font-size: 13px; }
+</style>
+</head>
+<body>
+<div class="wrap">
+
+  <h1>装好了 ✅</h1>
+  <div class="sub">这个扩展只做一件事：把"视频播到第几秒"报给本机的陪看程序。不读密码，不联网。</div>
+
+  <h2 style="font-size:15px;font-weight:600;margin:0 0 10px;">现在做这两步，验证它通了</h2>
+  <ol>
+    <li>随便打开一个视频（B 站、本地文件都行），<b>按播放</b>。</li>
+    <li>点浏览器右上角工具栏里的 <b>蓝色圆图标</b>（看不到就点拼图图标 🧩 再固定出来）。</li>
+  </ol>
+
+  <div class="box">
+    <h2>看到「<span class="ok">已连上</span>」并且秒数在跳 → 成功了</h2>
+    <div class="tip">以后就不用管了。你平时怎么开浏览器都行。</div>
+  </div>
+
+  <div class="box">
+    <h2>看到「<span class="bad">未连上</span>」→ 陪看程序还没起来</h2>
+    <div class="tip" style="margin-top:8px;">
+      这个扩展只是"往外报"，得有人接。任选一种让服务起来：
+      <ul style="margin:8px 0 0;padding-left:20px;">
+        <li>在 DSH 里说一句「陪我看视频」；</li>
+        <li>或者双击 <code>scripts\bridge.cmd</code>，它会开一个专门等消息的窗口。</li>
+      </ul>
+      起来之后再看这个面板，就是「已连上」了。
+    </div>
+  </div>
+
+  <div class="box">
+    <h2>看到「服务在，没有视频」→ 服务是通的，只是这个标签页没在播</h2>
+    <div class="tip">切到正在播的那个标签页，或者按一下播放键，再看一次。</div>
+  </div>
+
+  <p class="tip" style="margin-top:28px;">
+    这个页面可以关掉了。以后想看状态，直接点工具栏那个蓝色图标。
+  </p>
+
+</div>
+</body>
+</html>

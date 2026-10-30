@@ -26,6 +26,16 @@ import { join } from 'node:path';
 import { cacheDir } from 'dsh-video-storyboard/cache';
 
 export const BRIDGE_FILE = 'position.json';
+/**
+ * 扩展"我还活着"的心跳文件。
+ *
+ * 为什么要单独一个文件：**"扩展没装"和"装了但没在播视频"从外部看是一模一样的**
+ * —— 都表现为"什么也没收到"。用户没法区分，我们也没法在窗口里说清楚。
+ * 扩展加载时（以及 service worker 每次醒来时）打一声招呼，就把这两种情况分开了：
+ *   · 有这个文件          → 扩展装了、启用了、能连上本机服务；问题在"没有视频"
+ *   · 没有这个文件        → 扩展根本没加载（没装 / 没启用 / 装错了目录）
+ */
+export const HELLO_FILE = 'extension.json';
 
 /**
  * 多久算"新鲜的"。
@@ -118,6 +128,35 @@ export async function readBridge({
     at,
     ageMs,
   };
+}
+
+/** 扩展打的一声招呼（版本、时刻）。旧了也无所谓 —— 它证明的是"曾经连通过" */
+export async function writeHello(raw, { env = process.env, now = Date.now(), dir = null } = {}) {
+  const sample = {
+    version: typeof raw?.version === 'string' ? raw.version.slice(0, 40) : null,
+    at: now,
+  };
+  const base = dir ?? cacheDir(env);
+  try {
+    await mkdir(base, { recursive: true });
+    const target = join(base, HELLO_FILE);
+    await writeFile(`${target}.tmp`, JSON.stringify(sample), 'utf8');
+    await rename(`${target}.tmp`, target);
+  } catch { /* 存不下不影响任何事 */ }
+  return sample;
+}
+
+/** 扩展打过招呼吗？多久以前？`在不在线` 由调用方按需判断 */
+export async function readHello({ env = process.env, now = Date.now(), dir = null } = {}) {
+  if (!bridgeEnabled(env)) return null;
+  try {
+    const raw = JSON.parse(await readFile(join(dir ?? cacheDir(env), HELLO_FILE), 'utf8'));
+    const at = num(raw?.at);
+    if (at === null) return null;
+    return { version: raw?.version ?? null, at, ageMs: Math.max(0, now - at) };
+  } catch {
+    return null;
+  }
 }
 
 /** 给 doctor / status 用的一行：不管新不新鲜，都如实说 */

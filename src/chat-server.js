@@ -18,7 +18,7 @@ import { createServer } from 'node:http';
 
 import { CHAT_PAGE, WIDGET_PAGE, renderPage } from './chat-view.js';
 import { appendChat, readChat } from './chat-store.js';
-import { readBridge, writeBridge } from './position-bridge.js';
+import { readBridge, readHello, writeBridge, writeHello } from './position-bridge.js';
 
 export const DEFAULT_CHAT_PORT = 9377;
 
@@ -52,6 +52,26 @@ export async function startChatServer({
     if (req.method === 'OPTIONS') {
       res.writeHead(204, cors);
       res.end();
+      return;
+    }
+
+    // ---- 扩展加载时打的招呼：用来区分"没装"和"装了但没视频"
+    if (u.pathname === '/api/hello') {
+      if (req.method === 'POST') {
+        let body = '';
+        req.on('data', (c) => { body += c; if (body.length > 4000) req.destroy(); });
+        req.on('end', async () => {
+          let j = {};
+          try { j = JSON.parse(body || '{}'); } catch { /* 空 body 也算打招呼 */ }
+          await writeHello(j, { env }).catch(() => null);
+          res.writeHead(200, { ...cors, 'content-type': 'application/json; charset=utf-8' });
+          res.end('{"ok":true}');
+        });
+        return;
+      }
+      const h = await readHello({ env }).catch(() => null);
+      res.writeHead(200, { ...cors, 'content-type': 'application/json; charset=utf-8' });
+      res.end(JSON.stringify(h ? { ok: true, ...h } : { ok: false }));
       return;
     }
 
