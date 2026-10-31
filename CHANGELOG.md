@@ -5,6 +5,49 @@ This package starts its own version line at `0.1.0` — it is not a continuation
 
 ## [Unreleased]
 
+### Fixed — speech piled up in the engine queue, and an interjection could no longer break a blocked wait
+
+Two reports in one message: "吐字太快，台词会挤到一起，只有上一句念完才到下一句，话太密会导致语音越来越
+滞后" and "悬浮窗插话不能让他从等待中出来 —— 这个功能之前是好的".
+
+**The voice queue.** `examples/voice-edge-tts` chains every `due` event onto an unbounded serial promise
+("two lines never overlap"). Lines are now scheduled at the right second, so when they arrive faster
+than the engine can speak them the chain simply grows: speech drifts further from the picture with
+every line, and the caption (written on `spoken`) drifts with it.
+
+- `src/watch-loop.js` — the clock now keeps a **voice budget**: after handing out a line it records
+  `voiceBusyUntil = now + speechSeconds(len)` and will not hand out the next one while the engine is
+  still talking. A line that misses its window by more than the late grace is dropped by `dueLine`
+  as usual: **speak one line less rather than one line later**.
+- `src/speech.js` — `speechSeconds(chars)`: full spoken duration (`0.35 + chars/5`, 0.8–30 s).
+  `speechLag()` stays as it was — that one answers "when may I start talking", this one answers
+  "how long is the engine busy".
+- `examples/voice-edge-tts` — safety net: if a queued line has been waiting more than 3.5 s it is
+  **abandoned** (logged) instead of spoken, and the queue empties immediately.
+- `src/speech-bus.js` / `src/chat-store.js` — a fourth state, `skipped`: the adapter reports that it
+  gave up on a line, and `attachSpeechToChat` cancels the pending fallback timer for it. Without this
+  the 2.5 s fallback would paint a caption for a line that was never spoken.
+
+**The interjection.** `chat.jsonl` is a **consuming** channel: `poll()` marks a message read. The
+blocking wait and the watch loop share one watcher, and the loop's handler is `followup()` — which
+cannot interrupt a session that is sitting inside a tool call (the message is only processed when
+the turn ends). So whichever polled first decided the outcome, and the loop (every 2 s) sometimes
+won: the interjection was swallowed, the wait's `poll()` never saw it, and the user's "stop, I have a
+question" did nothing until the segment ended.
+
+- `src/interrupt.js` — `enterChatWait()` / `chatWaiterCount()`: whoever is blocking on purpose
+  **owns** the channel. `raceChat()` (storyboard build, prefetch) registers too.
+- `src/watch-loop.js` — `wakeOnChat` is skipped entirely while `chatWaiterCount() > 0`. The wake path
+  still works when the model is idle (no waiter), which is its whole purpose.
+- `src/watch-run.js` (the `wait: true` loop), `src/watch-modes.js` (`waitUntil` / `waitForRefill` /
+  `nextLine`), `src/watch-source.js` (`waitForVideo`) — all register as waiters for the duration of
+  their loop.
+
+Tests: `test/lines-timing.test.mjs` (engine busy → next line is not handed out; the overdue one is
+dropped), `test/chat.test.mjs` (`skipped` writes nothing, not even the fallback),
+`test/interject-anywhere.test.mjs` (the loop must not consume while a waiter is active; counter
+cannot go negative).
+
 ### Fixed — scripted lines came out like a machine gun, and minutes before the picture
 
 Reported as: "台词出现时间早了很多，而且和机关枪一样突突突一下出来一大堆，时间点都比视频早了".

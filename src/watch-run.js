@@ -27,7 +27,7 @@ import { speechEvents } from './voice.js';
 import { appendSpoken } from './chat.js';
 import { describeLatency, recordLatency } from './latency.js';
 import { DEFAULT_LOOKAHEAD, DEFAULT_SEGMENT, makePlan, windowFor } from './batches.js';
-import { raceChat, sleepWithChat, chatWatcherShared } from './interrupt.js';
+import { raceChat, sleepWithChat, chatWatcherShared, enterChatWait } from './interrupt.js';
 import { probeBrowser, readBrowserPosition } from 'dsh-video-storyboard/browser-time';
 import { boardOptions, charsForDetail } from 'dsh-video-storyboard/board';
 
@@ -469,45 +469,53 @@ export async function runWatchPass(args, deps) {
     // 用**共享**的那个：每次等待都新建的话，模型思考期间用户说的话
     // 会落在两次等待的缝隙里，谁都不报，永远丢掉。
     const chatPoll = chatWatcherShared();
-    while (Date.now() < deadline && !signal?.aborted && !windowGone()) {
-      const chatHit = chatPoll();
-      if (chatHit) { d.chatNow = chatHit; break; }
-      // 位置来源：浏览器（准）> 上次测得的 SMTC 快照（凑合能用来判断"到没到"）
-      const np = await readPositionOrNull(readBrowser, browserPort);
-      const posNow = np ? np.pos : (Number.isFinite(cursor) ? cursor + waitedSec : null);
-      if (posNow !== null) {
-        cursor = posNow;
-        // 按真实经过时间算，不按"每拍 +2 秒"——轮询频率改了，拍数就不等于秒数
-        waitedSec = +((Date.now() - tWaitStart) / 1000).toFixed(1);
-        const nd = deliveryState({ cursor, segment: segStart, size, lead });
-        // 同一段已经交过一次就别再交：用户刚看完 00:00–01:00，
-        // 再等到 00:59 把同一段塞给他一次，看起来像卡住了。
-        if (nd.due) {
-          if (segStart !== lastDelivered) {
-            d.due = true;
-            d.remaining = nd.remaining;
-          } else {
-            // 已经交过的段：不能干等到封顶（那会让会话挂着好几分钟）。
-            // 直接结束这次等待，下面回一句"这段已经给过了"。
-            alreadyDelivered = true;
+    // **告诉循环"这条通道现在归我"**：它每 2 秒也在 poll，一旦它把那句插话消费掉，
+    // 这里就永远看不见了（见 interrupt.js 的 chatWaiters）。阻塞等待是唯一能让人
+    // 从"等结果"里出来的一条路，所以它优先。
+    const leaveChatWait = enterChatWait();
+    try {
+      while (Date.now() < deadline && !signal?.aborted && !windowGone()) {
+        const chatHit = chatPoll();
+        if (chatHit) { d.chatNow = chatHit; break; }
+        // 位置来源：浏览器（准）> 上次测得的 SMTC 快照（凑合能用来判断"到没到"）
+        const np = await readPositionOrNull(readBrowser, browserPort);
+        const posNow = np ? np.pos : (Number.isFinite(cursor) ? cursor + waitedSec : null);
+        if (posNow !== null) {
+          cursor = posNow;
+          // 按真实经过时间算，不按"每拍 +2 秒"——轮询频率改了，拍数就不等于秒数
+          waitedSec = +((Date.now() - tWaitStart) / 1000).toFixed(1);
+          const nd = deliveryState({ cursor, segment: segStart, size, lead });
+          // 同一段已经交过一次就别再交：用户刚看完 00:00–01:00，
+          // 再等到 00:59 把同一段塞给他一次，看起来像卡住了。
+          if (nd.due) {
+            if (segStart !== lastDelivered) {
+              d.due = true;
+              d.remaining = nd.remaining;
+            } else {
+              // 已经交过的段：不能干等到封顶（那会让会话挂着好几分钟）。
+              // 直接结束这次等待，下面回一句"这段已经给过了"。
+              alreadyDelivered = true;
+            }
+            break;
           }
-          break;
+          if (cursor < segStart) break;            // 用户倒回到上一段去了，别干等
+          if (np?.paused) break;                   // 暂停了就别挂着了，让用户能说话
+          // 位置有没有真的在走？（播放中但一秒都不动 = 缓冲卡死/页签挂起）
+          if (Math.abs(posNow - lastSeenPos) >= 0.5) {
+            lastSeenPos = posNow;
+            lastMoveAt = Date.now();
+          } else if (Date.now() - lastMoveAt >= idleMs) {
+            idleHit = true;
+            break;
+          }
         }
-        if (cursor < segStart) break;            // 用户倒回到上一段去了，别干等
-        if (np?.paused) break;                   // 暂停了就别挂着了，让用户能说话
-        // 位置有没有真的在走？（播放中但一秒都不动 = 缓冲卡死/页签挂起）
-        if (Math.abs(posNow - lastSeenPos) >= 0.5) {
-          lastSeenPos = posNow;
-          lastMoveAt = Date.now();
-        } else if (Date.now() - lastMoveAt >= idleMs) {
-          idleHit = true;
-          break;
-        }
+        // 每拍歇 500ms —— 但**歇的时候也要听插话**，不然用户的话要等半秒才被发现。
+        const said = await sleepWithChat(500, { watcher: chatPoll, everyMs: 150 });
+        if (said) { d.chatNow = said; break; }
+        waitedSec = +((Date.now() - tWaitStart) / 1000).toFixed(1);   // 没有浏览器读数也按墙钟推进
       }
-      // 每拍歇 500ms —— 但**歇的时候也要听插话**，不然用户的话要等半秒才被发现。
-      const said = await sleepWithChat(500, { watcher: chatPoll, everyMs: 150 });
-      if (said) { d.chatNow = said; break; }
-      waitedSec = +((Date.now() - tWaitStart) / 1000).toFixed(1);   // 没有浏览器读数也按墙钟推进
+    } finally {
+      leaveChatWait();
     }
   }
 

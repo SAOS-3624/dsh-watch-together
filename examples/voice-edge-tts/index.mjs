@@ -115,10 +115,13 @@ const mmss = (t) => {
   return `${String(Math.floor(s / 60)).padStart(2, '0')}:${(s % 60).toFixed(1).padStart(4, '0')}`;
 };
 
+/** 排队超过这么久就**放弃**这一句：声音追不上画面时，宁可少说一句，也不要越说越晚。 */
+const MAX_QUEUE_LAG_MS = 3500;
+
 /**
  * 适配器入口。核心调用它，把接口递进来。
  *
- * @param {{onSpeech:Function, speechSubscribers:Function}} api
+ * @param {{onSpeech:Function, speechSubscribers:Function, emitSpeech?:Function, emitSpoken?:Function}} api
  * @returns {() => void} detach
  */
 export function attach(api) {
@@ -149,7 +152,22 @@ export function attach(api) {
         api.emitSpoken?.({ at: e.at, text: e.text, input: e.input, segment: e.segment });
       } catch { /* 上报失败不影响念 */ }
     };
+    const queuedAt = Date.now();
     chain = chain.then(async () => {
+      // **排太久了就别念**：串行链只会越排越长，声音离画面越来越远。
+      // 核心那边已经按"上一句念完才发下一句"节流，走到这里说明是真的卡住了
+      // （合成慢、引擎换挡、机器在忙）—— 这一句放弃，队立刻清空。
+      const waited = Date.now() - queuedAt;
+      if (waited > MAX_QUEUE_LAG_MS) {
+        console.error(`[voice] 跳过（排队 ${(waited / 1000).toFixed(1)}s，追不上画面）：${e.text}`);
+        // 没出声的字不该出现在悬浮窗里：让展示层把兜底定时器撤掉
+        try {
+          api.emitSpeech?.({
+            at: e.at, text: e.text, state: 'skipped', input: e.input, segment: e.segment,
+          });
+        } catch { /* 上报失败不影响后面的话 */ }
+        return;
+      }
       if (bin) {
         const r = await speakEdge(e.text, { bin, voice, rate, onStart });
         if (r.ok) return;

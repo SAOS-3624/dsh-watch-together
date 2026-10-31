@@ -44,6 +44,39 @@ export function chatWatcherShared(env = process.env) {
   return shared;
 }
 
+/**
+ * 现在有几个地方正**阻塞着等用户说话**（`wait` / `nextLine` / `waitUntil`）。
+ *
+ * ## 为什么必须有这个计数
+ *
+ * 聊天框是**一个**消费型通道：`poll()` 报过一次就把它标成已读。阻塞等待和陪看循环
+ * 共用同一个 watcher，谁先 poll 谁拿到。而循环那边的处理是 `followup()` ——
+ * 会话正卡在工具调用里等结果时，投进去的消息要**等这一轮结束**才会被处理，
+ * 所以它接不住"从等待里出来"这件事。实测（2026-10-31）：用户在悬浮窗说话，
+ * 循环把话吃了、`followup` 排进去，等待里的 `poll()` 再也看不见它 ——
+ * 表现就是"我在窗口里说话，它一动不动"。
+ *
+ * 所以：**有等待者时，循环不许碰这个通道**。等待者拿到话就直接返回工具结果，
+ * 那才是唯一能把人从阻塞里叫出来的路。
+ */
+let chatWaiters = 0;
+
+/** 进入"我在等用户说话"的状态，返回退出函数（务必 finally 里调） */
+export function enterChatWait() {
+  chatWaiters += 1;
+  let done = false;
+  return () => {
+    if (done) return;
+    done = true;
+    chatWaiters = Math.max(0, chatWaiters - 1);
+  };
+}
+
+/** 有几个等待者（给循环判断"这条通道现在归谁"） */
+export function chatWaiterCount() {
+  return chatWaiters;
+}
+
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 
 /**
@@ -75,15 +108,23 @@ export async function raceChat(promise, { watcher = null, everyMs = 500 } = {}) 
   // 没人取结果时别变成 unhandledRejection（Node 15 起会带崩进程）
   pending.catch(() => {});
 
-  while (!settled) {
-    const hit = poll();
-    if (hit && String(hit.text ?? '').trim()) {
-      return { kind: 'interrupted', text: hit.text, at: hit.at, pending };
+  // **这段也是"我在等用户说话"**：陪看循环每 2 秒也会 poll，它一旦先吃掉，
+  // 这里就永远看不见（见上面 chatWaiters）。叫醒（followup）接不住阻塞中的会话，
+  // 只有这里的提前返回能让人从"等结果"里出来。
+  const leaveChan = enterChatWait();
+  try {
+    while (!settled) {
+      const hit = poll();
+      if (hit && String(hit.text ?? '').trim()) {
+        return { kind: 'interrupted', text: hit.text, at: hit.at, pending };
+      }
+      // **等"慢事完成"和"下一拍轮询"里先发生的那个**，别傻等满 everyMs。
+      // 第一版就是傻等：于是每次建图都被硬加了 500ms，等图建完，
+      // 视频早就过了交付点 —— 阻塞等待一进去就立刻返回，等于没等。
+      await Promise.race([pending.then(() => {}, () => {}), sleep(everyMs)]);
     }
-    // **等"慢事完成"和"下一拍轮询"里先发生的那个**，别傻等满 everyMs。
-    // 第一版就是傻等：于是每次建图都被硬加了 500ms，等图建完，
-    // 视频早就过了交付点 —— 阻塞等待一进去就立刻返回，等于没等。
-    await Promise.race([pending.then(() => {}, () => {}), sleep(everyMs)]);
+  } finally {
+    leaveChan();
   }
   // **失败要原样带出去**：以前这里失败也返回 `{kind:'done', value:null}`，
   // 于是"建图抛错"变成调用方几百行之后的 `null.png` ——

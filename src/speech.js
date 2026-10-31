@@ -41,6 +41,25 @@ export function speechLag(chars, o = {}) {
 }
 
 /**
+ * 这句话**完整说一遍**大约多久（秒）。
+ *
+ * 和 `speechLag` 的区别：那个是"什么时候可以插话"（取一半），这个是**引擎占用时长的预算**。
+ * 声音是一条串行链，一句念完才轮到下一句 —— 发得比念得快就会排队，
+ * 队越长声音离画面越远（2026-10-31 实报："话太密会导致语音越来越滞后"）。
+ *
+ * 5 字/秒是这份素材的实测值（见文件头）。
+ *
+ * @param {number} chars
+ * @returns {number} 秒
+ */
+export function speechSeconds(chars, o = {}) {
+  const { charsPerSec = 5, pad = 0.35, min = 0.8, max = 30 } = o;
+  const n = Math.max(0, Number(chars) || 0);
+  if (n === 0) return min;
+  return Math.min(max, Math.max(min, pad + n / charsPerSec));
+}
+
+/**
  * 在字幕表里找 `at` 附近的那一句（用来数它的字数）。
  *
  * 为什么要有容差：模型写的 `at` 通常是照抄 `from`，但手写偏移、四舍五入都会差个零点几秒。

@@ -19,7 +19,7 @@
  */
 
 import { fileUrlToPath, hasDebugPort, looksLikeVideoUrl } from 'dsh-video-storyboard/browser-time';
-import { chatWatcherShared, sleepWithChat } from './interrupt.js';
+import { chatWatcherShared, enterChatWait, sleepWithChat } from './interrupt.js';
 import { readPositionOrNull } from './watch-browser.js';
 
 /**
@@ -106,16 +106,22 @@ export async function resolveWatchSource({ input: given, args, readBrowser, brow
     const cap = Math.min(600, Math.max(10, Number(args.maxWaitSec) || (autoWait ? 60 : 120)));
     const deadline = Date.now() + cap * 1000;
     const tWait = Date.now();
-    while (Date.now() < deadline) {
-      const hit = sourceOf(await readPositionOrNull(readBrowser, browserPort));
-      if (hit) {
-        ({ input, resolved } = hit);
-        break;
+    // 等用户开视频这段时间，这条插话通道归等待者（见 interrupt.js 的 chatWaiters）
+    const leaveChatWait = enterChatWait();
+    try {
+      while (Date.now() < deadline) {
+        const hit = sourceOf(await readPositionOrNull(readBrowser, browserPort));
+        if (hit) {
+          ({ input, resolved } = hit);
+          break;
+        }
+        // 等用户开视频这段时间最长 2 分钟，**干等最没意义** —— 顺手看着聊天框，
+        // 用户随时可以插一句（比如"我找不到那个片"），立刻就能回他。
+        const said = await sleepWithChat(300, { watcher: chatWatcherShared(), everyMs: 150 });
+        if (said) return { ok: false, reason: 'chat', chat: said, input: null, resolved: null };
       }
-      // 等用户开视频这段时间最长 2 分钟，**干等最没意义** —— 顺手看着聊天框，
-      // 用户随时可以插一句（比如"我找不到那个片"），立刻就能回他。
-      const said = await sleepWithChat(300, { watcher: chatWatcherShared(), everyMs: 150 });
-      if (said) return { ok: false, reason: 'chat', chat: said, input: null, resolved: null };
+    } finally {
+      leaveChatWait();
     }
     if (!input) {
       return noVideoResult({

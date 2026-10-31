@@ -101,6 +101,64 @@ test('全部台词都过期时：一句不念、稿子清空，但交付照样�
 });
 
 /**
+ * 2026-10-31 晚实报的另一半：「吐字太快，台词挤到一起，只有上一句念完才到下一句，
+ * 话太密导致语音越来越滞后」。
+ *
+ * 声音引擎是**串行**的（一句念完才轮到下一句）。核心按 `at` 发得再准，只要发得比念得快，
+ * 排进链里的句子就会越来越多，声音离画面越来越远。所以：上一句还在说的时候这一拍不发；
+ * 拖过迟到宽限的那句直接作废 —— 宁可少说一句，也不要越说越晚。
+ */
+test('声音还没念完就不发下一句（话太密会把语音越拖越远）', async () => {
+  const dir = await mkdtemp(join(tmpdir(), 'timing5-'));
+  process.env.DSH_VIDEO_CACHE_DIR = dir;
+  delete process.env.DSH_WATCH_BRIDGE;
+  const heard = [];
+  const off = onSpeech((e) => { if (e.state === 'due') heard.push(e.text); }, { voice: true });
+  let tick = null;
+  let clock = Date.now() + 2_000_000;
+  let pos = 123;                      // 第一句 at=120，按字数后延约 2.1 秒，123 秒正好开口
+  try {
+    const long = '这一句挺长的所以要念将近四秒钟才念得完';   // 21 字 ≈ 4.55 秒
+    await saveLines('dense.mp4', [
+      { from: 120, at: 120, text: long },
+      { from: 120, at: 121, text: '紧跟着的第二句' },
+    ]);
+    // 位置走扩展上报那条路（循环里的探针只认它和 CDP，不认测试注入的 readBrowser）
+    const beat = (p) => writeFileSync(join(dir, 'position.json'), JSON.stringify({
+      pos: p, dur: 600, paused: false, title: 'dense', url: 'file:///a.mp4', at: clock,
+    }), 'utf8');
+
+    const r = startWatchLoop({
+      ctx: {}, sessionId: 's-dense', input: 'dense.mp4', segment: 60, ramp: [], cursor: 120,
+      deps: {
+        ticker: ({ tick: t }) => { tick = t; return { dispose() {} }; },
+        now: () => clock,
+        wake: async () => ({ ok: true }),
+        probeEveryMs: 0,
+        readBrowser: async () => null,
+        loadLatency: async () => ({ ms: 0, samples: 0 }),
+      },
+    });
+    assert.equal(r.ok, true);
+
+    for (let i = 0; i < 8; i += 1) {
+      beat(pos);
+      await tick();
+      clock += 1000;
+      pos += 1;
+    }
+
+    assert.deepEqual(heard, [long], `引擎念的时候不许再塞下一句（实得 ${JSON.stringify(heard)}）`);
+    assert.deepEqual(await readSlot('dense.mp4', 120), [], '追不上画面的那句要作废，不许攒着连珠炮');
+  } finally {
+    stopWatchLoop('test');
+    process.env.DSH_WATCH_BRIDGE = '0';
+    try { off?.(); } catch { /* ignore */ }
+    await rm(dir, { recursive: true, force: true });
+  }
+});
+
+/**
  * 2026-10-31 晚实报的另一半：「时间点都比视频早了」。
  *
  * 位置 15 秒才真读一次，中间全靠按时钟外推。用户一暂停（或播放器卡住），

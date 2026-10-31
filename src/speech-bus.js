@@ -34,25 +34,31 @@
  */
 
 /**
- * 事件形状。`state` 有三种：
+ * 事件形状。`state` 有四种：
  *
  *   `scheduled`  只是清单（这句打算在 at 念），不是"现在念"
  *   `due`        核心发出：**该念了**（由播放位置触发，守时在核心）
  *   `spoken`     适配器发出：**声音真的出来了**（开始播放的那一瞬）
+ *   `skipped`    适配器发出：**这一句不念了**（排队太久、追不上画面，见下）
  *
  * 为什么要有 `spoken`：`due` 到"出声"之间还隔着一整套合成 —— edge-tts 要一次网络
  * 往返、再起一个 ffplay，短句也要 0.6~2 秒。展示层若认 `due` 就把字摆出来，
  * 用户看到的是"字先到、声音后到"。**该挪的是字，不是声音**（声音一挪就离画面远去），
  * 所以展示层等 `spoken`（见 `chat-store.js` 的 `attachSpeechToChat`）。
+ *
+ * 为什么还要有 `skipped`：引擎是串行的，台词一密就会排队，越排越远。适配器可以选择
+ * **放弃**排太久的那句（宁可少说一句，也不要越说越晚）。既然没念，字也不该出现 ——
+ * 展示层收到 `skipped` 就把等待中的兜底定时器撤掉，别过两秒又把字摆出来。
  */
 export const SPEECH_EVENT_FIELDS = Object.freeze(
   ['seq', 'at', 'text', 'state', 'input', 'segment', 'origin', 'emittedAt'],
 );
 
-/** 只认这三种；写错了按 `due` 处理（老调用方都是"到点"，容错方向要护住"会念"） */
+/** 只认这四种；写错了按 `due` 处理（老调用方都是"到点"，容错方向要护住"会念"） */
 function normalizeState(s) {
   if (s === 'scheduled') return 'scheduled';
   if (s === 'spoken') return 'spoken';
+  if (s === 'skipped') return 'skipped';
   return 'due';
 }
 

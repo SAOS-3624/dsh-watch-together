@@ -15,7 +15,7 @@ import { aheadSeconds, loadLatency } from './latency.js';
 import {
   MAX_EXTRAPOLATE_MS, estimate, makeAnchor, shouldSpeak,
 } from './position.js';
-import { chatWatcherShared } from './interrupt.js';
+import { chatWatcherShared, chatWaiterCount } from './interrupt.js';
 import { startTicker, wakeSession } from './timer.js';
 import { DEFAULT_LOOKAHEAD, DEFAULT_SEGMENT, describePlan, makePlan, windowFor } from './batches.js';
 import { readBrowserPosition } from 'dsh-video-storyboard/browser-time';
@@ -23,6 +23,7 @@ import { readBridge } from './position-bridge.js';
 import { floatingWindowAlive } from './floating-window.js';
 import { readPositionOrNull } from './watch-browser.js';
 import { emitSpeech, speechSubscribers } from './voice.js';
+import { speechSeconds } from './speech.js';
 import { consumeLine, dueLine, hasLine, loadLine, WATCH_LEAD } from './watch.js';
 import { mmss } from './time.js';
 import { appendChat } from './chat-store.js';
@@ -295,6 +296,8 @@ export function startWatchLoop({
     lead: leadSec,
     speakEvery: Math.max(0, Number(speakEvery) || 0),
     lastSpeechAt: null,
+    // 声音引擎"到什么时候才空出来"（毫秒墙钟）。换一场必须清零，否则新一场开头会被上一场卡住。
+    voiceBusyUntil: 0,
     refillBelow: Math.max(0, Number(refillBelow) || 0),
     refillAskedAt: 0,
     lastSpeakAt: 0,
@@ -326,7 +329,10 @@ export function startWatchLoop({
       // 用户插话：模型可能正闲着（不在阻塞等待里），这时候也得把它叫起来回一句。
       // 用共享 watcher 消费一条就够 —— 它本来就只报"增量"，我这边消费了，
       // 下一次阻塞等待就不会重复报同一句。
-      if (wakeOnChat && loop.sessionId) {
+      //
+      // **有人在阻塞等待时不许碰**：等待里的 `poll()` 才是唯一能把人从"等结果"里
+      // 叫出来的路（投 followup 得等这一轮结束才处理），通道被这里吃掉就再也回不来了。
+      if (wakeOnChat && loop.sessionId && chatWaiterCount() === 0) {
         let said = null;
         try { said = chatWatcher()?.() ?? null; } catch { said = null; }
         const chatText = String(said?.text ?? '').trim();
@@ -566,8 +572,15 @@ export function startWatchLoop({
       // **由播放位置触发，不由墙钟**：位置停在 03:12 就一直等着；位置到哪一句的 at，就发哪一句。
       // 这里不看 speakEvery —— 那是"多久叫一次模型"，和"什么时候该念这句话"是两件事。
       {
+        // **声音是有预算的**：一句话念完要 `字数/5` 秒，声音引擎是**串行**的
+        // （上一句念完才轮到下一句）。上一句还在说的时候又塞一句进去，只会排队；
+        // 队一旦长起来，声音离画面就越来越远 —— 2026-10-31 实报："话太密会导致语音越来越滞后"。
+        // 所以：说的时候这一拍不发，等空下来再说（真拖过头的会被 `dueLine` 的迟到作废丢掉，
+        // 也就是"追不上就少说一句"，而不是"越说越晚"）。
+        // 只对"真有人念"生效 —— 没人接声音时台词只进流，不该被这个节流。
+        const voiceBusy = speechSubscribers() > 0 && tNow < (loop.voiceBusyUntil ?? 0);
         const est = estimate(loop.anchor, tNow);
-        if (est.why !== 'paused' && Number.isFinite(est.pos)) {
+        if (!voiceBusy && est.why !== 'paused' && Number.isFinite(est.pos)) {
           const segNow = plan.segmentAt(est.pos);
           const line = await dueLine(loop.input, est.pos, {
             size: segNow.size,
@@ -580,6 +593,9 @@ export function startWatchLoop({
             });
             if (delivered > 0) {
               loop.lastSpeechAt = tNow;
+              // 记下"引擎到什么时候才空出来"。**用完整时长**（不是 speechLag 的一半，
+              // 那是"什么时候可以插话"，两件事）。
+              if (speechSubscribers() > 0) loop.voiceBusyUntil = tNow + speechSeconds(line.length) * 1000;
               note(`speech ${Math.round(est.pos)}s → ${delivered} listener(s): ${line.slice(0, 20)}…`);
               loop.lastReason = 'spoke';
               // **只有"真有人念"才算说过了**：只写进流不算 —— 那样模型再也不会被叫醒，

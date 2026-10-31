@@ -22,6 +22,7 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 
 import { loopStatus, startWatchLoop, stopWatchLoop } from '../src/watch-loop.js';
+import { chatWaiterCount, enterChatWait } from '../src/interrupt.js';
 
 function boot({ wakeOnChat = true, messages = [] } = {}) {
   let tick = null;
@@ -74,4 +75,38 @@ test('wakeOnChat:false 时回到"只靠阻塞等待收插话"', async () => {
   await tick();
   assert.equal(woken.length, 0, '关了就不该叫醒');
   stopWatchLoop('cleanup3');
+});
+
+/**
+ * 2026-10-31 晚实报：「悬浮窗插话不能让他从等待中出来」。
+ *
+ * 聊天框是**一个消费型通道**（poll 报过一次就标已读），阻塞等待和钟共用同一个 watcher。
+ * 钟那边处理插话是 `followup()` —— 会话正卡在工具调用里等结果，投进去的消息要等这一轮
+ * 结束才处理。所以谁先 poll 谁决定成败：钟先吃，等待里就永远看不见，人在窗口里说话
+ * 就"一动不动"。等待者优先，钟在有人等的时候必须闭嘴。
+ */
+test('有人在阻塞等待时，钟不许抢这句插话（抢走了等待里就再也看不见）', async () => {
+  stopWatchLoop('init4');
+  const { tick, woken } = boot({ messages: [{ role: 'user', text: '停一下，我问个事', at: Date.now() }] });
+  const release = enterChatWait();
+  try {
+    await tick();
+    assert.equal(woken.length, 0, '等待者优先：钟不许消费这条通道');
+  } finally {
+    release();
+  }
+  await tick();
+  assert.equal(woken.length, 1, '没人等了，钟照旧叫醒（别把插话丢了）');
+  assert.match(woken[0], /停一下，我问个事/);
+  stopWatchLoop('cleanup4');
+});
+
+test('等待者退出后计数归零（漏减会让钟永远不敢说话）', () => {
+  const a = enterChatWait();
+  const b = enterChatWait();
+  assert.equal(chatWaiterCount(), 2);
+  a();
+  b();
+  b();                    // 重复调用不该减成负数
+  assert.equal(chatWaiterCount(), 0);
 });

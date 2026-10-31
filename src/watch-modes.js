@@ -14,7 +14,7 @@
 import { consumeLine, dueLine, hasLine, loadWatch, saveWatch, sessionKey } from './watch.js';
 import { mmss } from './time.js';
 import { readPositionOrNull } from './watch-browser.js';
-import { chatWatcherShared, sleepWithChat } from './interrupt.js';
+import { chatWatcherShared, enterChatWait, sleepWithChat } from './interrupt.js';
 
 export async function runWatchMode({ args, input, plan, browserPort, readBrowser, signal = null }) {
   // ---- 0.4 两种"阻塞到条件成立"的等待（模型侧的节奏由它自己掌握）
@@ -30,41 +30,47 @@ export async function runWatchMode({ args, input, plan, browserPort, readBrowser
     const deadline = Date.now() + capSec * 1000;
     const below = Math.max(1, Number(args.refillBelow) || 2);
     let last = null;
-    while (Date.now() < deadline && !signal?.aborted) {
-      const b = await readPositionOrNull(readBrowser, browserPort);
-      last = b?.pos ?? null;
-      if (b?.ended) break;
-      if (b?.paused) break;
+    // 这条通道现在归等待者（见 interrupt.js）：循环一旦把插话吃了，这里就再也看不见
+    const leaveChatWait = enterChatWait();
+    try {
+      while (Date.now() < deadline && !signal?.aborted) {
+        const b = await readPositionOrNull(readBrowser, browserPort);
+        last = b?.pos ?? null;
+        if (b?.ended) break;
+        if (b?.paused) break;
 
-      if (args.waitForRefill === true && last !== null) {
-        const idx = plan.indexAt(last);
-        let stocked = 0;
-        for (let i = idx + 1; i <= idx + below; i += 1) {
-          const seg = plan.from(i, 1)[0];
-          if (!seg) break;
-          if (await hasLine(input, seg.from).catch(() => false)) stocked += 1;
+        if (args.waitForRefill === true && last !== null) {
+          const idx = plan.indexAt(last);
+          let stocked = 0;
+          for (let i = idx + 1; i <= idx + below; i += 1) {
+            const seg = plan.from(i, 1)[0];
+            if (!seg) break;
+            if (await hasLine(input, seg.from).catch(() => false)) stocked += 1;
+          }
+          if (stocked < below) {
+            const missing = plan.from(idx + 1, below).filter((x) => x);
+            return {
+              ok: true, reason: 'refill-needed', at: last,
+              text: `库存不足（现在 ${mmss(last)}）：${missing.map((m) => `${mmss(m.from)}–${mmss(m.to)}`).join('、')}`
+                + '\n去看画面，用 lines: [...] 补上。',
+              images: [],
+            };
+          }
         }
-        if (stocked < below) {
-          const missing = plan.from(idx + 1, below).filter((x) => x);
+
+        if (Number.isFinite(Number(args.waitUntil)) && last !== null && last >= Number(args.waitUntil)) {
           return {
-            ok: true, reason: 'refill-needed', at: last,
-            text: `库存不足（现在 ${mmss(last)}）：${missing.map((m) => `${mmss(m.from)}–${mmss(m.to)}`).join('、')}`
-              + '\n去看画面，用 lines: [...] 补上。',
+            ok: true, reason: 'reached', at: last,
+            text: `到 ${mmss(last)} 了（目标 ${mmss(Number(args.waitUntil))}）。`,
             images: [],
           };
         }
+        // 等条件成立这段时间（最长 capSec）也听得见插话 —— 干等没意义
+        const said = await sleepWithChat(2000, { watcher: chatWatcherShared() });
+        if (said) return chatResult(said, last);
       }
-
-      if (Number.isFinite(Number(args.waitUntil)) && last !== null && last >= Number(args.waitUntil)) {
-        return {
-          ok: true, reason: 'reached', at: last,
-          text: `到 ${mmss(last)} 了（目标 ${mmss(Number(args.waitUntil))}）。`,
-          images: [],
-        };
-      }
-      // 等条件成立这段时间（最长 capSec）也听得见插话 —— 干等没意义
-      const said = await sleepWithChat(2000, { watcher: chatWatcherShared() });
-      if (said) return chatResult(said, last);
+    } finally {
+      leaveChatWait();
     }
     // 宿主取消：条件等待立刻结束（以前会一直等到封顶）
     if (signal?.aborted) {
@@ -93,15 +99,20 @@ export async function runWatchMode({ args, input, plan, browserPort, readBrowser
     const due = lastAt + everySec * 1000;
     let waited = 0;
     // 阻塞到点；中途暂停/视频结束就提前返回，让模型能说话
-    while (Date.now() < due && !signal?.aborted) {
-      // 等到这一句到点期间也听得见插话
-      const said = await sleepWithChat(1000, { watcher: chatWatcherShared(), everyMs: 300 });
-      if (said) return chatResult(said, null);
-      waited += 1;
-      const b = await readPositionOrNull(readBrowser, browserPort);
-      if (b?.paused) break;
-      if (b?.ended) break;
-      if (waited > 600) break;
+    const leaveChatWait = enterChatWait();      // 同上：等待期间这条通道归等待者
+    try {
+      while (Date.now() < due && !signal?.aborted) {
+        // 等到这一句到点期间也听得见插话
+        const said = await sleepWithChat(1000, { watcher: chatWatcherShared(), everyMs: 300 });
+        if (said) return chatResult(said, null);
+        waited += 1;
+        const b = await readPositionOrNull(readBrowser, browserPort);
+        if (b?.paused) break;
+        if (b?.ended) break;
+        if (waited > 600) break;
+      }
+    } finally {
+      leaveChatWait();
     }
     const b = await readPositionOrNull(readBrowser, browserPort);
     if (signal?.aborted) {

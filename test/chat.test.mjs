@@ -174,6 +174,28 @@ test('有人会念时：字要等"真出声"（spoken）才摆出来，不能认
   });
 });
 
+test('引擎说"这句我不念了"（skipped）：字也不许摆出来，兜底也不许补', async () => {
+  __resetSpeech();
+  await withCache(async (env) => {
+    const offChat = attachSpeechToChat({ env, fallbackMs: 20 });
+    const offVoice = onSpeech(() => {}, { voice: true });
+
+    emitSpeech({ at: 33, text: '排队太久被跳过的一句', state: 'due' });
+    // 适配器追不上画面，决定放弃这一句（见 examples/voice-edge-tts 的 MAX_QUEUE_LAG_MS）
+    emitSpeech({ at: 33, text: '排队太久被跳过的一句', state: 'skipped' });
+
+    await new Promise((r) => setTimeout(r, 80));
+    assert.equal(readChat(env).length, 0, '没出声的字不该出现在悬浮窗里');
+
+    // 之后就算再迟到一个 spoken（老适配器可能乱报），也不要补出来
+    emitSpoken({ at: 33, text: '排队太久被跳过的一句' });
+    assert.equal(readChat(env).length, 0, '跳过就是跳过，不许后面又冒出来');
+
+    offVoice();
+    offChat();
+  });
+});
+
 test('引擎不上报 spoken 时兜底：宁可字早一点，也别吞掉', async () => {
   __resetSpeech();
   await withCache(async (env) => {

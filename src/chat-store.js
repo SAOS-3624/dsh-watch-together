@@ -115,10 +115,19 @@ export function attachSpeechToChat({ env = process.env, onEntry = null, fallback
   return onSpeech((e) => {
     // 插话那句是**先写流再广播**的（`appendSpoken`），这里再写就重复了
     if (e.origin === 'chat') return;
-    if (e.state !== 'due' && e.state !== 'spoken') return;
+    if (e.state !== 'due' && e.state !== 'spoken' && e.state !== 'skipped') return;
     const text = String(e.text ?? '').trim();
     if (!text) return;
     const key = speechKey(e.at, text);
+
+    // **这句不念了**（适配器排队太久、追不上画面）：把兜底定时器撤掉，字也别摆。
+    // 不撤的话 2.5 秒后兜底会把它写进流 —— 屏幕上出现一句根本没出声的台词。
+    if (e.state === 'skipped') {
+      const timer = waiting.get(key);
+      if (timer) { clearTimeout(timer); waiting.delete(key); }
+      writtenKeys.add(key);
+      return;
+    }
 
     if (e.state === 'spoken') {
       const timer = waiting.get(key);
