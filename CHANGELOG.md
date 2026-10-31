@@ -8,6 +8,19 @@ This package starts its own version line at `0.0.7` — it is not a continuation
 Three rounds on 2026-10-31. The through-line: the plugin knew something, and the model (or the user)
 never found out — plus one window that needed to look like something people want to keep on screen.
 
+### Long-video recap — merged, but opt-in
+
+PR #2, after one round of review. Its first shape prepended a 420-character `[前情]` to **every**
+delivery, partly built from the model's own scripted lines: second-hand context in a package whose
+contract is "raw material only — never retell what the user just watched", at ~200 tokens per
+segment, with no evidence it helped.
+
+What shipped instead: off unless `recap: true` or `DSH_WATCH_RECAP=1` (`recap: false` beats the env
+var); only **cached subtitle sentences**, never the model's lines; `recapSegments` 1–3 (default 2),
+`recapMaxChars` 80–1200 (default 420); never reads past the current segment, never trims the live
+transcript, no ASR, no network. Whether it actually reduces retelling is still **unmeasured** — it
+stays opt-in until somebody measures it.
+
 ### Observability: `statusOnly` can now answer "why is it slow"
 
 Promised in issue #4. `pos + reason` says *what* the clock thinks, not *where it is stuck*.
