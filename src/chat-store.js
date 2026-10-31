@@ -141,7 +141,7 @@ export function attachSpeechToChat({ env = process.env, onEntry = null, fallback
     try { onEntry?.(entry); } catch { /* 展示层的事，别影响写盘 */ }
   };
 
-  return onSpeech((e) => {
+  const off = onSpeech((e) => {
     // 插话那句是**先写流再广播**的（`appendSpoken`），这里再写就重复了
     if (e.origin === 'chat') return;
     if (e.state !== 'due' && e.state !== 'spoken' && e.state !== 'skipped') return;
@@ -177,6 +177,14 @@ export function attachSpeechToChat({ env = process.env, onEntry = null, fallback
     timer.unref?.();
     waiting.set(key, timer);
   }, { voice: false });
+
+  // 卸载时连兜底定时器一起清：只退订的话，2500ms 后定时器还会醒过来写盘，
+  // 在已经不该说话的会话里冒出一句台词。
+  return () => {
+    off();
+    for (const timer of waiting.values()) clearTimeout(timer);
+    waiting.clear();
+  };
 }
 
 /**
