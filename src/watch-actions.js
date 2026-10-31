@@ -53,7 +53,10 @@ export async function runWatchAction(args, { ctx = null, sessionId = null, brows
         images: [],
       };
     }
-    const cuesRes = await loadCues(input).catch((e) => ({ ok: false, reason: String(e?.message ?? e) }));
+    // 只取这一段窗口的 cue：没有 CC 字幕时 `loadCues` 会走 ASR，只转写这一段才有意义
+    // （不传窗口就永远只转 0–30 秒，后面的段全拿不到时间码）。
+    const cuesRes = await loadCues(input, { start: from, end: from + size })
+      .catch((e) => ({ ok: false, reason: String(e?.message ?? e) }));
     if (!cuesRes.ok) {
       return {
         text: `[transcriptOnly] 拿不到字幕（${cuesRes.reason}）。`

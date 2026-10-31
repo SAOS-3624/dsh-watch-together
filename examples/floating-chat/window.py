@@ -308,7 +308,9 @@ class FloatChat:
                 self.seen = 0      # 文件被清空/重建
         except Exception:
             pass
-        self.root.after(400, self.poll)
+        # 200ms 而不是 400ms：台词是在**声音真的出来那一刻**才写盘的（见 src/chat-store.js），
+        # 轮询间隔就是"字比声音晚多少"的直接来源 —— 50~400ms 的滞后会被听成"不同步"。
+        self.root.after(200, self.poll)
 
 
 if __name__ == "__main__":

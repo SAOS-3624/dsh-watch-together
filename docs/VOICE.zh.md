@@ -189,7 +189,25 @@ export function attach(api) {
 }
 ```
 
-挂上它：把 `~/.dsh/voice.json` 的 `adapter` 改成 `my-voice.mjs` 的路径即可。
+### 一定要上报"真的出声了"：`api.emitSpoken(e)`
+
+`due` 只说明**该念了**。从 `due` 到"真的有声音"之间还隔着一整套合成（edge-tts 一次网络往返
+加一个 ffplay 启动，短句也要 0.6~2 秒）。悬浮窗里的台词等的是 `spoken`：
+
+```js
+api.onSpeech((e) => {
+  if (e.state !== 'due') return;
+  const audio = await synth(e.text);     // 合成：这段时间还没有声
+  api.emitSpoken(e);                     // ← 开始播放那一瞬上报，字就在这一刻出现
+  play(audio);
+});
+```
+
+**别把它报晚了**：字是在收到 `spoken` 之后才写盘的，报晚了就变成"声音先到、字后到"。
+报早一点没关系（宁可字早点），报晚了才是要修的那种不同步。
+
+不上报也不会丢字：展示层有 2.5 秒兜底（`DSH_WATCH_CAPTION_FALLBACK_MS`），只是回到旧行为
+——字比声音早，等合成完才出声。
 
 `api.onSpeech` 收到的事件关键字段：
 

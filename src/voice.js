@@ -16,6 +16,7 @@ export {
   SPEECH_EVENT_FIELDS,
   __resetSpeech,
   emitSpeech,
+  emitSpoken,
   lastSpeech,
   onSpeech,
   speechEvents,

@@ -5,6 +5,30 @@ This package starts its own version line at `0.1.0` — it is not a continuation
 
 ## [Unreleased]
 
+### Fixed — the caption appeared before the voice, because it waited on `due` instead of "actually speaking"
+
+`attachSpeechToChat` wrote a line into `chat.jsonl` the moment `due` fired. But `due` only means
+"it is time to say this": synthesis still has to happen (edge-tts does a network round trip, then a
+fresh `ffplay` process — 0.6–2 s even for a short sentence). The floating window polls that file, so
+the text was already on screen a beat before anything was heard.
+
+Delaying the voice instead (`speechLag`) would align the two, but push the voice further from the
+picture, which is the one thing this plugin cannot trade away. So the **caption** moves:
+
+- `src/speech-bus.js` — a third state, `spoken`, plus `emitSpoken(event)` for engines to report
+  "audio is starting now". The adapter API gains `emitSpoken`.
+- `src/chat-store.js` — writes on `spoken` when a `voice: true` subscriber exists; still writes on
+  `due` when nobody will speak (the zero-dependency path must not go mute); falls back after
+  `fallbackMs` (2.5 s, `DSH_WATCH_CAPTION_FALLBACK_MS`) for adapters that never report.
+  Pairing is by `at|text`, not by `seq` — `spoken` is a **new** event, so `emitSpeech` gives it a
+  new sequence number.
+- `examples/voice-edge-tts` — reports `spoken` right before playback starts (i.e. after synthesis).
+- `examples/floating-chat/window.py` — polls every 200 ms instead of 400 ms; the poll interval is
+  the residual "text lags the voice" gap.
+
+`test/chat.test.mjs` covers both new paths (waits for `spoken`; falls back when nobody reports, and
+does not write twice if `spoken` arrives afterwards).
+
 ### Fixed — scripted lines never reached the chat window without a voice engine
 
 `watch-loop.js` consumed the due line inside `if (speechSubscribers() > 0)`. That helper counts only

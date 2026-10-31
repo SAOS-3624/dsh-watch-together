@@ -28,9 +28,15 @@
  * "台词对不上视频"。这里从字幕取的是**真实起始秒**，不是估计值。
  */
 
-import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs';
-import { homedir } from 'node:os';
+import { existsSync, mkdirSync, readdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { homedir, tmpdir } from 'node:os';
 import { join } from 'node:path';
+import { execFile } from 'node:child_process';
+import { promisify } from 'node:util';
+
+const runFile = promisify(execFile);
+/** ASR 分块长度：本机 sherpa 服务对单次请求的音频长度敏感，30 秒一块最稳 */
+const CHUNK_SEC = 30;
 
 import { fetchRemoteSubtitles } from 'dsh-video-storyboard/subtitles';
 
@@ -49,12 +55,141 @@ function subsFile(input, env) {
 }
 
 /**
+ * 没有 CC 字幕时，用 ASR 自己的句子时间当时间码。
+ *
+ * 为什么要走 ASR：`at` 对齐的必须是"这句话**真正开始说**的秒数"。分镜清单只给到
+ * 格子（45 秒一格），拿格子起点当 `at` 会让台词提前几十秒冒出来。
+ *
+ * 缓存进同一个 `subs-<sessionKey>.json`（`source:'asr'`），`sentencesIn` / `bin/lines.mjs`
+ * 全都照常工作；ASR 只跑**缺的那一段窗口**，反复调不会重跑。
+ */
+async function asrCues(input, { env = process.env, start = 0, end = undefined } = {}) {
+  const media = findCachedMedia(input, env);
+  if (!media) return { ok: false, cues: [], source: 'none', reason: 'no-media' };
+
+  const here = new URL('./', import.meta.resolve('dsh-video-storyboard/locate'));
+  const [{ resolveAsrConfig }, { ensureAsr }] = await Promise.all([
+    import(new URL('asr.js', here)),
+    import(new URL('asr-lifecycle.js', here)),
+  ]);
+  const cfg = resolveAsrConfig(env);
+  // 本机 ASR 服务没起就拉起来。**必须把配置传进去** —— `ensureAsr({})` 读不到
+  // `~/.dsh/asr.json` 里的 `manage.start`，只会回 "no manage.start configured"。
+  await ensureAsr({ baseUrl: cfg.baseUrl, config: cfg, env }).catch(() => {});
+
+  const from = Math.max(0, Number(start) || 0);
+  const to = Number.isFinite(Number(end)) ? Number(end) : from + CHUNK_SEC;
+  const base = cfg.baseUrl.replace(/\/$/, '');
+
+  const out = [];
+  for (let s = from; s < to; s += CHUNK_SEC) {
+    const len = Math.min(CHUNK_SEC, to - s);
+    const wav = await extractWav(media, s, len, env);
+    if (!wav) continue;
+    let got = null;
+    for (let attempt = 0; attempt < 2 && !got; attempt++) {
+      got = await postWav(base, wav, cfg).catch(() => null);
+      if (!got) await new Promise((r) => setTimeout(r, 800));
+    }
+    for (const seg of got?.segments ?? []) {
+      const text = String(seg.text ?? '').trim();
+      const a = Number(seg.start ?? seg.from);
+      const b = Number(seg.end ?? seg.to);
+      if (!text || !Number.isFinite(a)) continue;
+      out.push({ from: a + s, to: (Number.isFinite(b) ? b : a + 2) + s, text });
+    }
+  }
+  if (out.length === 0) return { ok: false, cues: [], source: 'none', reason: 'asr-empty' };
+
+  const file = subsFile(input, env);
+  let merged = out;
+  try {
+    const old = JSON.parse(readFileSync(file, 'utf8'));
+    if (Array.isArray(old?.cues)) {
+      const seen = new Set(out.map((c) => c.from.toFixed(1)));
+      merged = old.cues.filter((c) => !seen.has(Number(c.from).toFixed(1))).concat(out)
+        .sort((x, y) => x.from - y.from);
+    }
+  } catch { /* 没有旧缓存就是这份 */ }
+  try {
+    mkdirSync(cacheDir(env), { recursive: true });
+    writeFileSync(file, JSON.stringify({ lang: cfg.language ?? null, source: 'asr', cues: merged }), 'utf8');
+  } catch { /* 写不进缓存只影响下次重抓 */ }
+  return { ok: true, cues: merged, lang: cfg.language, source: 'asr' };
+}
+
+/**
+ * 抽一段 16k 单声道 wav 到**临时文件**。
+ *
+ * 不能管道输出：ffmpeg 往 stdout 写 wav 时无法回填长度，头里是 0xFFFFFFFF，
+ * 本机 sherpa 服务解析这种头会直接回 500（实测 10/15/20/30 秒全 500，
+ * 而同一段音频先落盘再传就是 200）。
+ */
+async function extractWav(media, start, len, env = process.env) {
+  const ffmpeg = env.DSH_FFMPEG || 'ffmpeg';
+  const tmp = join(tmpdir(), `watch-asr-${process.pid}-${Math.round(start)}.wav`);
+  const args = ['-hide_banner', '-v', 'error', '-nostdin'];
+  if (start > 0) args.push('-ss', String(start));
+  args.push('-t', String(Math.max(0.5, len)), '-i', media, '-vn', '-ac', '1', '-ar', '16000', '-y', tmp);
+  try {
+    await runFile(ffmpeg, args);
+    const buf = readFileSync(tmp);
+    return buf.length > 1024 ? buf : null;
+  } catch {
+    return null;
+  } finally {
+    try { rmSync(tmp, { force: true }); } catch { /* 删不掉无所谓 */ }
+  }
+}
+
+/** 发一段 wav 给 OpenAI 兼容的转写接口，只取 `segments` */
+async function postWav(base, buf, cfg) {
+  const form = new FormData();
+  form.append('file', new Blob([buf], { type: 'audio/wav' }), 'audio.wav');
+  form.append('model', cfg.model);
+  form.append('response_format', 'verbose_json');
+  if (cfg.language) form.append('language', cfg.language);
+  const res = await fetch(`${base}/audio/transcriptions`, {
+    method: 'POST',
+    headers: cfg.key ? { Authorization: `Bearer ${cfg.key}` } : {},
+    body: form,
+  });
+  if (!res.ok) throw new Error(`ASR ${res.status}`);
+  return res.json();
+}
+
+/** 这支片子的本地扫描副本（分镜跑过就有）：媒体目录里找 url 含同一 BV/文件名的那个 */
+function findCachedMedia(input, env = process.env) {
+  const dir = env.DSH_VIDEO_MEDIA_DIR
+    || join(env.LOCALAPPDATA || join(homedir(), 'AppData', 'Local'), 'Temp', 'dsh-video-storyboard', 'media');
+  const s = String(input ?? '');
+  const m = s.match(/(BV[0-9A-Za-z]{10})/i);
+  const needle = m ? m[1].toLowerCase() : null;
+  try {
+    for (const d of readdirSync(dir)) {
+      const sub = join(dir, d);
+      const meta = join(sub, 'meta.json');
+      const video = join(sub, 'video.mp4');
+      if (!existsSync(video) || !existsSync(meta)) continue;
+      if (!needle) return video;
+      try {
+        const j = JSON.parse(readFileSync(meta, 'utf8'));
+        if (String(j?.url ?? '').toLowerCase().includes(needle)) return video;
+      } catch { /* 坏的 meta 跳过 */ }
+    }
+  } catch { /* 没有媒体目录 */ }
+  return null;
+}
+
+/**
  * 拿这支片子的字幕（带缓存）。
  *
  * @returns {Promise<{ok:boolean, cues:Array<{from:number,to:number,text:string}>, lang?:string,
  *   source:'cache'|'remote'|'none', reason?:string}>}
  */
-export async function loadCues(input, { env = process.env, cookies = null, refresh = false } = {}) {
+export async function loadCues(input, {
+  env = process.env, cookies = null, refresh = false, start = 0, end = undefined,
+} = {}) {
   const file = subsFile(input, env);
   if (!refresh && existsSync(file)) {
     try {
@@ -69,6 +204,11 @@ export async function loadCues(input, { env = process.env, cookies = null, refre
   }
   const r = await fetchRemoteSubtitles({ url: input, cookies });
   if (!r?.ok || !Array.isArray(r.segments) || r.segments.length === 0) {
+    // **没有 CC 字幕不是终点**：这时唯一可靠的时间码是 ASR 自己给的句子时间。
+    // 以前这里直接返回 no-subs，于是模型只能拿分镜的格子时间（45 秒一格）当 `at`，
+    // 台词就会提前几十秒冒出来 —— 用户 2026-10-31 报的"台词比视频提前了有点多"就是这个。
+    const a = await asrCues(input, { env, start, end }).catch(() => null);
+    if (a?.ok) return a;
     return { ok: false, cues: [], source: 'none', reason: r?.reason ?? 'no-subs' };
   }
   const cues = r.segments

@@ -14,7 +14,7 @@ import { join } from 'node:path';
 import {
   appendAssistantSay, appendChat, attachSpeechToChat, chatFile, makeChatWatcher, readChat,
 } from '../src/chat.js';
-import { __resetSpeech, emitSpeech, onSpeech, speechObservers, speechSubscribers } from '../src/voice.js';
+import { __resetSpeech, emitSpeech, emitSpoken, onSpeech, speechObservers, speechSubscribers } from '../src/voice.js';
 
 async function withCache(fn) {
   const dir = await mkdtemp(join(tmpdir(), 'chat-test-'));
@@ -44,8 +44,7 @@ test('台词到点会写进流；scheduled 不写（那是清单，不是"现在
   });
 });
 
-test('插话那句只写一次：role=assistant，不会又被当成台词写一遍', async () => {
-  __resetSpeech();
+test('插话那句只写一次：role=assistant，不会又被当成台词写一遍', async () => {  __resetSpeech();
   await withCache(async (env) => {
     const off = attachSpeechToChat({ env });
     appendAssistantSay('你看这条鱼', { t: 193, env });
@@ -151,6 +150,50 @@ test('空的插话不写、不广播', async () => {
     off();
     assert.equal(readChat(env).length, 0);
     assert.equal(heard.length, 0);
+  });
+});
+
+test('有人会念时：字要等"真出声"（spoken）才摆出来，不能认 due', async () => {
+  __resetSpeech();
+  await withCache(async (env) => {
+    const offChat = attachSpeechToChat({ env, fallbackMs: 5000 });
+    // 装一个"会出声、但还在合成"的引擎：收到 due 先不动（真引擎就是合成 0.6~2 秒）
+    const offVoice = onSpeech(() => {}, { voice: true });
+
+    emitSpeech({ at: 191.4, text: '有声的台词', state: 'due' });
+    assert.equal(readChat(env).length, 0, 'due 只说明"该念了"，声音还没出来，字不能先摆出来');
+
+    emitSpoken({ at: 191.4, text: '有声的台词' });
+    const rows = readChat(env);
+    assert.equal(rows.length, 1, '真的出声之后，字才出现 —— 顺序是"先念，马上看到"');
+    assert.equal(rows[0].text, '有声的台词');
+    assert.equal(rows[0].say, true);
+
+    offVoice();
+    offChat();
+  });
+});
+
+test('引擎不上报 spoken 时兜底：宁可字早一点，也别吞掉', async () => {
+  __resetSpeech();
+  await withCache(async (env) => {
+    const offChat = attachSpeechToChat({ env, fallbackMs: 20 });
+    const offVoice = onSpeech(() => {}, { voice: true });   // 老适配器：只念，不报
+
+    emitSpeech({ at: 12, text: '没人上报的一句', state: 'due' });
+    assert.equal(readChat(env).length, 0, '先等等看它会不会报');
+
+    await new Promise((r) => setTimeout(r, 80));
+    const rows = readChat(env);
+    assert.equal(rows.length, 1, '等不到上报就必须兜底写出来');
+    assert.equal(rows[0].text, '没人上报的一句');
+
+    // 兜底之后如果 `spoken` 才到，不能写第二遍
+    emitSpoken({ at: 12, text: '没人上报的一句' });
+    assert.equal(readChat(env).length, 1, '同一句只出现一次');
+
+    offVoice();
+    offChat();
   });
 });
 

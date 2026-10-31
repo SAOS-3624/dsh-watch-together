@@ -5,6 +5,14 @@
  * 这个文件订阅事件、把台词念出来，并且在 **stderr 打一行时间码**：
  * 调试时最想知道的就是"这句话到底是第几秒吐出来的"。
  *
+ * ## 两件事，别混
+ *
+ *   收到 `due`   = 该念了（核心按播放位置发的）
+ *   发 `spoken`  = **真的出声了**（本文件在合成完成、开始播放那一瞬发）
+ *
+ * 悬浮窗认的是 `spoken`：不然字会先摆出来、声音一两秒后才到（`due` → 合成是一次网络往返
+ * 加一个 ffplay 启动）。上报晚了就等于又回到旧毛病，所以上报点选在**播放之前**。
+ *
  * ## 启用
  *
  * ```json
@@ -73,7 +81,7 @@ function edgeBin(cfg) {
   return null;
 }
 
-async function speakEdge(text, { bin, voice, rate }) {
+async function speakEdge(text, { bin, voice, rate, onStart = null }) {
   const out = join(tmpdir(), `voice-${Date.now()}-${Math.random().toString(36).slice(2, 7)}.mp3`);
   const pct = Math.round(Math.max(-10, Math.min(10, Number(rate) || 0)) * 3);
   const args = ['--voice', voice, '--text', text, '--write-media', out];
@@ -82,15 +90,20 @@ async function speakEdge(text, { bin, voice, rate }) {
   try {
     if (statSync(out).size < 800) return { ok: false, reason: 'empty-audio' };
   } catch { return { ok: false, reason: 'stat-failed' }; }
+  // **就在这里上报"要出声了"**：合成已经完成，ffplay 一启动就有声 ——
+  // 悬浮窗收到才把字摆出来，于是"字出现"和"张嘴"几乎是同一刻（见 src/chat-store.js）。
+  try { onStart?.(); } catch { /* 上报失败不影响念 */ }
   const played = await run('ffplay', ['-nodisp', '-autoexit', '-loglevel', 'quiet', out], 90_000);
   try { unlinkSync(out); } catch { /* 删不掉就留着 */ }
   return played ? { ok: true, engine: 'edge-tts' } : { ok: false, reason: 'play-failed' };
 }
 
 /** Windows 系统声音。Linux/macOS 会失败，失败就当没这个引擎。 */
-function speakSapi(text, rate) {
+function speakSapi(text, rate, onStart = null) {
   const lit = `'${String(text ?? '').replace(/'/g, "''")}'`;
   const cmd = `$v = New-Object -ComObject SAPI.SpVoice; $v.Rate = ${Math.max(-10, Math.min(10, Number(rate) || 0))}; $null = $v.Speak(${lit})`;
+  // PowerShell 冷启动要几百毫秒，上报放在**起进程之前**，宁可略早也别晚（字等声音没关系，声音等字不行）
+  try { onStart?.(); } catch { /* 上报失败不影响念 */ }
   return new Promise((resolve) => {
     execFile('powershell', ['-NoProfile', '-NonInteractive', '-Command', cmd],
       { timeout: 60_000, windowsHide: true }, (err) => resolve(!err));
@@ -125,13 +138,24 @@ export function attach(api) {
     if (e.state !== 'due') return;
     // **先打日志再念**：调试时关心的是"它什么时候吐字"，不是"有没有声"
     console.error(`[voice ${mmss(e.at)}] ${e.text}`);
+    // 「真的出声了」只报一次：edge 成功之后就不该再由 SAPI 兜底那条报第二遍。
+    // 展示层（悬浮窗）等的就是这个上报 —— 不是 `due`（见 src/chat-store.js）。
+    let reported = false;
+    const onStart = () => {
+      if (reported) return;
+      reported = true;
+      try {
+        // 老宿主可能没给 emitSpoken：那就靠展示层的 2.5 秒兜底，功能不残
+        api.emitSpoken?.({ at: e.at, text: e.text, input: e.input, segment: e.segment });
+      } catch { /* 上报失败不影响念 */ }
+    };
     chain = chain.then(async () => {
       if (bin) {
-        const r = await speakEdge(e.text, { bin, voice, rate });
+        const r = await speakEdge(e.text, { bin, voice, rate, onStart });
         if (r.ok) return;
         console.error(`[voice] edge-tts 失败（${r.reason}），退回系统声音`);
       }
-      if (!(await speakSapi(e.text, rate))) console.error('[voice] 系统声音也不可用，只打日志');
+      if (!(await speakSapi(e.text, rate, onStart))) console.error('[voice] 系统声音也不可用，只打日志');
     }).catch((err) => console.error(`[voice] ${err?.message ?? err}`));
   });
 

@@ -84,9 +84,14 @@ async function main() {
   const input = need(values, 'input');
   const size = Number(values.size ?? 120);
 
+  // 给了 --from/--to 就只转这一段（没有 CC 字幕时会走 ASR，全片转一遍太慢）
+  const from = values.from === undefined ? 0 : Number(values.from);
+  const to = values.to === undefined ? undefined : Number(values.to);
   const cuesRes = await loadCues(input, {
     cookies: values.cookies ?? null,
     refresh: values.refresh === true,
+    start: from,
+    end: to,
   });
   if (!cuesRes.ok) {
     console.error(`拿不到字幕：${cuesRes.reason}（没有字幕就只能看图写，用 watch_together）`);

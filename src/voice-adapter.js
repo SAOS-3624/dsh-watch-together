@@ -11,7 +11,8 @@
  * ```
  *
  * 适配器模块导出 `attach(api)`（或 default 导出同名函数），`api` 是
- * `{ onSpeech, speechSubscribers, emitSpeech, lastSpeech }`。
+ * `{ onSpeech, speechSubscribers, emitSpeech, emitSpoken, lastSpeech }` ——
+ * 合成完真的要出声时调一次 `emitSpoken(e)`，展示层才知道"字可以出现了"（见 `speech-bus.js`）。
  * `attach` 可以返回一个 detach 函数；不返回也行，但要自己管好退订。
  *
  * 和 `speech-bus.js` 的分工：总线不认识"文件路径""import""配置文件"，
@@ -24,7 +25,7 @@ import { join } from 'node:path';
 import { pathToFileURL } from 'node:url';
 
 import {
-  emitSpeech, lastSpeech, onSpeech, speechSubscribers, __resetSpeech,
+  emitSpeech, emitSpoken, lastSpeech, onSpeech, speechSubscribers, __resetSpeech,
 } from './speech-bus.js';
 
 /** 已挂载的适配器：specifier → 它的 detach（可能没有） */
@@ -85,7 +86,7 @@ export async function loadVoiceAdapter(spec, { log = () => {} } = {}) {
 
   try {
     const detach = await attach({
-      onSpeech, speechSubscribers, emitSpeech, lastSpeech,
+      onSpeech, speechSubscribers, emitSpeech, emitSpoken, lastSpeech,
     });
     attached.set(raw, typeof detach === 'function' ? detach : null);
     // 模块没有自报名字时用路径末段 —— `attach.name` 永远是 "attach"，没有信息量

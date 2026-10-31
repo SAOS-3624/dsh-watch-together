@@ -23,7 +23,7 @@ import { appendFileSync, mkdirSync, readFileSync } from 'node:fs';
 import { join } from 'node:path';
 
 import { cacheDir } from 'dsh-video-storyboard/cache';
-import { emitSpeech, onSpeech } from './voice.js';
+import { emitSpeech, onSpeech, speechSubscribers } from './voice.js';
 
 /** 聊天记录（jsonl，一行一条 {role, text, at}） */
 export function chatFile(env = process.env) {
@@ -63,20 +63,75 @@ export function appendChat(role, text, meta = {}, env = process.env) {
 }
 
 /**
- * 把"到点的台词"写进统一流 —— 这样聊天框里能看见剧本，声音也有得念。
+ * 把"该念的台词"写进统一流 —— 这样聊天框里能看见剧本，声音也有得念。
  *
- * 只在 `state === 'due'` 时写：`scheduled` 是清单，不是"这句话现在说出来"。
- * 订阅时带 `voice: false` —— 聊天框只是**看**，它不该让循环以为"有人会念"。
+ * ## 写盘的时刻 = **声音真出来那一刻**，不是"到点"那一刻
+ *
+ * 以前一收到 `due` 就写盘，于是**字先出来、声音后到**：`due` 到"出声"之间还隔着一整套合成
+ * —— edge-tts 一次网络往返 + ffplay 启动，短句也要 0.6~2 秒。用户看到的是
+ * "台词已经摆在那儿了，一秒后才念"。2026-10-31 实报。
+ *
+ * 反过来做只会更糟：把话音往后挪（`speechLag`）字和声能对上，但声音离画面越来越远，
+ * 那就不叫陪看了。所以**挪的是字**：
+ *
+ *   - 有会出声的订阅者 → 等它发 `spoken`（适配器在开始播放那一瞬发）再写；
+ *   - 没人会出声（没挂适配器） → 照旧收到 `due` 就写，悬浮窗不能空着；
+ *   - 适配器不上报 `spoken`（老适配器） → `fallbackMs` 兜底，宁可早一点，也不吞字。
+ *
+ * `scheduled` 仍然只是清单，不写。
+ *
+ * @param {{ env?: object, onEntry?: (e:object)=>void, fallbackMs?: number }} [o]
+ *        `fallbackMs` 兜底等待（默认 2500ms，可用 `DSH_WATCH_CAPTION_FALLBACK_MS` 覆盖）
  */
-export function attachSpeechToChat({ env = process.env, onEntry = null } = {}) {
+export function attachSpeechToChat({ env = process.env, onEntry = null, fallbackMs = null } = {}) {
+  const fromEnv = Number(env?.DSH_WATCH_CAPTION_FALLBACK_MS);
+  const waitMs = Number.isFinite(fallbackMs) && fallbackMs >= 0
+    ? Number(fallbackMs)
+    : (Number.isFinite(fromEnv) && fromEnv >= 0 ? fromEnv : 2500);
+  /**
+   * 同一句的两种状态用同一个 key 配对。**不能用 `seq`**：`spoken` 是适配器新发的一条事件，
+   * `emitSpeech` 会另给一个序号，拿 `seq` 去等就永远等不到自己那一句（而兜底会把字又摆一遍）。
+   * `at` 是这句在时间轴上的位置，配上正文就够唯一了。
+   */
+  const keyOf = (e) => `${e?.at}|${String(e?.text ?? '')}`;
+  /** 等声音开口的那几条：`key → 兜底定时器` */
+  const waiting = new Map();
+  /** 已经摆过字的 `key`（兜底摆过一次之后 `spoken` 再到，不能摆第二遍） */
+  const written = new Set();
+
+  const write = (e) => {
+    const entry = appendChat('line', e.text, { t: e.at, say: true }, env);
+    written.add(keyOf(e));                  // 只留最近的一小段：这是防重，不是账本
+    if (written.size > 500) written.clear();
+    try { onEntry?.(entry); } catch { /* 展示层的事，别影响写盘 */ }
+  };
+
   return onSpeech((e) => {
-    if (e.state !== 'due') return;
-    // 插话那句是**先写流再广播**的（appendAssistantSay），这里再写就重复了
+    // 插话那句是**先写流再广播**的（`appendSpoken`），这里再写就重复了
     if (e.origin === 'chat') return;
+    if (e.state !== 'due' && e.state !== 'spoken') return;
     const text = String(e.text ?? '').trim();
     if (!text) return;
-    const entry = appendChat('line', text, { t: e.at, say: true }, env);
-    try { onEntry?.(entry); } catch { /* 展示层的事，别影响写盘 */ }
+    const key = keyOf({ at: e.at, text });
+
+    if (e.state === 'spoken') {
+      const timer = waiting.get(key);
+      if (timer) { clearTimeout(timer); waiting.delete(key); }
+      if (written.has(key)) return;          // 兜底已经摆过字了
+      write({ at: e.at, text });
+      return;
+    }
+
+    // `due`：没人会出声就直接写 —— 零依赖路径不能因为等不到 `spoken` 而变哑
+    if (speechSubscribers() === 0) { write({ at: e.at, text }); return; }
+    if (waiting.has(key) || written.has(key)) return;
+    const timer = setTimeout(() => {
+      waiting.delete(key);
+      if (written.has(key)) return;
+      write({ at: e.at, text });             // 适配器没上报：宁可早一点，也别把字吞掉
+    }, waitMs);
+    timer.unref?.();
+    waiting.set(key, timer);
   }, { voice: false });
 }
 

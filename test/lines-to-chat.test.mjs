@@ -16,7 +16,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
 import { attachSpeechToChat, readChat } from '../src/chat.js';
-import { __resetSpeech, onSpeech } from '../src/voice.js';
+import { __resetSpeech, emitSpoken, onSpeech } from '../src/voice.js';
 import { saveLines } from '../src/watch-lines.js';
 import { loopStatus, startWatchLoop, stopWatchLoop } from '../src/watch-loop.js';
 
@@ -76,7 +76,14 @@ test('有声音订阅者时行为不变：进流 + 不叫醒模型（念了就�
   try {
     const offChat = attachSpeechToChat();
     let woke = 0;
-    const offVoice = onSpeech(() => { woke += 1; }, { voice: true });   // 假装接了个引擎
+    // 假装接了个引擎：**收到 due → 立刻上报"真的出声了"**（真引擎在合成完之后才报，
+    // 见 examples/voice-edge-tts/index.mjs）。展示层等的就是这个上报 —— `due` 只说明"该念了"，
+    // 合成还要 0.6~2 秒，认 `due` 摆字就是"字先到、声音后到"（2026-10-31 实报）。
+    const offVoice = onSpeech((e) => {
+      if (e.state !== 'due') return;
+      woke += 1;
+      emitSpoken(e);
+    }, { voice: true });
     await saveLines('b.mp4', [{ from: 120, at: 197.5, text: '有声时这一句' }]);
 
     let tick = null;
