@@ -44,6 +44,19 @@ test('台词到点会写进流；scheduled 不写（那是清单，不是"现在
   });
 });
 
+test('卸载时清掉兜底定时器：不该在卸载后补写一句', async () => {
+  __resetSpeech();
+  await withCache(async (env) => {
+    const voice = onSpeech(() => {}, { voice: true });
+    const off = attachSpeechToChat({ env, fallbackMs: 30 });
+    emitSpeech({ at: 191, text: '还没出声就被卸载' });
+    off();
+    voice();
+    await new Promise((r) => setTimeout(r, 60));
+    assert.deepEqual(readChat(env), [], '卸载后定时器不能写盘');
+  });
+});
+
 test('插话那句只写一次：role=assistant，不会又被当成台词写一遍', async () => {  __resetSpeech();
   await withCache(async (env) => {
     const off = attachSpeechToChat({ env });
