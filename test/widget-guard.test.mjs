@@ -25,6 +25,7 @@ import { join } from 'node:path';
 
 import { loopStatus, startWatchLoop, stopWatchLoop } from '../src/watch-loop.js';
 import { runWatchPass } from '../src/watch-run.js';
+import { takeHangupNote } from '../src/watch-state.js';
 
 const ctxStub = { sessionController: { prompt: async () => {} } };
 
@@ -49,22 +50,33 @@ function bootSim({ windowAlive, windowGuard = true }) {
   return { r, tick: () => tick(), wake };
 }
 
-test('钟：窗口被关掉 → 自动停表，并留一条能看懂的日志/叫醒', async () => {
+test('钟：窗口被关掉 → 自动停表，并留一条能看懂的说明', async () => {
+  const prevHome = process.env.DSH_HOME;
+  const home = await mkdtemp(join(tmpdir(), 'wg-note-'));
+  process.env.DSH_HOME = home;
   stopWatchLoop('init');
-  let alive = true;
-  const { r, tick, wake } = bootSim({ windowAlive: () => alive });
-  assert.equal(r.ok, true);
+  try {
+    let alive = true;
+    const { r, tick, wake } = bootSim({ windowAlive: () => alive });
+    assert.equal(r.ok, true);
 
-  await tick();
-  assert.equal(loopStatus().active, true, '窗口还开着，钟要照常走');
+    await tick();
+    assert.equal(loopStatus().active, true, '窗口还开着，钟要照常走');
 
-  alive = false;                    // 用户把窗口关了
-  await tick();
+    alive = false;                    // 用户把窗口关了
+    await tick();
 
-  assert.equal(loopStatus().active, false, '窗口关了就该停表');
-  assert.equal(loopStatus().reason, 'widget-closed', 'reason 要能一眼看出是被关窗停的');
-  assert.ok(wake.some((t) => /悬浮窗被关掉/.test(t)), '要告诉模型/用户为什么停');
-  stopWatchLoop('cleanup');
+    assert.equal(loopStatus().active, false, '窗口关了就该停表');
+    assert.equal(loopStatus().reason, 'widget-closed', 'reason 要能一眼看出是被关窗停的');
+    // **不投会话消息**（会显示成输入框的排队消息），改成待领的说明
+    assert.equal(wake.length, 0, `关窗不该往会话里投消息，实得 ${wake.length} 条`);
+    const note = await takeHangupNote('w.mp4');
+    assert.match(note, /悬浮窗被关掉/, '要留下一条能看懂的说明');
+  } finally {
+    stopWatchLoop('cleanup');
+    if (prevHome === undefined) delete process.env.DSH_HOME; else process.env.DSH_HOME = prevHome;
+    await rm(home, { recursive: true, force: true }).catch(() => {});
+  }
 });
 
 test('钟：没开窗（windowGuard=false）时窗口死活都不影响陪看', async () => {

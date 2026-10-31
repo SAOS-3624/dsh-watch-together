@@ -26,9 +26,6 @@ export const WATCH_LEAD = 15;
 /** 路径归一成小写正斜杠 —— 同一个文件在不同写法下必须算同一个会话。 */
 export const norm = (p) => String(p ?? '').replace(/\\/g, '/').toLowerCase();
 
-/** 老键（= 整条 URL 归一）。只用来把旧状态迁到新键上，新代码不要再拿它当键。 */
-export const legacySessionKey = (input) => norm(input);
-
 /**
  * **视频身份**：同一支片子的不同 URL 形态必须落到同一个键。
  *
@@ -112,9 +109,9 @@ export function watchPath(env = process.env) {
  * 所以：关窗时落一条 `hangup`，之后**只有用户明确要求重开**（工具参数 `open: true`，
  * 或换了一支片子）才清掉它。
  */
-export async function markHungUp(input, env = process.env) {
+export async function markHungUp(input, env = process.env, note = null) {
   const st = await loadWatch(env);
-  st.hangup = { key: sessionKey(input), at: Date.now() };
+  st.hangup = { key: sessionKey(input), at: Date.now(), ...(note ? { note: String(note).slice(0, 800) } : {}) };
   await saveWatch(st, env);
   return st.hangup;
 }
@@ -125,6 +122,25 @@ export async function isHungUp(input, env = process.env) {
   const h = st.hangup;
   if (!h?.key) return false;
   return h.key === sessionKey(input);
+}
+
+/**
+ * 把"还没送给模型的那条挂断说明"取走（取完即清，同一条只说一次）。
+ *
+ * 为什么不用 `followup` 送：那会进宿主 inbox 的 `next-turn`，而 DSH 的 QueueDock
+ * **不按 source 过滤** —— 插件自己的提示会显示成"排队消息"里的待发消息，用户没说话
+ * 却看见一条（2026-11-01 实报）。挂断也不需要模型立刻醒：钟已经停了，它会在
+ * 下一次工具调用返回时读到这条。`open: true` 重开时这条自然作废（挂断记录被清）。
+ */
+export async function takeHangupNote(input, env = process.env) {
+  const st = await loadWatch(env);
+  const h = st.hangup;
+  if (!h?.note) return '';
+  if (h.key !== sessionKey(input)) return '';
+  const text = h.note;
+  delete h.note;
+  await saveWatch(st, env);
+  return text;
 }
 
 /** 清掉挂断记录（用户明确要求重开时） */

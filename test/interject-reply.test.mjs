@@ -40,7 +40,7 @@ test('插话的话术：必须点名 `say`，并说清"字先出、画面后到"
   assert.match(t, /台词优先/, '欠台词时不该因此沉默（lines 和 say 可以同一次给）');
 });
 
-test('没回就追问：`[未回应]` 一直挂到真的用 say 回过', () => {
+test('没回就追问：`[未回应]` 挂到用 say 回过，或提醒过一次为止', () => {
   __resetInterject();
   interjectNote('这段什么意思');
   const r1 = replyReminder({ answered: false });
@@ -50,6 +50,28 @@ test('没回就追问：`[未回应]` 一直挂到真的用 say 回过', () => {
   const r2 = replyReminder({ answered: true });   // 这次调用带了 say
   assert.equal(r2, '', '回过了就别再念叨');
   assert.equal(replyReminder({ answered: false }), '', '回执清掉之后也不该再冒出来');
+});
+
+/**
+ * 2026-11-01 实报："大肥鱼已经重复了"。
+ *
+ * 同一条插话只要模型这一轮没带 `say`，以前每一轮都会顶一遍 `[未回应]` —— 模型连着
+ * 被念三次，用户看到的就是**一句话被当成三件事**。现在只提醒**一次**。
+ */
+test('同一条插话只提醒一次（不再每轮都顶，避免"一句话被念三遍"）', () => {
+  __resetInterject();
+  interjectNote('大肥鱼');
+  assert.match(replyReminder({ answered: false }), /未回应/, '第一次要提醒');
+  assert.equal(replyReminder({ answered: false }), '', '第二次起闭嘴');
+  assert.equal(replyReminder({ answered: false }), '', '之后一直不冒');
+
+  // 用户又说了**同一句**（模型还是没回）：不重开计时、也不重开提醒
+  interjectNote('大肥鱼');
+  assert.equal(replyReminder({ answered: false }), '', '同一句话重复记不该重新触发');
+
+  // 换了新的一句话：该重新提醒
+  interjectNote('这段配乐叫什么');
+  assert.match(replyReminder({ answered: false }), /配乐/);
 });
 
 // ---------------------------------------------------------------- ② 回话占住的那段时间

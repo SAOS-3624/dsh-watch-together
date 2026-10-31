@@ -30,9 +30,6 @@ import { loadWatch, saveWatch, sessionKey } from './watch.js';
 
 const KEEP = 40;
 
-/** 这个"一半"的名字就是状态里的键，别写字面量 */
-export const MATERIAL_PARTS = ['image', 'transcript'];
-
 function ensureSession(st, input) {
   const sk = sessionKey(input);
   st[sk] = st[sk] ?? {};

@@ -3,7 +3,187 @@
 All notable changes to **dsh-watch-together** are documented here.
 This package starts its own version line at `0.0.7` — it is not a continuation of `dsh-video-storyboard`.
 
-## [Unreleased]
+## [0.1.0] - 2026-11-01
+
+首个发布版本。要求 `dsh-video-storyboard@^0.5.11`（字幕轨用到它的 `./transcript-pass` 子路径）。
+
+### Fixed — optional services must go through `ctx.get()`
+
+`ctx?.attachments?.saveImage` looks like a runtime probe but throws in a real host: cordis's `ctx`
+is a Proxy whose `get` trap **throws** `cannot get property "xxx" without inject` when a service was
+not declared in `inject`. `?.` only guards `null`/`undefined`, not exceptions.
+
+All optional-service lookups now go through `serviceOf(ctx, name)` (in `src/timer.js`): it prefers
+`ctx.get(name)` — cordis's documented way to ask for an optional dependency, returning `undefined`
+when absent — and only falls back to property access inside a `try`.
+
+### Liquid-glass window, one stream, and a name you can change (2026-11-01)
+
+Reported as: the scripted lines (warm amber, with a "台词" label) and the assistant's replies (cool
+grey, labelled "陪看") read like two different people talking in one stream — and the window itself
+looked like a plain dark panel.
+
+**One stream, one look.** `ROLE` now maps `line` and `assistant` to the *same* colours, and the head
+line shows **only the timestamp** — no "台词", no "陪看". Only the user's own messages keep a tint
+(so you can still tell which side you are on).
+
+**Timestamps are wall-clock now** (`HH:MM:SS`), for every role. Scripted lines used to show their
+playback position (`01:26.0`) while everything else showed local time — two time bases in one
+stream, so reading it meant converting in your head. Seconds are included because a segment runs
+2–5 minutes and several messages share the same minute; `HH:MM` alone would make the stamps useless
+for telling them apart. A message with no `at` gets no head line at all (an empty label still eats
+a full line of height).
+
+**Liquid glass.** Three things carry the effect, because tkinter cannot blur what is behind it:
+
+- **24px+ radius** — and `round_rect` no longer uses `smooth=True`, which renders a 22px radius as
+  roughly 14px (it smooths a polygon rather than following an arc). It now samples each corner arc
+  directly.
+- **A refractive edge**: a 1px inner highlight along the top, plus an outer border split into a lit
+  upper half and a shadowed lower half — what a real piece of glass does.
+- **Slight window transparency** (`-alpha 0.975`, `DSH_WATCH_GLASS_ALPHA` to tune, ≥1 disables).
+  The desktop shows through just enough to read as glass without competing with the text.
+
+Buttons and the input field are **pills** now (`Pill` class + a Canvas-backed field): a square
+"发送" button next to a 24px-rounded panel was the most obviously un-Apple thing left.
+
+**The title is editable.** Click the name in the header, type, press Enter — saved as `name` in
+`~/.dsh/watch-window.json` and restored next launch. Committing uses an explicit `_editing` flag
+rather than `winfo_ismapped()`, which is still `False` on the frame right after `pack()` and would
+silently swallow a fast Enter.
+
+**Fixed:** `meta` entries (wake failures, mic status) were falling through to the assistant bubble
+style — a screenful of `[一起看] 叫醒失败` rendered as full-size cards. They now use the grey
+one-line `Meta` row that already existed for exactly this.
+
+**Fixed:** the saved geometry was clamped against `sw - 120` instead of the window's own width, so a
+700px-wide window could be restored 580px off the right edge.
+
+### No more self-made "queued messages", one reminder per interjection, and a hideable window (2026-11-01)
+
+Reported as three things that turned out to be one root cause plus two design gaps.
+
+**The queue strip.** `wakeSession` delivers through `agent.followup()`, which lands in the host
+inbox's `next-turn`. DSH's `QueueDock` renders **every** row of `next-turn` and does not filter by
+`source.kind` — so the plugin's own instructions showed up in the input box as pending messages the
+user never typed ("插话栏自动出现"). Two consequences fixed here:
+
+- **The hangup note no longer goes through `followup`.** Closing the window is still a hangup (clock
+  stops, nothing is rebuilt, no lines are spoken), but the explanation is now written into
+  `watch.json` and handed to the model on its next tool result (`takeHangupNote`). The watch loop
+  already has the model blocked inside an interrupted tool call, so nothing is lost — and the queue
+  strip stays empty. `markHungUp(input, env, note)` carries the text; taking it clears it.
+- **`[未回应]` is emitted once per interjection.** It used to be appended to *every* tool result
+  until the model answered with `say`, so one message from the user could be read as three separate
+  events ("大肥鱼已经重复了"). `noteInterjected` also no longer restarts the clock when the same
+  sentence arrives twice inside the 3-minute TTL.
+- **The interjection prompt is two sentences, not a wall of ⚠️.** Same requirements
+  (`say` first, `speakNow`, lines in the same call), a fifth of the length — it is rendered in the
+  queue strip, so its size is user-visible.
+
+### `window: "hide" | "show"` — put the window away without ending the watch
+
+Closing the window means "I am done watching". Hiding it does not: the process stays alive, the
+clock keeps running, lines keep being spoken, nothing is marked as hung up. Reported as
+"如果有其他功能隐藏悬浮窗会更好".
+
+- `watch_together({ window: "hide" })` writes `hidden: true` into `~/.dsh/watch-window.json`;
+  `window.py` polls its config every 200 ms (`_sync_visible`) and does `withdraw()` / `deiconify()`.
+  `withdraw` rather than `iconify`: an always-on-top floating window should leave no taskbar entry
+  behind.
+- `openFloatingWindow` clears `hidden` **before any early return**, so a window that was hidden when
+  the process died does not come back invisible.
+
+### Two-track prefetch (2026-11-01) — subtitles no longer wait for the pictures
+
+The picture side is the slow one: a segment costs a download plus a scan (10–20 s, 20–90 s for the
+first), while the text for the same window arrives in a few seconds (site CC: instant; local ASR
+RTF 0.019 ≈ 6 s per 5-minute segment). They used to be produced and delivered as one package, so
+the text sat in the slow batch's shadow. Now they are two independent tracks over the **same**
+batch table and the **same** look-ahead window.
+
+- **New subtitle track** (`transcribe` → `dsh-video-storyboard/transcript-pass`). Mirrors the picture
+  track line for line: same `plan.indexAt` / `windowAt`, its own `transcribed` set. "Whoever's window
+  is full stops first" falls out of `find()` returning `undefined` — no extra rule.
+- **Two-part delivery.** When the text lands before its pictures, it is sent on its own
+  (`[一起来看·台词] 03:00–06:00` + one timestamped sentence per line). When the picture batch
+  arrives later it is built with `omitTranscript`, so the cells carry only times and the sentences are
+  not repeated (measured: 17k vs 26k tokens per 2 hours, +50% when repeated).
+- **`feedTranscriptLeadMs`** (default 0 = send as soon as it lands). Raise it to ~20000 if the
+  two-part delivery feels chatty and you would rather wait for one combined message.
+- **`transcriptTrack: false`** turns the whole track off.
+- **Failures don't sink the loop.** A failed transcription is not marked as done, so the next tick
+  retries; three failures in a row blacklist that segment for 10 minutes (a missing ASR service
+  should not be hit every 2 seconds). The picture track is never blocked by it.
+- **Cross-track timestamps now share one clock.** `transcribedAt` / blacklist times were stamped with
+  `Date.now()` while the tick compares against the injectable `deps.now()`; the difference was
+  negative by a trillion milliseconds, so the "skip for 10 minutes" and "wait N ms before feeding"
+  gates were both permanently bypassed (feeding never fired at all).
+
+### Experience pass (2026-11-01) — the minutes spent staring at nothing
+
+Same code, same contract; what changes is what the user sees (or hears) while waiting.
+
+- **A slow build now says something.** The first batch of a film needs a download plus a scan
+  (20–90 s) and a tool call cannot speak — so the window stayed empty and the only signal was
+  silence. After 4 s of building (`DSH_WATCH_SLOW_BUILD_MS`) one `meta` line is appended to the
+  stream: 「正在取 03:00–06:00 这一段…」. Fast segments write nothing.
+- **The measured latency is finally used on the main path.** `latency.js` has been calibrating
+  "read position → result ready" for a while, but only the background clock (`shouldSpeak`) spent it;
+  the blocking call still waited until `segment end - lead`, so on the same machine the clock spoke
+  early and the tool call spoke late. `deliveryState` now uses `lead + aheadSeconds`, while the text
+  still reports `lead` (what is pulled earlier is the work, not the sentence).
+- **Calibration only counts deliveries.** Not-yet calls take tens of milliseconds and are not samples;
+  recording them dragged the EWMA towards zero (and wrote `latency.json` on every poll).
+- **The last batch is delivered at the tail.** The final segment's due point is `end - lead`, which for
+  the last batch sits past the end of the film — the position never reaches it, so the user watched
+  the ending and got nothing. Reaching/passing `dur - 1` now counts as due.
+- **`speech` only lists lines that are still ahead.** It used to echo the whole draft, including the
+  lines the same call had just pruned as past — the model read them as "still going to be spoken".
+- **Delivery guidance trimmed ~45%** (≈1150 → ≈640 chars). It is resent every batch; the loop/pacing
+  rules already live in the tool description, so only the hard rules stay here: write the lines,
+  no spoilers, one sentence, `say` is the only visible channel.
+
+### Reading pass over the loop (2026-11-01) — six real bugs, one hot path
+
+No new features. Everything below was found by reading the code against its own comments and then
+reproducing it; each fix carries a regression test that fails on the old code.
+
+- **`lastDelivered: null` was read as batch 0.** A delivery blocked by the "no lines yet" gate writes
+  `lastDelivered: null`, and `Number(null)` is `0` — exactly the first batch's start. That batch then
+  counted as already delivered forever: `wait: true` woke up and answered "already delivered", image
+  and manifest never handed over. Empty now stays `NaN`.
+- **Same film, two URL forms → the loop restarted.** `samePlan` compared the raw `input` string, but the
+  extension reports `…/BV1g3xN6hEuw/?trackid=…&spm_id_from=…` while the model usually holds the clean
+  link. Every second call therefore looked like a new source, wiping `spoken` and re-waking segments
+  that had already been delivered. It now compares `sessionKey()`.
+- **`dur: null` became `0 s` on the bridge path.** `Number.isFinite(Number(s.dur))` passes for `null`,
+  so a report without a duration set the baseline to 0; the next real reading (600 s) then differed by
+  more than a second and was judged "video changed" — the clock stopped mid-film. `num()` in
+  `position-bridge.js` and the baseline update now treat empty as empty.
+- **`waitForVideo` lost the hangup.** The input surface is prepared once (`prepared ??=`), and the
+  early pre-warm for `waitForVideo` passed no arguments — so `input`/`open` never reached it. Without
+  `input` the recorded hangup could not be matched, the window was re-opened, and the call went off to
+  wait for a video instead of returning `[hangup]`.
+- **`dueLine` rewrote `watch.json` on every tick.** Its `dirty` flag was shared across segments: once one
+  batch had pinned its un-timed lines, every later batch was written back unchanged — a full state write
+  every 2 s for the rest of the film. The flag is per segment now.
+- **`waitUntil` / `waitForRefill` lied about why they stopped.** Breaking out because the user paused (or
+  the film ended) still produced "waited to the cap". The text now names the real reason.
+
+Hot path, same area:
+
+- `cachedCues()` re-read and re-parsed the whole subtitle file on every tick (`dueLine` asks several
+  times per tick). It is memoised on `path + size + mtime` now, and returns the **same array** so that
+  `makeLagFn`'s memo can be keyed on array identity. `makeLagFn` additionally sorts once and looks up
+  by binary search instead of a linear scan of every cue. 2000 cues × 5400 lookups: **66.7 ms → 0.8 ms**
+  (×83), and the disk read/parse per tick is gone.
+- `lines-util.js` had its own `cacheDir()` that fell back to `~/AppData/Local` on every platform, so on
+  Linux/macOS the subtitle cache landed in a directory that does not exist; it now uses the storyboard's
+  `cacheDir()`. `findCachedMedia()` likewise uses `tmpdir()` instead of `LOCALAPPDATA/Temp`.
+- Dead exports removed: `plan.starts` (a 513-element array allocated on every `makePlan`),
+  `legacySessionKey`, `wasWritten`, `MATERIAL_PARTS`. The input surface failing to start no longer fails
+  the whole call — it is reported in the result instead.
 
 Three rounds on 2026-10-31. The through-line: the plugin knew something, and the model (or the user)
 never found out — plus one window that needed to look like something people want to keep on screen.

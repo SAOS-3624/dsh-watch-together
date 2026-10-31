@@ -54,10 +54,12 @@ export function bridgePath(env = process.env) {
   return join(cacheDir(env), BRIDGE_FILE);
 }
 
-const num = (v) => {
-  const n = Number(v);
-  return Number.isFinite(n) ? n : null;
-};
+/**
+ * 数值规范化。**空值必须还是 null**：`Number(null) === 0`，直接 `Number.isFinite(Number(v))`
+ * 会把"扩展没报时长"变成"时长 0 秒"，于是下一次读数（600 秒）被判成换片，陪看当场停表。
+ */
+const num = (v) => (v === null || v === undefined || v === '' ? null
+  : (Number.isFinite(Number(v)) ? Number(v) : null));
 
 /**
  * 把上报的原始 JSON 规范化。位置本身必须有效，其余字段缺了就算了。

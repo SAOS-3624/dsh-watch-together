@@ -63,6 +63,39 @@ function readConfig() {
   }
 }
 
+/** 写一个键进配置（只合并不覆盖：`window.py` 也往这个文件写 geometry） */
+function patchConfig(patch) {
+  try {
+    const cfg = { ...readConfig(), ...patch };
+    writeFileSync(windowConfigPath(), `${JSON.stringify(cfg, null, 2)}\n`, 'utf8');
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+/**
+ * 藏起来 / 放出来（窗口进程不动，陪看继续）。
+ *
+ * 为什么这是**独立于关窗**的一档：关窗在陪看里是"不看了"（停表 + 落挂断记录），
+ * 而用户经常只是嫌它挡画面 —— 那两件事必须分开（2026-11-01 用户提出）。
+ * 窗口自己每 200ms 读一次这个配置（`_sync_visible`），所以这里只写文件就够。
+ *
+ * @param {boolean} hidden
+ * @returns {{ok: boolean, hidden: boolean, reason?: string}}
+ */
+export function setWindowHidden(hidden) {
+  if (process.env.DSH_WATCH_NO_WIDGET === '1') return { ok: false, hidden: false, reason: 'disabled' };
+  if (!stillRunning()) return { ok: false, hidden: false, reason: 'window-not-open' };
+  if (!patchConfig({ hidden: Boolean(hidden) })) return { ok: false, hidden: false, reason: 'config-write-failed' };
+  return { ok: true, hidden: Boolean(hidden) };
+}
+
+/** 窗口现在是藏着的吗（读配置，不看进程） */
+export function floatingWindowHidden() {
+  return readConfig().hidden === true;
+}
+
 /** 这个脚本最终用哪个文件（不检查存在性，交给调用方报清楚） */
 function resolveWindowScript(cfg = readConfig()) {
   const explicit = process.env.DSH_FLOAT_WINDOW || cfg.script;
@@ -116,6 +149,9 @@ export function floatingWindowAlive() {
  * @returns {{ok: boolean, script?: string, python?: string, reason?: string}}
  */
 export function openFloatingWindow({ log = null, force = false } = {}) {
+  // **先清"上次藏着退出"的标记**（在任何早退之前）：否则下次真开窗时它直接隐身，
+  // 用户以为插件坏了（`window.py` 的 `_sync_visible` 只跟这个键，没有"第一次"的概念）。
+  if (readConfig().hidden === true) patchConfig({ hidden: false });
   if (process.env.DSH_WATCH_NO_WIDGET === '1') return { ok: false, reason: 'disabled' };
   const cfg = readConfig();
   let script = resolveWindowScript(cfg);

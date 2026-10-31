@@ -23,6 +23,7 @@ import { markMaterial, materialNote } from './watch-material.js';
 import { controllerOf, wakeSession } from './timer.js';
 import { loopStatus, stopWatchLoop } from './watch-loop.js';
 import { appendAssistantSay } from './chat.js';
+import { setWindowHidden } from './floating-window.js';
 import { lastSpeech } from './voice.js';
 import { mmss } from './time.js';
 
@@ -36,6 +37,30 @@ export async function runWatchAction(args, { ctx = null, sessionId = null, brows
   // `stop` 是别名：用户说"停止一起看"时，模型第一反应就是敲 stop
   if (args.stopLoop === true || args.stop === true) {
     return { text: JSON.stringify(stopWatchLoop('requested')), images: [] };
+  }
+
+  // **藏起来 / 放出来**：和关窗是两件事（关窗 = 不看了，会停表；藏起来 = 陪看继续）。
+  // 用户的原话是"如果有其他功能隐藏悬浮窗会更好"（2026-11-01）—— 他嫌它挡画面，
+  // 但并不想结束陪看。窗口进程不动，只写一个配置键，窗口自己每 200ms 读一次。
+  if (args.window === 'hide' || args.window === 'show') {
+    const want = args.window === 'hide';
+    const r = setWindowHidden(want);
+    if (!r.ok) {
+      return {
+        images: [],
+        text: `[window] ${r.reason === 'window-not-open'
+          ? '悬浮窗没开着，没什么可藏的'
+          : r.reason === 'disabled'
+            ? '这台机器关掉了悬浮窗（DSH_WATCH_NO_WIDGET=1）'
+            : `切不过去（${r.reason}）`}。`,
+      };
+    }
+    // 藏起来之后用户看不见窗口，所以这句话只能靠 `say` 进流 —— 让它自己说一句
+    return {
+      images: [],
+      text: `[window] 悬浮窗已${want ? '藏起来（陪看继续，位置照跟、台词照念）' : '放出来'}。`
+        + '别调 stop，也别当成"用户不看了" —— 关窗才是那个意思。',
+    };
   }
 
   // **只取字幕**：图和字幕要拆开返回时走这条（`transcript: true`）。

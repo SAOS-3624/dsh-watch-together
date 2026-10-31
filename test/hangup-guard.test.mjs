@@ -8,8 +8,10 @@
  *
  * 所以钉三件事：
  *   ① 位置不可信（读数停住、外推到底）→ **一句台词都不许再发**；
- *   ② 关窗 = 挂断：钟停表，并且**真的叫醒**模型（`wake:false` 不该把它一起关掉）；
- *   ③ 叫醒的话里必须写明"不要再调、不要再念"。
+ *   ② 关窗 = 挂断：钟停表，并且**不让模型蒙在鼓里**（`wake:false` 不该把它一起关掉）；
+ *      但这条说明**不走 followup**（那会显示成输入框的排队消息），改落进 watch.json
+ *      由下一次工具返回带走 —— 见 2026-11-01 的用例；
+ *   ③ 说明里必须写明"不要再调、不要再念"。
  */
 
 process.env.DSH_WATCH_BRIDGE = '0';
@@ -23,7 +25,7 @@ import { join } from 'node:path';
 
 import { loopStatus, startWatchLoop, stopWatchLoop } from '../src/watch-loop.js';
 import { __resetSpeech, onSpeech } from '../src/voice.js';
-import { markHungUp } from '../src/watch-state.js';
+import { markHungUp, takeHangupNote } from '../src/watch-state.js';
 import { saveLines } from '../src/watch.js';
 import { execute } from '../src/handler.js';
 import { createSim } from './helpers/sim.mjs';
@@ -79,39 +81,53 @@ test('同一份台词、源一直在：照常念（证明上一条不是因为�
   });
 });
 
-test('关窗 = 挂断：停表 + 真的叫醒，并写明"不要再调 / 不要再念"', async () => {
+test('关窗 = 挂断：停表 + 落一条待领的说明（不投 followup，免得进排队消息区）', async () => {
+  const prevHome = process.env.DSH_HOME;
+  const home = await mkdtemp(join(tmpdir(), 'hangup-note-'));
+  process.env.DSH_HOME = home;
   stopWatchLoop('init');
-  const wakes = [];
-  let tick = null;
-  const r = startWatchLoop({
-    ctx: ctxStub, sessionId: 's-hang', input: 'h.mp4',
-    segments: [{ from: 0, to: 120 }], browserPort: 1, segment: 120, ramp: [], depth: 2,
-    // **显式 wake:false**：段末那种打扰关着，但"用户关窗"这条不能跟着哑掉
-    wake: false,
-    windowGuard: true,
-    deps: {
-      now: () => Date.now(),
-      ticker: ({ tick: t }) => { tick = t; return { dispose() {} }; },
-      readBrowser: async () => ({ pos: 10, dur: 600, paused: false, title: 'h.mp4' }),
-      probeEveryMs: 0,
-      loadLatency: async () => null,
-      windowAlive: () => false,                     // 用户已经把窗口关了
-      wake: async (_c, o) => { wakes.push(o.text); return { ok: true }; },
-    },
-    log: () => {},
-  });
-  assert.equal(r.ok, true);
-  await tick();
+  try {
+    const wakes = [];
+    let tick = null;
+    const r = startWatchLoop({
+      ctx: ctxStub, sessionId: 's-hang', input: 'h.mp4',
+      segments: [{ from: 0, to: 120 }], browserPort: 1, segment: 120, ramp: [], depth: 2,
+      // **显式 wake:false**：段末那种打扰关着，但"用户关窗"这条不能跟着哑掉
+      wake: false,
+      windowGuard: true,
+      deps: {
+        now: () => Date.now(),
+        ticker: ({ tick: t }) => { tick = t; return { dispose() {} }; },
+        readBrowser: async () => ({ pos: 10, dur: 600, paused: false, title: 'h.mp4' }),
+        probeEveryMs: 0,
+        loadLatency: async () => null,
+        windowAlive: () => false,                     // 用户已经把窗口关了
+        wake: async (_c, o) => { wakes.push(o.text); return { ok: true }; },
+      },
+      log: () => {},
+    });
+    assert.equal(r.ok, true);
+    await tick();
 
-  assert.equal(loopStatus().active, false, '关窗就该停表');
-  assert.equal(loopStatus().reason, 'widget-closed');
-  assert.equal(wakes.length, 1, `要叫醒一次（wake:false 不该连它一起关掉），实得 ${wakes.length}`);
-  assert.match(wakes[0], /悬浮窗被关掉/);
-  assert.match(wakes[0], /不要再调 watch_together/);
-  assert.match(wakes[0], /不要再念台词/);
-  assert.match(wakes[0], /say/, '要提醒它用 say 回一句，不然用户看不见');
-  stopWatchLoop('cleanup');
-  await sleep(0);
+    assert.equal(loopStatus().active, false, '关窗就该停表');
+    assert.equal(loopStatus().reason, 'widget-closed');
+    // **不投 followup**：那会进宿主 inbox 的 next-turn，显示成输入框里的"排队消息"
+    // （DSH 的 QueueDock 不过滤 source —— 2026-11-01 用户实报"插话栏自动出现"）
+    assert.equal(wakes.length, 0, `关窗不该往会话里投消息，实得 ${wakes.length} 条`);
+    // 说明改落进 watch.json，下一次工具调用返回时带走
+    const note = await takeHangupNote('h.mp4');
+    assert.match(note, /悬浮窗被关掉/);
+    assert.match(note, /不要再调 watch_together/);
+    assert.match(note, /不要再念台词/);
+    assert.match(note, /say/, '要提醒它用 say 回一句，不然用户看不见');
+    // 取过就不再有第二次（同一条只说一遍）
+    assert.equal(await takeHangupNote('h.mp4'), '');
+  } finally {
+    stopWatchLoop('cleanup');
+    if (prevHome === undefined) delete process.env.DSH_HOME; else process.env.DSH_HOME = prevHome;
+    await rm(home, { recursive: true, force: true }).catch(() => {});
+    await sleep(0);
+  }
 });
 
 /**
@@ -165,3 +181,55 @@ test('关窗之后模型再调：不建图、不起钟、不重开窗，只回�
     stopWatchLoop('cleanup2');
   }
 });
+
+/**
+ * 同一件事，但这次带 `waitForVideo: true`。
+ *
+ * 那条路会在主流程之外**先预铺一遍**输入面，而 `createInputSurface()` 记住的是第一次调用
+ * 那一份参数。预铺时没带 `input`，`hung` 就判不出来 —— 挂断记录形同不存在，
+ * 于是又去开窗、又去等视频（这一轮本来该立刻回 [hangup]）。用户看到的就是
+ * "关了它自己弹出来，还在等"。
+ */
+test('关窗之后带 waitForVideo 再调：同样立刻 [hangup]，不许又去等视频', async () => {
+  const prevHome = process.env.DSH_HOME;
+  const home = await mkdtemp(join(tmpdir(), 'hangup-home2-'));
+  process.env.DSH_HOME = home;
+  process.env.DSH_WATCH_NO_WIDGET = '1';
+  process.env.DSH_WATCH_NO_CHAT = '1';
+  try {
+    await withCache(async () => {
+      stopWatchLoop('init');
+      startWatchLoop({
+        ctx: ctxStub, sessionId: 's-after2', input: 'y.mp4',
+        segments: [{ from: 0, to: 120 }], browserPort: 1, segment: 120, ramp: [], depth: 2,
+        deps: {
+          now: () => Date.now(),
+          ticker: () => ({ dispose() {} }),
+          readBrowser: async () => ({ pos: 10, dur: 600, paused: false, title: 'y.mp4' }),
+          probeEveryMs: 0,
+          loadLatency: async () => null,
+        },
+        log: () => {},
+      });
+      await markHungUp('y.mp4');
+      stopWatchLoop('widget-closed');
+
+      const t0 = Date.now();
+      const r = await execute({ attachments: { saveImage: async () => 'img' } }, { waitForVideo: true, maxWaitSec: 8 }, {
+        sessionId: 's-after2', cache: new Map(),
+      });
+      const sec = (Date.now() - t0) / 1000;
+      assert.match(r.text, /\[hangup\]/);
+      assert.equal(r.images.length, 0);
+      assert.ok(sec < 5, `挂断就该立刻回，不该去等视频（实得 ${sec}s）`);
+    });
+  } finally {
+    delete process.env.DSH_WATCH_NO_WIDGET;
+    delete process.env.DSH_WATCH_NO_CHAT;
+    if (prevHome === undefined) delete process.env.DSH_HOME;
+    else process.env.DSH_HOME = prevHome;
+    await rm(home, { recursive: true, force: true });
+    stopWatchLoop('cleanup3');
+  }
+});
+

@@ -21,7 +21,10 @@ import { watchTools } from './register.js';
 import { attachConfiguredVoice } from './voice.js';
 
 export const name = 'dsh-watch-together';
-export const inject = ['tools', 'attachments'];
+// **只声明 tools**：cordis 的 inject 是硬依赖，服务缺失时 apply 永远不会被调用，
+// 插件就停在"加载中"（用户侧：装完插件 DSH 卡死）。attachments 只在截图那条路上用，
+// 改成运行期探测（src/handler.js），没有它就返回文本。
+export const inject = ['tools'];
 
 /**
  * 解析宿主的 dsh-tools。正常安装时裸包名就能解析；本地开发/测试时
@@ -43,9 +46,11 @@ async function loadDefineTool() {
   throw new Error('cannot resolve @deepseek-ai/dsh-tools (set DSH_TOOLS_PATH for local dev)');
 }
 
+const APPLY_TIMEOUT_MS = 15_000;
+
 export async function apply(ctx) {
   try {
-    return await registerAll(ctx);
+    return await withTimeout(registerAll(ctx), APPLY_TIMEOUT_MS, 'registerAll');
   } catch (e) {
     // **最坏的情况是插件不能用，不是应用起不来**。
     // 真实事故：在 apply 里做 ctx 探测，`Object.keys(ctx)` 在 cordis 上下文上抛错，
@@ -112,4 +117,14 @@ async function registerAll(ctx) {
   return () => {
     for (const dispose of disposers.reverse()) dispose?.();
   };
+}
+
+/** 看门狗：apply 里任何 await 卡住都会拖住宿主启动，超时就交回空 disposer。 */
+function withTimeout(promise, ms, label) {
+  let timer;
+  const timeout = new Promise((_, reject) => {
+    timer = setTimeout(() => reject(new Error(`${label} timed out after ${ms}ms`)), ms);
+    timer.unref?.();
+  });
+  return Promise.race([promise, timeout]).finally(() => clearTimeout(timer));
 }

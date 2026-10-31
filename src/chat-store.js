@@ -97,7 +97,7 @@ export function appendChat(role, text, meta = {}, env = process.env) {
     ...(Number.isFinite(meta?.t) ? { t: +Number(meta.t).toFixed(2) } : {}),
     ...(meta?.say === true ? { say: true } : {}),
   };
-  appendFileSync(chatFile(env), `${JSON.stringify(entry)}\n`, 'utf8');
+  appendFileSync(file, `${JSON.stringify(entry)}\n`, 'utf8');
   return entry;
 }
 
@@ -202,11 +202,6 @@ const writtenKeys = new Set();
 /** 一句在时间轴上的唯一标识：`at|text`（`at` 可能为 null，配正文也够） */
 function speechKey(at, text) {
   return `${Number.isFinite(Number(at)) ? Number(at) : 'null'}|${String(text ?? '')}`;
-}
-
-/** 这句是不是已经写进流了 */
-export function wasWritten(at, text) {
-  return writtenKeys.has(speechKey(at, text));
 }
 
 /**

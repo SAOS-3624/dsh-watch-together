@@ -37,6 +37,7 @@
 """
 
 import json
+import math
 import os
 import subprocess
 import sys
@@ -54,9 +55,21 @@ except Exception as exc:  # pragma: no cover - 环境问题，直接说清楚
     raise SystemExit(2)
 
 # ---------------------------------------------------------------- 配色
+#
+# ## 2026-11-01：液态玻璃（Apple Liquid Glass）
+#
+# 用户要的是"抄苹果的液态玻璃还有圆角"，同时"台词和陪看不区分、颜色统一"。
+#
+# 三个视觉支柱（tkinter 没有真模糊，靠这三样做出通透感）：
+#   ① **大圆角**（22px）+ 外描边分上下两色（上亮下暗 = 光从上面来）；
+#   ② **内侧顶部高光**：贴着圆角走一条 1px 亮线，这是玻璃"边缘折光"的来源；
+#   ③ **内部竖向微渐变**：顶部略亮、底部略暗，让底色看起来有厚度而不是一块死色。
+#
+# 气泡改成"玻璃片"：比底板稍亮 + 1px 描边 + 更大圆角，**不再用竖线区分台词**。
+# 台词和陪看现在共用同一套颜色（`ROLE` 里两者完全一致），抬头只留时间。
 
-BG = "#12141a"            # 面板
-BORDER = "#272c3a"        # 面板描边 / 分隔线
+BG = GLASS_FILL = "#171a21"   # 面板 = 玻璃主体（子控件也用它，才不会被挡出"色块"）
+BORDER = "#272c3a"            # 面板描边 / 分隔线
 TEXT = "#e8ebf2"
 MUTED = "#8a93a5"
 DIM = "#5b6473"
@@ -64,11 +77,31 @@ ACCENT = "#4a8cdd"
 DANGER = "#c8564f"
 KEY = "#010203"           # 圆角抠图用的透明键色（只给根窗口和画布用）
 
+# 玻璃层的颜色（自上而下）
+#
+# **标题栏不单独上色**：它是矩形控件，一旦比底板亮就会在左上/右上圆角内侧露出直角块，
+# 反而破坏"一整块玻璃"的观感。受光感交给 `GLASS_HILITE` 那一条折光边，更干净。
+HEAD_BG = GLASS_FILL        # = 主体色（保持同一块玻璃）
+GLASS_TOP = "#2a3040"      # 顶部渐变起点（略亮）
+GLASS_HILITE = "#7d89a8"   # 内侧顶部高光（1px）—— 这是"折光边"，要能被看见
+GLASS_EDGE_HI = "#49536a"  # 外描边上半（受光）
+GLASS_EDGE_LO = "#08090c"  # 外描边下半（背光）
+
+BUBBLE_FILL = "#2a3040"    # 玻璃片气泡：比底板亮一档，才像"浮在上面"
+BUBBLE_FILL_ME = "#22405f" # 我说的（自己那侧保留一点蓝，便于对位）
+
+
+FIELD_BG = "#20242f"       # 输入框胶囊底色（比气泡暗、比底板亮）
+HOVER_BG = "#2c323f"       # 按钮悬停
+
 # 角色 → (气泡底色, 文字色, 竖线色 或 None, 抬头)
+#
+# **`line` 和 `assistant` 必须完全相同**（2026-11-01 用户要求）：以前台词是暖黄、陪看是冷灰，
+# 一条流里两种配色，读起来像两个人在说话。现在只有"它说的"和"我说的"两种。
 ROLE = {
-    "line": ("#241d12", "#f2c46a", "#f0b95c", "台词"),
-    "assistant": ("#1d222c", "#d7dfeb", None, "陪看"),
-    "user": ("#17293d", "#bcd8f5", None, "我"),
+    "line": (BUBBLE_FILL, TEXT, None, ""),
+    "assistant": (BUBBLE_FILL, TEXT, None, ""),
+    "user": (BUBBLE_FILL_ME, "#cfe4ff", None, ""),
 }
 
 SS = 96.0                 # 基准 dpi
@@ -139,7 +172,11 @@ def append_user(text):
 
 
 def mmss(t):
-    """播放秒 → mm:ss.d（台词的时间码）"""
+    """播放秒 → mm:ss.d（按**视频位置**显示台词时间）。
+
+    **当前没有调用方**：时间戳已统一成墙钟（见 `_render`）。留着是因为
+    "按播放位置显示"是一个随时可能被要回去的选项，删了还得再写一遍。
+    """
     try:
         s = max(0.0, float(t))
     except (TypeError, ValueError):
@@ -148,9 +185,13 @@ def mmss(t):
 
 
 def clock(ms):
-    """墙钟毫秒 → HH:MM（谁说这句话的时刻）"""
+    """墙钟毫秒 → HH:MM:SS（这句话是什么时候说出来的）。
+
+    **带秒**：陪看里一段是 2–5 分钟，同一段里可能连着好几条，只到分钟的话
+    一屏全是同一个 `03:36`，时间戳就失去区分作用了。
+    """
     try:
-        return time.strftime("%H:%M", time.localtime(float(ms) / 1000.0))
+        return time.strftime("%H:%M:%S", time.localtime(float(ms) / 1000.0))
     except (TypeError, ValueError, OSError):
         return ""
 
@@ -172,15 +213,57 @@ def dpi_aware():
 
 
 def round_rect(cv, x1, y1, x2, y2, r, **kw):
-    """Canvas 画圆角矩形（smooth 折线近似；不引第三方库）"""
+    """Canvas 画圆角矩形。
+
+    **不用 `smooth=True` 的多边形**：smooth 是把折线的角"抹圆"，实际半径明显小于设定值
+    （要 22 出来只有 14），做液态玻璃时圆角是主角，量不准就全歪。这里直接按四个角
+    采样圆弧（每角 6 段），`smooth=False` 拼接 —— 半径是多少就是多少。
+    """
     r = max(0, min(r, (x2 - x1) / 2, (y2 - y1) / 2))
-    pts = [
-        x1 + r, y1, x2 - r, y1, x2, y1,
-        x2, y1 + r, x2, y2 - r, x2, y2,
-        x2 - r, y2, x1 + r, y2, x1, y2,
-        x1, y2 - r, x1, y1 + r, x1, y1,
-    ]
-    return cv.create_polygon(pts, smooth=True, **kw)
+    if r <= 0.5:
+        return cv.create_rectangle(x1, y1, x2, y2, **kw)
+    pts = []
+    # 顺时针：右上 → 右下 → 左下 → 左上，起点角度依次 -90 / 0 / 90 / 180
+    for cx, cy, a0 in ((x2 - r, y1 + r, -90), (x2 - r, y2 - r, 0),
+                       (x1 + r, y2 - r, 90), (x1 + r, y1 + r, 180)):
+        for i in range(7):
+            a = math.radians(a0 + i * 15)
+            pts.extend([cx + r * math.cos(a), cy + r * math.sin(a)])
+    return cv.create_polygon(pts, smooth=False, **kw)
+
+
+def _mix(c1, c2, t):
+    """两个 #rrggbb 之间取 t（0→c1，1→c2）。用来做渐变和高光。"""
+    t = 0.0 if t < 0 else (1.0 if t > 1 else t)
+    a = [int(c1[i:i + 2], 16) for i in (1, 3, 5)]
+    b = [int(c2[i:i + 2], 16) for i in (1, 3, 5)]
+    return "#%02x%02x%02x" % tuple(int(round(a[k] + (b[k] - a[k]) * t)) for k in range(3))
+
+
+def glass_panel(cv, w, h, r, s=1.0, tag="panel"):
+    """画一块**液态玻璃**底板的"骨架"：主体 + 内侧顶部高光 + 上下分色的外描边。
+
+    **不画内部渐变**：上面还压着 header / feed / composer 这些不透明的子控件
+    （tkinter 的 Frame 没有透明背景），渐变会被整块盖住 —— 画了纯属浪费一次重建。
+    受光面交给 header 自己的底色（`HEAD_BG` 比主体亮一档）来表现，效果一样，
+    拖动边框 resize 时也不会因为几十条线要重画而卡。
+    """
+    # ① 主体：一整块圆角矩形
+    round_rect(cv, 0, 0, w, h, r, fill=GLASS_FILL, outline="", tags=(tag, f"{tag}-body"))
+
+    # ② 内侧顶部高光：贴着圆角走，玻璃的"折光边"
+    cv.create_line(r * 0.6, 1.2 * s, w - r * 0.6, 1.2 * s,
+                   fill=GLASS_HILITE, width=max(1, int(s)), tags=(tag,))
+
+    # ③ 外描边分上下两色：上半受光（亮）、下半背光（暗）—— 一块真正的玻璃才会这样
+    cv.create_line(r * 0.7, 0.5, w - r * 0.7, 0.5,
+                   fill=GLASS_EDGE_HI, width=max(1, int(s)), tags=(tag,))
+    cv.create_line(r * 0.7, h - 0.5, w - r * 0.7, h - 0.5,
+                   fill=GLASS_EDGE_LO, width=max(1, int(s)), tags=(tag,))
+    cv.create_line(0.5, r * 0.7, 0.5, h - r * 0.7,
+                   fill=GLASS_EDGE_HI, width=max(1, int(s)), tags=(tag,))
+    cv.create_line(w - 0.5, r * 0.7, w - 0.5, h - r * 0.7,
+                   fill=GLASS_EDGE_LO, width=max(1, int(s)), tags=(tag,))
 
 
 class Opt:
@@ -198,10 +281,13 @@ class Opt:
 
 
 class Bubble:
-    """一条消息 = 抬头 + 一块圆角气泡。
+    """一条消息 = 一行时间 + 一块玻璃片。
 
     为什么不用 Text 拼：Text 的 tag 背景是**整行宽**的方块，右对齐时会变成一条色带。
     这里每条消息是独立的小画布，气泡宽度贴着内容。
+
+    2026-11-01：抬头**不再写"台词"/"陪看"** —— 一条流里两种称呼、两种配色，读起来像两个人
+    在对话。现在只有时间，颜色全部统一（`ROLE` 里 `line` 与 `assistant` 完全相同）。
     """
 
     def __init__(self, feed, role, text, stamp, opt):
@@ -218,8 +304,11 @@ class Bubble:
         head = " ".join(x for x in (who, stamp) if x)
         self.head = tk.Label(self.row, text=head, bg=BG, fg=DIM, font=opt.font_small,
                              anchor="e" if right else "w")
-        self.head.pack(anchor="e" if right else "w",
-                       padx=(0, 3 * opt.s) if right else (3 * opt.s, 0))
+        # **没有时间戳就别 pack**：老消息可能没有 `at`，空 Label 仍会占掉一行字体高度，
+        # 一条流里夹几个空行看起来像排版坏了。
+        if head:
+            self.head.pack(anchor="e" if right else "w",
+                           padx=(0, 3 * opt.s) if right else (3 * opt.s, 0))
 
         self.cv = tk.Canvas(self.row, bg=BG, highlightthickness=0, bd=0)
         self.cv.pack(anchor="e" if right else "w")
@@ -237,14 +326,91 @@ class Bubble:
         w = min(limit, max(1, self.lbl.winfo_reqwidth())) + 2 * opt.padx
         h = max(1, self.lbl.winfo_reqheight()) + 2 * opt.pady
         self.cv.configure(width=w, height=h)
-        self.cv.delete("bg", "bar")
-        round_rect(self.cv, 0, 0, w, h, opt.radius, fill=self.fill, outline="", tags="bg")
+        self.cv.delete("bg", "bar", "edge")
+        r = int(opt.radius * 1.45)          # 气泡圆角比旧版大，苹果那种"胶囊感"
+        round_rect(self.cv, 0.5, 0.5, w - 0.5, h - 0.5, r,
+                   fill=self.fill, outline="", tags="bg")
+        # 1px 描边：上亮下暗，一片浮在玻璃上的薄片（不是一块实心色块）
+        self.cv.create_line(r * 0.6, 0.8, w - r * 0.6, 0.8,
+                            fill=_mix(self.fill, "#ffffff", 0.14),
+                            width=1, tags="edge")
+        self.cv.create_line(r * 0.6, h - 0.8, w - r * 0.6, h - 0.8,
+                            fill=_mix(self.fill, "#000000", 0.45),
+                            width=1, tags="edge")
         if self.bar:
-            # 台词左边那条竖线：细圆头，和文字留一点距离
+            # 台词那条竖线已经不用了（`ROLE` 里是 None），保留分支给将来别的角色
             x = max(2, opt.padx // 3)
             round_rect(self.cv, x, opt.pady, x + max(2, int(3 * opt.s)), h - opt.pady,
                        2, fill=self.bar, outline="", tags="bar")
         self.cv.tag_lower("bg")
+
+
+class Pill(tk.Canvas):
+    """圆角胶囊按钮（胶囊 = 圆角半径取高度一半）。
+
+    tkinter 的 Label 只有直角，"发送"和"麦"两个直角块贴在满屏圆角里最扎眼。
+    这里用 Canvas 画胶囊 + 一个 Label 当文字，点击/悬停走 Canvas 的绑定。
+    """
+
+    def __init__(self, parent, host, text, fg, bg, hover, pad=(10, 16), command=None):
+        self.host = host
+        self.padx, self.pady = pad
+        self._fg, self._bg, self._hover = fg, bg, hover
+        h = int(pad[1] + 12 * host.s)
+        super().__init__(parent, bg=BG, highlightthickness=0, bd=0,
+                         height=h, width=8)
+        self.lbl = tk.Label(self, text=text, fg=fg, bg=bg, font=host._f(9.5))
+        self._item = self.create_window(0, 0, window=self.lbl, anchor="center")
+        # **必须按文字真实宽度定尺寸**：Canvas 不会像 Label 那样自己长大，
+        # 靠 `len(text)*系数` 估会算窄（中文/英文宽度差很多，"发送"直接被挤成 0 宽）。
+        self.lbl.update_idletasks()
+        self.configure(width=self.lbl.winfo_reqwidth() + 2 * self.padx,
+                       height=max(h, self.lbl.winfo_reqheight() + self.pady))
+        self.bind("<Configure>", lambda _e: self._draw())
+        self.bind("<Button-1>", lambda _e: command() if command else None)
+        self.bind("<Enter>", lambda _e: self._tint(self._hover))
+        self.bind("<Leave>", lambda _e: self._tint(self._bg))
+        self._command = command
+
+    def set(self, text=None, bg=None, fg=None):
+        """改文字/底色（麦克风按钮要在"麦"和"●录音中"之间切换）"""
+        kw = {}
+        if text is not None:
+            kw["text"] = text
+        if bg is not None:
+            self._bg = bg
+            kw["bg"] = bg
+        if fg is not None:
+            self._fg = fg
+            kw["fg"] = fg
+        if kw:
+            self.lbl.configure(**kw)
+            self.lbl.update_idletasks()
+            # 文字变了宽度也要跟着变（"麦" → "●录音中" 差好几倍）
+            self.configure(width=self.lbl.winfo_reqwidth() + 2 * self.padx)
+        self._draw()
+
+    def set_bg(self, bg):
+        self._bg = bg
+        self._tint(bg)
+
+    def _tint(self, bg):
+        try:
+            self.lbl.configure(bg=bg)
+        except Exception:
+            pass
+        self.delete("cap")
+        w, h = max(1, self.winfo_width()), max(1, self.winfo_height())
+        round_rect(self, 0.5, 0.5, w - 0.5, h - 0.5, h / 2,
+                   fill=bg, outline="", tags="cap")
+        self.tag_lower("cap")
+
+    def _draw(self):
+        w, h = self.winfo_width(), self.winfo_height()
+        if w < 4 or h < 4:
+            return
+        self.coords(self._item, w / 2, h / 2)
+        self._tint(self.lbl.cget("bg"))
 
 
 class Meta:
@@ -272,9 +438,16 @@ class FloatChat:
         dpi_aware()
         cfg = read_config()
         geo = cfg.get("geometry") if isinstance(cfg.get("geometry"), str) else ""
+        # 插件开窗前会把 `hidden` 清成 false，所以新进程总是从"看得见"开始；
+        # 这里只跟文件变化（`_sync_visible`），不猜"第一次"
+        self.hidden = False
+        # 窗口的名字：用户可改，存 `~/.dsh/watch-window.json` 的 `name`（默认"陪看"）
+        raw_name = cfg.get("name")
+        self.name = (raw_name.strip()[:24] if isinstance(raw_name, str) and raw_name.strip()
+                     else "陪看")
 
         self.root = tk.Tk()
-        self.root.title("陪看")
+        self.root.title(self.name)
         self.root.overrideredirect(True)                 # 无边框
         self.root.attributes("-topmost", True)           # 置顶
         self.root.configure(bg=KEY)
@@ -285,7 +458,8 @@ class FloatChat:
             self.s = 1.0
         S = self.s
 
-        self.radius = int(14 * S)
+        # 液态玻璃要**大圆角**：14 是"卡片"，22 才是苹果那种"玻璃片"
+        self.radius = int(22 * S)
         self.pad = self.radius                          # 内容内缩 = 圆角半径（正好落在弧内）
 
         self.w, self.h = int(468 * S), int(540 * S)
@@ -301,6 +475,18 @@ class FloatChat:
             self.root.configure(bg=BG)
             try:
                 self.root.attributes("-alpha", 0.97)
+            except Exception:
+                pass
+
+        # 玻璃的"通透"：整窗轻微透明，透出背后一点点桌面。
+        # 0.96 是试出来的上限 —— 再低字就开始发灰、背后内容会抢注意力。
+        # 拿不到（平台不支持 / 和抠色冲突）就安静地跳过，绝不因为一个视觉效果起不来。
+        # `DSH_WATCH_GLASS_ALPHA` 可调，设 1 完全关掉。
+        if self.rounded:
+            try:
+                a = float(os.environ.get("DSH_WATCH_GLASS_ALPHA") or 0.975)
+                if 0.5 <= a < 1.0:
+                    self.root.attributes("-alpha", a)
             except Exception:
                 pass
 
@@ -347,11 +533,13 @@ class FloatChat:
             x, y = (int(v) for v in rest.split("+")[:2])
             self.w = max(int(320 * self.s), min(sw - 40, w))
             self.h = max(int(220 * self.s), min(sh - 40, h))
-            self.x = max(0, min(sw - 120, x))
-            self.y = max(0, min(sh - 80, y))
+            # **位置必须按窗口自己的尺寸夹**：以前写的是 `sw - 120`，窗口 700 宽时
+            # 允许 x 到 sw-120，右边 580px 直接跑到屏幕外（用户看到的是"半截窗"）。
+            self.x = max(0, min(sw - self.w - int(8 * self.s), x))
+            self.y = max(0, min(sh - self.h - int(48 * self.s), y))
         except Exception:
-            self.x = sw - self.w - int(36 * self.s)
-            self.y = sh - self.h - int(96 * self.s)
+            self.x = max(0, sw - self.w - int(36 * self.s))
+            self.y = max(0, sh - self.h - int(96 * self.s))
         self.root.geometry(f"{self.w}x{self.h}+{self.x}+{self.y}")
 
     def _f(self, size, weight="normal"):
@@ -388,45 +576,94 @@ class FloatChat:
         h = event.height if event else self.root.winfo_height()
         self.canvas.delete("panel")
         if self.rounded:
-            round_rect(self.canvas, 0, 0, w, h, self.radius, fill=BG,
-                       outline=BORDER, width=max(1, int(self.s)), tags="panel")
+            # 液态玻璃底板：渐变 + 内侧高光 + 上下分色描边（见 glass_panel）
+            glass_panel(self.canvas, w, h, self.radius, self.s)
         inner_w = max(1, w - 2 * self.pad)
         inner_h = max(1, h - 2 * self.pad)
         self.canvas.itemconfigure(self._shell_item, width=inner_w, height=inner_h)
         self._reflow(max(1, inner_w - int(8 * self.s)))
 
     def _build_header(self):
-        head = tk.Frame(self.shell, bg=BG, height=int(40 * self.s))
+        head = tk.Frame(self.shell, bg=HEAD_BG, height=int(42 * self.s))
         head.pack(fill="x")
         head.pack_propagate(False)
 
-        self.dot = tk.Label(head, text="●", bg=BG, fg=ACCENT, font=self._f(7.5))
-        self.dot.pack(side="left", padx=(int(14 * self.s), int(7 * self.s)))
+        self.dot = tk.Label(head, text="●", bg=HEAD_BG, fg=ACCENT, font=self._f(7.5))
+        self.dot.pack(side="left", padx=(int(15 * self.s), int(8 * self.s)))
 
-        self.title = tk.Label(head, text="陪看", bg=BG, fg=TEXT, font=self._f(9.5, "bold"))
+        # **名字可以改**：用户要把它改成自己的叫法（"大肥鱼"之类），不再写死"陪看"。
+        # 单击标题 → 就地变成输入框，回车/失焦保存到 `~/.dsh/watch-window.json` 的 `name`。
+        # 用 Label 而不是 Entry 起手：Entry 一直有光标和虚线框，看着不像标题。
+        self.title = tk.Label(head, text=self.name, bg=HEAD_BG, fg=TEXT,
+                              font=self._f(9.5, "bold"), cursor="xterm")
         self.title.pack(side="left")
+        self.title.bind("<Button-1>", self._edit_title)
 
-        self.hint = tk.Label(head, text="", bg=BG, fg=DIM, font=self._f(8))
+        self.title_entry = tk.Entry(head, bg="#2a3040", fg=TEXT, relief="flat", bd=0,
+                                    insertbackground=TEXT, font=self._f(9.5, "bold"),
+                                    highlightthickness=0, width=12)
+        self.title_entry.bind("<Return>", self._commit_title)
+        self.title_entry.bind("<Escape>", lambda _e: self._cancel_title())
+        self.title_entry.bind("<FocusOut>", lambda _e: self._commit_title(None))
+
+        self.hint = tk.Label(head, text="", bg=HEAD_BG, fg=DIM, font=self._f(8))
         self.hint.pack(side="left", padx=(int(8 * self.s), 0))
 
         for text, cmd, hover in (("✕", self.close, "#ff9b9b"),
                                  ("▾", self.toggle_collapse, TEXT)):
-            b = tk.Label(head, text=text, bg=BG, fg=MUTED, font=self._f(9),
+            b = tk.Label(head, text=text, bg=HEAD_BG, fg=MUTED, font=self._f(9),
                          padx=int(8 * self.s), cursor="hand2")
             b.pack(side="right")
             b.bind("<Button-1>", lambda _e, c=cmd: c())
             b.bind("<Enter>", lambda _e, w=b, c=hover: w.configure(fg=c))
             b.bind("<Leave>", lambda _e, w=b: w.configure(fg=MUTED))
 
-        sep = tk.Frame(self.shell, bg=BORDER, height=1)
-        sep.pack(fill="x", padx=int(12 * self.s))
+        sep = tk.Frame(self.shell, bg="#2a2f3c", height=1)
+        sep.pack(fill="x", padx=int(14 * self.s))
 
-        for widget in (head, self.dot, self.title, self.hint, sep):
+        # 拖动绑在 header 的元素上，但**标题除外**（点它是改名，不是拖窗）
+        for widget in (head, self.dot, self.hint, sep):
             widget.bind("<Button-1>", self._drag_start)
             widget.bind("<B1-Motion>", self._drag_move)
 
         self.head = head
         self.sep = sep
+
+    # ---- 改名 ----
+    def _edit_title(self, _event=None):
+        """标题就地变输入框（不弹对话框 —— 那会把置顶窗口挡掉一半）"""
+        self._editing = True
+        self.title.pack_forget()
+        self.title_entry.delete(0, "end")
+        self.title_entry.insert(0, self.name)
+        self.title_entry.pack(side="left", ipady=int(3 * self.s))
+        self.title_entry.focus_set()
+        self.title_entry.select_range(0, "end")
+        return "break"
+
+    def _commit_title(self, _event=None):
+        # **用显式标志，不用 `winfo_ismapped()`**：widget 刚 pack 完的那一帧
+        # ismapped 还是 False，用户输入快一点回车就被这行吞掉（实测）。
+        if not getattr(self, "_editing", False):
+            return
+        self._editing = False
+        text = self.title_entry.get().strip()
+        self.title_entry.pack_forget()
+        self.title.pack(side="left", before=self.hint)
+        if text and text != self.name:
+            self.name = text[:24]
+            self.title.configure(text=self.name)
+            self.root.title(self.name)
+            write_config({"name": self.name})
+        elif not text:
+            self.title.configure(text=self.name)
+        return "break"
+
+    def _cancel_title(self):
+        self._editing = False
+        self.title_entry.pack_forget()
+        self.title.pack(side="left", before=self.hint)
+        return "break"
 
     def _build_feed(self):
         outer = tk.Frame(self.shell, bg=BG)
@@ -445,7 +682,7 @@ class FloatChat:
         self.sbar = tk.Canvas(outer, bg=BG, width=int(6 * self.s),
                               highlightthickness=0, bd=0)
         self.sbar.pack(side="right", fill="y", padx=(0, int(4 * self.s)))
-        self._thumb = self.sbar.create_rectangle(0, 0, 0, 0, fill="#2b3140", width=0,
+        self._thumb = self.sbar.create_rectangle(0, 0, 0, 0, fill="#39415a", width=0,
                                                  state="hidden")
         self.feed.configure(yscrollcommand=self._on_scroll)
 
@@ -462,35 +699,58 @@ class FloatChat:
         bar = tk.Frame(self.shell, bg=BG)
         # side="bottom"：入口栏先占住底部，中间的列表再怎么长也挤不掉它
         bar.pack(side="bottom", fill="x",
-                 padx=int(12 * self.s), pady=(int(9 * self.s), int(12 * self.s)))
+                 padx=int(14 * self.s), pady=(int(9 * self.s), int(14 * self.s)))
         self.bar = bar
 
-        self.mic_btn = tk.Label(bar, text="麦", bg="#1e2330", fg=MUTED, font=self._f(9),
-                                padx=int(9 * self.s), cursor="hand2")
-        self.mic_btn.pack(side="left", ipady=int(6 * self.s), padx=(0, int(8 * self.s)))
-        self.mic_btn.bind("<Button-1>", lambda _e: self.toggle_mic())
-        self.mic_btn.bind("<Enter>", lambda _e: self._mic_hover(True))
-        self.mic_btn.bind("<Leave>", lambda _e: self._mic_hover(False))
+        self.mic_btn = Pill(bar, self, "麦", MUTED, "#222732", "#2c323f",
+                            pad=(int(11 * self.s), int(17 * self.s)),
+                            command=self.toggle_mic)
+        self.mic_btn.pack(side="left", padx=(0, int(8 * self.s)))
 
-        # 1px 描边：外层 Frame 当边框，内层放 Entry（tk 的 Entry 自己画不了细边）
-        field = tk.Frame(bar, bg=BORDER)
+        # **先占右边**：`send` 用 `side="right"` 先把自己的位置钉住，输入框再拿剩下的。
+        # 反过来（field 先 expand 再 pack send）实测会被挤没 —— pack 的空间分配是按顺序来的。
+        self.send_btn = Pill(bar, self, "发送", "#ffffff", ACCENT, "#5aa0f0",
+                             pad=(int(13 * self.s), int(14 * self.s)),
+                             command=self._send)
+        self.send_btn.pack(side="right", padx=(int(8 * self.s), 0))
+
+        # 圆角输入框：tk 的 Entry 只能画直角，所以**底下垫一块 Canvas 画胶囊**，
+        # Entry 自己去掉一切边框浮在上面（`bg` 和胶囊同色，看起来就是一体的）。
+        field = tk.Frame(bar, bg=BG)
         field.pack(side="left", fill="x", expand=True)
-        inner = tk.Frame(field, bg="#171a21")
-        inner.pack(fill="both", expand=True, padx=1, pady=1)
-        self.entry = tk.Entry(inner, bg="#171a21", fg=TEXT, insertbackground="#f0b95c",
+        self.field_cv = tk.Canvas(field, bg=BG, highlightthickness=0, bd=0,
+                                 height=int(34 * self.s))
+        self.field_cv.pack(fill="both", expand=True)
+        self.entry = tk.Entry(self.field_cv, bg=FIELD_BG, fg=TEXT, insertbackground=TEXT,
                               relief="flat", bd=0, font=self._f(10), highlightthickness=0)
-        self.entry.pack(fill="x", expand=True, ipady=int(6 * self.s),
-                        padx=int(9 * self.s), pady=int(2 * self.s))
+        self._entry_item = self.field_cv.create_window(
+            int(12 * self.s), int(17 * self.s), window=self.entry, anchor="w")
+        self.field_cv.bind("<Configure>", self._paint_field)
         self.entry.bind("<Return>", self._send)
-        self.entry.bind("<FocusIn>", lambda _e: field.configure(bg=ACCENT))
-        self.entry.bind("<FocusOut>", lambda _e: field.configure(bg=BORDER))
+        self.entry.bind("<FocusIn>", lambda _e: self._paint_field(accent=True))
+        self.entry.bind("<FocusOut>", lambda _e: self._paint_field())
 
-        self.send_btn = tk.Label(bar, text="发送", bg=ACCENT, fg="#ffffff", font=self._f(9),
-                                 padx=int(12 * self.s), cursor="hand2")
-        self.send_btn.pack(side="left", ipady=int(6 * self.s), padx=(int(8 * self.s), 0))
-        self.send_btn.bind("<Button-1>", lambda _e: self._send())
-        self.send_btn.bind("<Enter>", lambda _e: self.send_btn.configure(bg="#589ae6"))
-        self.send_btn.bind("<Leave>", lambda _e: self.send_btn.configure(bg=ACCENT))
+    def _paint_field(self, event=None, accent=False):
+        """画输入框的胶囊底（圆角随窗口宽高变，所以要重画）"""
+        cv = getattr(self, "field_cv", None)
+        if cv is None:
+            return
+        w = event.width if event else cv.winfo_width()
+        h = event.height if event else cv.winfo_height()
+        if w < 4 or h < 4:
+            return
+        cv.delete("pill")
+        r = h / 2
+        round_rect(cv, 0.5, 0.5, w - 0.5, h - 0.5, r,
+                   fill=FIELD_BG, outline="", tags="pill")
+        cv.create_line(r, 0.8, w - r, 0.8,
+                       fill=ACCENT if accent else "#333a4b", width=1, tags="pill")
+        cv.tag_lower("pill")
+        cv.coords(self._entry_item, int(12 * self.s), h / 2)
+        try:
+            self.entry.configure(width=max(4, int((w - 24 * self.s) / (7.2 * self.s))))
+        except Exception:
+            pass
 
     def _focus_entry(self):
         """把焦点交给输入框，但**不抢系统焦点**。
@@ -508,7 +768,7 @@ class FloatChat:
     def _mic_hover(self, on):
         if self.mic_proc and self.mic_proc.poll() is None:
             return
-        self.mic_btn.configure(bg="#272d3b" if on else "#1e2330")
+        self.mic_btn.set_bg(HOVER_BG if on else "#222732")
 
     def toggle_mic(self):
         if self.mic_proc and self.mic_proc.poll() is None:
@@ -529,7 +789,7 @@ class FloatChat:
         except Exception as exc:
             self._add_meta(f"起不来麦克风进程：{exc}")
             return
-        self.mic_btn.configure(text="●", bg="#7a2b2b", fg="#ffd9d9")
+        self.mic_btn.set(text="●", bg="#7a2b2b", fg="#ffd9d9")
         self.dot.configure(fg=DANGER)
         self.hint.configure(text="录音中")
         threading.Thread(target=self._mic_log, args=(self.mic_proc,), daemon=True).start()
@@ -542,7 +802,7 @@ class FloatChat:
                 p.terminate()
             except Exception:
                 pass
-        self.mic_btn.configure(text="麦", bg="#1e2330", fg=MUTED)
+        self.mic_btn.set(text="麦", bg="#222732", fg=MUTED)
         self.dot.configure(fg=ACCENT)
         self._update_hint()
 
@@ -695,13 +955,27 @@ class FloatChat:
             self._to_bottom()
 
     def _render(self, entry):
-        """一条 jsonl → 一个气泡。**新消息和历史回放走同一条路**，样式才不会两套。"""
-        role = entry.get("role") if entry.get("role") in ROLE else "assistant"
-        if role == "line":
-            stamp = mmss(entry.get("t")) if entry.get("t") is not None else ""
-        else:
-            stamp = clock(entry.get("at"))
-        self._add_bubble(role, str(entry.get("text") or ""), stamp)
+        """一条 jsonl → 一个玻璃片。**新消息和历史回放走同一条路**，样式才不会两套。
+
+        `t`（播放位置）和 `at`（墙钟）都可能缺，缺了就留空 —— 不猜、不补 0
+        （`Number(null) === 0` 这个坑在 JS 那边踩过两次）。
+        """
+        role = entry.get("role")
+        text = str(entry.get("text") or "")
+        # **系统行（`meta`）走灰字，不做气泡**：它们是"叫醒失败""麦克风已开"这类诊断，
+        # 以前没分派，落到下面的 fallback 变成一块和正文一样大的气泡 —— 一屏全是
+        # `[一起看] 叫醒失败` 的方框，抢的就是台词的视线。
+        if role == "meta":
+            self._add_meta(text)
+            return
+        if role not in ROLE:
+            role = "assistant"
+        # **统一显示本机时间**（2026-11-01 用户要求）：以前台词显示的是播放位置
+        # （`01:26.0`），别的显示墙钟，一条流里两种时间轴，读起来要先换算一次。
+        # 现在一律用 `at`（消息写进流的时刻）；没有 `at` 就留空，不拿 `t` 顶替 ——
+        # 那会把"视频第几秒"冒充成"几点几分"，比空着更误导。
+        stamp = clock(entry.get("at")) if entry.get("at") is not None else ""
+        self._add_bubble(role, text, stamp)
 
     # ---- 读盘（增量）----
     def _reset_cursor(self):
@@ -779,8 +1053,30 @@ class FloatChat:
         else:
             self.hint.configure(text=f"{self.seen} 条" if self.seen else "已连上")
 
+    def _sync_visible(self):
+        """跟随配置里的 `hidden`：插件写 true 就藏起来（进程还活着，照样收话、照样念），写 false 就回来。
+
+        为什么要"藏"而不是"关"：关窗在陪看里等于"不看了"（会停表、落挂断记录）。
+        用户想的是**这一次别挡着画面**，陪看继续 —— 那是两件事。
+        用 withdraw 而不是 iconify：图标化的窗口还会占任务栏/出现在 Alt+Tab 里，
+        而这是置顶悬浮窗，藏起来就该完全看不见。
+        """
+        want = bool(read_config().get("hidden"))
+        if want == self.hidden:
+            return
+        self.hidden = want
+        try:
+            if want:
+                self.root.withdraw()
+            else:
+                self.root.deiconify()
+                self.root.attributes("-topmost", True)
+        except Exception:
+            self.hidden = not want       # 没成功就别记成已切换，下一拍再试
+
     def poll(self):
         try:
+            self._sync_visible()
             for e in self._drain():
                 self._render(e)
                 self.seen += 1

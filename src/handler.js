@@ -20,10 +20,12 @@ import { createInputSurface } from './input-surface.js';
 import { appendAssistantSay } from './chat.js';
 import { replyReminder } from './interject.js';
 import { pullLinesNear, pulledLinesNote } from './reply-guard.js';
+import { serviceOf } from './timer.js';
 import { validateWatchArgs } from './tool-spec.js';
-import { makeBuilder, runWatchPass } from './watch-run.js';
+import { makeBuilder, makeFeeder, makeTranscriber, runWatchPass } from './watch-run.js';
 import { runWatchAction } from './watch-actions.js';
 import { DEFAULT_LOOKAHEAD, loopStatus, startWatchLoop, stopWatchLoop } from './watch-loop.js';
+import { takeHangupNote } from './watch-state.js';
 import { sessionKey } from './watch.js';
 
 /**
@@ -38,6 +40,8 @@ export async function execute(ctx, args, {
   sessionId = null, cache = new Map(), signal = null,
 } = {}) {
   const problems = validateWatchArgs(args);
+  // 这一次调用看到的循环状态：说话要用它的位置，开窗要用它的源。只读一次。
+  const st0 = loopStatus();
 
   // **我要说的话，走 `say` 参数**：它才会写进 `chat.jsonl`，悬浮窗里才看得见。
   // 只写在普通回复里的字，插件这一侧收不到 —— 用户那边就是"你一句话都没说"。
@@ -55,7 +59,6 @@ export async function execute(ctx, args, {
   let nearNote = '';
   if (saidNow) {
     // 说话时的播放位置：循环的估计值最接近"用户此刻看到哪儿"，读不到就不传（不猜）
-    const st0 = loopStatus();
     // `Number(null) === 0`：不显式判空的话，"还没有位置"会被当成"在 0 秒"，
     // 于是把第一段开头 12 秒里的词全取走了
     const posRaw = st0.pos;
@@ -83,10 +86,32 @@ export async function execute(ctx, args, {
 
   // 输入面（悬浮窗 + 聊天服务）：跟"陪看"无关的那一侧，整体在 input-surface.js。
   // 它幂等 —— 这个 execute 里调几次都只开一次窗，返回同一句 note。
+  //
+  // **它记住的是"第一次调用"那一份参数**（`prepared ??=`），所以参数必须一次算对：
+  // `waitForVideo` 会在主流程之外提前预铺一遍，那一遍要是少了 `input`/`reopen`，
+  // 后面真正的调用就再也传不进去 —— 用户关过窗、模型调 `waitForVideo` 时，
+  // 因为没有 `input` 就判不出 `hung`，窗口又被顶回来（"关了它自己弹出来"那个实报）。
   const prepareInputSurface = createInputSurface();
+  const known = typeof args.input === 'string' && args.input.trim()
+    ? args.input
+    : (typeof st0.input === 'string' && st0.input ? st0.input : null);
+  const surfaceOpts = {
+    // 这是"新开一场"还是"同一场中途再调"？
+    //   新开一场  → 窗口不在就开（用户要的那个自动开）
+    //   同一场中途 → 窗口不在就判定"用户关了窗"，停钟、不重开
+    // 关窗是用户表达"不看了"的方式，不许撤销它。
+    //
+    // **`input` 不能只看这次参数**：模型几乎从不传 input（契约就是"别问链接，自己认"），
+    // 于是"同一场"永远判不出来 → 每次都当成新开一场 → 用户关掉的窗口每调一次就弹回来
+    // （2026-10-31 实报）。这里回落到循环记住的那个源。
+    start: !(st0.active && known && st0.input && sessionKey(st0.input) === sessionKey(known)),
+    input: known,
+    // 用户明确要求重开才清掉"他自己关过窗"的记录（见 watch-state 的 hangup）
+    reopen: args.open === true,
+  };
 
   // waitForVideo 这一条在主流程之外就开始等，所以先备好；wait:true 由 watch-run 在真要阻塞前回调
-  if (args.waitForVideo === true) void prepareInputSurface();
+  if (args.waitForVideo === true) void prepareInputSurface(surfaceOpts);
 
   // 单发命令（status / voices / speak / cookies / wake / stop）在这里分流
   const quick = await runWatchAction(args, {
@@ -104,26 +129,12 @@ export async function execute(ctx, args, {
   let widgetNote = '';
   let surface = null;
   if (!signal?.aborted) {
-    // 这是"新开一场"还是"同一场中途再调"？
-    //   新开一场  → 窗口不在就开（用户要的那个自动开）
-    //   同一场中途 → 窗口不在就判定"用户关了窗"，停钟、不重开
-    // 用户投诉过："我刚才关了悬浮窗又自己弹出来了" —— 关窗是他的表达，不许撤销它。
-    //
-    // **`input` 不能只看这次参数**：模型几乎从不传 input（工具契约就是"别问链接，自己认"），
-    // 于是"同一场"永远判不出来 → 每次都当成新开一场 → 用户关掉的窗口每调一次就弹回来
-    // （2026-10-31 实报："关了悬浮窗 AI 还是会自动调出来"）。这里回落到循环记住的那个源。
-    const st0 = loopStatus();
-    const known = (typeof args.input === 'string' && args.input.trim())
-      ? args.input
-      : (typeof st0.input === 'string' && st0.input ? st0.input : null);
-    const sameWatch = Boolean(st0.active && known && st0.input
-      && sessionKey(st0.input) === sessionKey(known));
-    surface = await prepareInputSurface({
-      start: !sameWatch,
-      input: known,
-      // 用户明确要求重开才清掉"他自己关过窗"的记录（见 watch-state 的 hangup）
-      reopen: args.open === true,
-    });
+    // 输入面起不来（Python 缺失 / 端口被占 / 脚本语法错）不该把这一轮陪看废掉：
+    // 记一句在 note 里、主流程照跑 —— 用户至少还能拿到图，只是没地方插话。
+    surface = await prepareInputSurface(surfaceOpts).catch((e) => ({
+      windowOpen: false,
+      note: `\n[widget] 输入面没准备好：${String(e?.message ?? e).slice(0, 120)}`,
+    }));
     widgetNote = surface.note;
   }
 
@@ -163,9 +174,16 @@ export async function execute(ctx, args, {
     prepareWait: prepareInputSurface,
     // 关窗即收工：只有这次真把窗口开起来了，才把"窗口没了"当作"不看了"
     expectWindow: surface?.windowOpen === true,
-    saveImage: async ({ data, name }) => ctx.attachments.saveImage({
-      data, mediaType: 'image/png', name,
-    }),
+    // 宿主没有 attachments 服务时给可读错误，而不是 TypeError（也不能靠 inject 硬等，见 index.js）。
+    // **必须走 `serviceOf`**：`ctx?.attachments` 在 cordis 的 Proxy 上会直接抛
+    // "without inject"，`?.` 挡不住（见 timer.js 里那段说明）。
+    saveImage: async ({ data, name }) => {
+      const attachments = serviceOf(ctx, 'attachments');
+      if (typeof attachments?.saveImage !== 'function') {
+        throw new Error('this DSH build has no `attachments` service; the screenshot cannot be shown');
+      }
+      return attachments.saveImage({ data, mediaType: 'image/png', name });
+    },
   });
 
   // 用户在等待期间按了停止：**钟也要停** —— 否则宿主那边已经收工，后台还在轮询浏览器
@@ -202,6 +220,10 @@ export async function execute(ctx, args, {
       // 段长 / 阶梯 / 余量 / 提前量交给循环：之后它自己往前滚、自己补建。
       // **lead 必须传**：钟和 watch-run 用的必须是同一个提前量，否则"说好的时间点"会差一截。
       segment, ramp, lookahead, depth, speakEvery, refillBelow, lead: args.lead,
+      // 字幕轨的两个旋钮：`transcriptTrack:false` 整条关掉；`feedTranscriptLeadMs`
+      // 是"字幕好了先等多久，等不到画面就先喂台词"，默认 0（字幕一到就喂）。
+      transcriptTrack: args.transcriptTrack !== false,
+      feedTranscriptLeadMs: args.feedTranscriptLeadMs,
       // **到点发不发 `[一起看] … 该说话了` 这种会话消息**：默认不发（`wake` 显式 true 才发）。
       // 阻塞式调用本来就会在段末自己返回，钟再 `followup()` 一次，用户看到的是
       // "N 条排队消息"，而且会挡住他自己要说的话。
@@ -214,14 +236,25 @@ export async function execute(ctx, args, {
         build: makeBuilder({
           input: r.input, args: callArgs, runStoryboard, formatManifest, cache,
         }),
+        // 字幕轨：和画面轨照抄同一套段表 / 余量，只是不带图。它跑得快一个数量级，
+        // 所以通常先于画面到；到了就先喂台词，画面那次则带 `omitTranscript` 不重复发。
+        transcribe: makeTranscriber({ input: r.input, args: callArgs }),
+        feedTranscript: makeFeeder({ input: r.input, args: callArgs }),
       },
       log: () => {},
     });
   }
   // 第一次真进入阻塞时，把输入框状态附在结果里 —— 模型才知道该告诉用户去哪说话
   // `replyReminder` 在最后：这一轮如果还是没回插话，就把"你还没回她"顶出来
+  //
+  // **挂断说明也在这里带走**（2026-11-01）：关窗那一下不再 `followup`，
+  // 因为那会显示成输入框里的"排队消息"（DSH 的 QueueDock 不过滤 source）。
+  // 改落进 watch.json，下一次工具调用返回时附上 —— 用户看不到，模型照样知道。
+  const hangupNote = r.input
+    ? await takeHangupNote(r.input).catch(() => '')
+    : '';
   return {
-    text: `${r.text}${widgetNote}${saidNote}${replyReminder({ answered: saidNow })}`,
+    text: `${r.text}${widgetNote}${saidNote}${hangupNote}${replyReminder({ answered: saidNow })}`,
     images: r.images,
   };
 }

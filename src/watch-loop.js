@@ -27,7 +27,7 @@ import { speechSeconds } from './speech.js';
 import { consumeLine, dueLine, hasLine, loadLine, WATCH_LEAD } from './watch.js';
 import { mmss } from './time.js';
 import { appendChat } from './chat-store.js';
-import { markHungUp } from './watch-state.js';
+import { markHungUp, sessionKey } from './watch-state.js';
 import { interjectNote } from './interject.js';
 import { __resetReplyGuard, replyBusyUntil } from './reply-guard.js';
 
@@ -36,33 +36,27 @@ import { __resetReplyGuard, replyBusyUntil } from './reply-guard.js';
  *
  * 以前这里是 `void chatWake(...)`：`wakeSession` 回 `{ok:false, reason}` 也不会有人看，
  * 用户在悬浮窗里说的话就这么被吞掉了 —— 表现就是"突然不理我了"（2026-10-31 实报）。
- * 现在：失败重试一次；还失败就写一条看得见的话进悬浮窗，并留下日志。
+ * 现在：失败重试一次；还失败就写一条看得见的话进悬浮窗，并留一条日志。
  */
-async function wakeWithRetry({ ctx, sessionId, text, wake, log = true }) {
-  for (let attempt = 0; attempt < 2; attempt++) {
-    let r = null;
+async function wakeWithRetry({ ctx, sessionId, text, wake, note = () => {} }) {
+  let r = null;
+  for (let attempt = 0; attempt < 2; attempt += 1) {
     try { r = await wake(ctx, { sessionId, text }); } catch (e) { r = { ok: false, reason: String(e?.message ?? e) }; }
     if (r?.ok) return r;
     if (attempt === 0) await new Promise((res) => setTimeout(res, 800));
-    else {
-      if (log) {
-        try {
-          appendChat('meta', `[一起看] 叫醒失败：${String(r?.reason ?? 'unknown').slice(0, 120)}`, { say: false });
-        } catch { /* 写不进悬浮窗也不能再抛 */ }
-        // **这里以前调 `note()`** —— 那是 `startWatchLoop` 里的闭包，模块作用域没有这个名字。
-        // 平时走不到（`wake` 默认是空实现，永远 ok），所以一直没暴露；
-        // 一旦真叫醒失败（比如没有 sessionController），这里抛 ReferenceError，
-        // 又被 ticker 的 catch 吞掉 —— 表现就是"叫醒丢了，日志里什么都没有"。
-        try {
-          loop.logs.push(`${new Date().toTimeString().slice(0, 8)} wake failed: ${String(r?.reason ?? 'unknown').slice(0, 120)}`);
-          if (loop.logs.length > 20) loop.logs.shift();
-        } catch { /* 记不下就算了 */ }
-      }
-      return r;
-    }
   }
-  return { ok: false, reason: 'unreachable' };
+  const reason = String(r?.reason ?? 'unknown').slice(0, 120);
+  try { appendChat('meta', `[一起看] 叫醒失败：${reason}`, { say: false }); } catch { /* 写不进流也要留日志 */ }
+  note(`wake failed: ${reason}`);
+  return r ?? { ok: false, reason: 'unreachable' };
 }
+
+/** 关窗说明：不投 followup（那会进排队消息区），落进 watch.json 等下一次工具调用带走 */
+const HANGUP_NOTE = '[一起看·挂断] 悬浮窗被关掉了 —— 用户关它就是在说「不看了」，陪看已经停表。\n'
+  + '**不要再调 watch_together，也不要再念台词**（台词队列不再发出）。'
+  + '只回一句短的（用 `say`，否则他看不到），比如"好，先停在这儿"。'
+  + '他要接着看时会自己说一声，那时候再重新调 watch_together 开窗；'
+  + '如果他说的是「把窗口藏起来」，那用 `watch_together({ window: "hide" })`，陪看继续。';
 
 const TICK_MS = 2000;
 const PROBE_EVERY_MS = 15_000;
@@ -104,10 +98,19 @@ const loop = {
   /** 建段耗时 / 正在建哪一段（`statusOnly` 的 build 那一段） */
   lastBuildMs: 0,
   buildingFrom: null,
+  /** 字幕轨（两段式投喂）：转过写 / 喂过台词 / 放弃过的段，见 startWatchLoop */
+  transcribed: new Set(),
+  fedTranscript: new Set(),
+  badSegments: new Map(),
+  transcribing: null,
+  transcribingFrom: null,
+  lastTranscript: null,
   /** 段缓存（外部传进来，只用来报"缓存里已有几段"，不参与决策） */
   cache: null,
   /** 上一句台词比画面晚了几秒（可观测性：用户说"后面越来越慢"时先看它） */
   lastSpeechLateSec: null,
+  /** 最后一条已经投出去的插话（`{ at, text }`）—— 同一条不投第二遍，见 tick 里那段 */
+  lastChatFed: null,
   lastWake: null,
   wakeFails: 0,
   logs: [],
@@ -125,7 +128,7 @@ const loop = {
  * **叫不醒必须能看出来**：以前只写进 log，而 log 被调用方传成了空函数，
  * 于是"loop 在跑、位置也对、就是没人说话"完全查不出来。所以失败要计数 + 改 lastReason。
  */
-function recordWake(loop, w, { segment } = {}) {
+function recordWake(w, { segment } = {}) {
   loop.lastWake = {
     at: new Date().toTimeString().slice(0, 8),
     ok: Boolean(w?.ok),
@@ -164,6 +167,19 @@ export function sourceSwitched(prev, next) {
     && looksLikeVideoUrl(prev.url) && looksLikeVideoUrl(next.url));
   if (!durChanged && !urlChanged) return null;
   return { durChanged, urlChanged };
+}
+
+/**
+ * 这一段的台词是不是**已经单独喂过**了。
+ *
+ * `buildOnce` 用它决定画面那次要不要带台词（带 `omitTranscript`）：
+ * 字幕轨可能早就把这段的句子推给模型了，再贴一遍等于同一段说两遍（实测 +50% token）。
+ * 只认"当前这场陪看"：换源/重启之后 `fedTranscript` 是空的，那段就得由画面带着词一起给。
+ */
+export function isFedSegment(input, from) {
+  if (!loop.active || !loop.fedTranscript?.size) return false;
+  if (sessionKey(loop.input) !== sessionKey(input)) return false;
+  return loop.fedTranscript.has(Number(from));
 }
 
 export function loopStatus() {
@@ -212,6 +228,14 @@ export function loopStatus() {
       inflight: loop.buildingFrom ?? null,
       cached: loop.cache?.size ?? null,
       lastMs: loop.lastBuildMs || null,
+    },
+    // 字幕轨：转好几段、喂出去几段、正在转哪一段、上一次转了多久（§6 验收靠它）
+    transcript: {
+      ready: loop.transcribed?.size ?? 0,
+      fed: loop.fedTranscript?.size ?? 0,
+      inflight: loop.transcribingFrom ?? null,
+      last: loop.lastTranscript ?? null,
+      bad: loop.badSegments?.size ?? 0,
     },
     // 声音：核心只发事件。listeners = 0 表示"没人接声音"，到点的词会改走叫醒模型。
     voice: {
@@ -283,6 +307,12 @@ export function startWatchLoop({
   // 钟每一拍顺手看一眼聊天框，有新消息就真的 wake 一次（只针对**用户的插话**，
   // 不是段末那种"该说话了"的打扰，所以和 `wake: false` 不冲突）。
   wakeOnChat = true,
+  // **字幕轨**：只转写、不建图，跑到"当前位置 + 余量"为止。默认开（用户要的是"字先到先给"）。
+  // 关掉它就退回原来的行为：字和画面一起在图那一次给。
+  transcriptTrack = true,
+  // 字幕好了之后等多久再先喂台词（毫秒）。**默认 0 = 一到就喂**（按用户原话）。
+  // 调成 20000 就是"字幕好后 20 秒画面还没来才推"，用来减少会话里的消息条数。
+  feedTranscriptLeadMs = 0,
 }) {
   const wake = wakeOpt === true
     ? (deps.wake ?? ((c, o) => wakeSession(c, o)))
@@ -295,9 +325,25 @@ export function startWatchLoop({
   // 但仿真用倍速跑，倍速越高越要读得勤，否则一整段会在两次采样之间被跳过。
   const probeEveryMs = deps.probeEveryMs ?? PROBE_EVERY_MS;
   const build = deps.build ?? null;
+  // 字幕轨的两个函数由 handler 造（它们要 boardOptions 的 cookies 等参数）
+  const transcribe = deps.transcribe ?? null;
+  const feedTranscript = deps.feedTranscript ?? null;
   const note = (msg) => {
     loop.logs.push(`${new Date().toTimeString().slice(0, 8)} ${msg}`);
     if (loop.logs.length > 20) loop.logs.shift();
+  };
+  /**
+   * 转写失败：**不记进 `transcribed`**，下一拍自然重试（字幕轨的失败不该让画面停）。
+   * 同一段连续三次就放弃 10 分钟 —— ASR 服务没起、片子没声音这类问题不该每 2 秒撞一次。
+   */
+  const failTranscribe = (seg, reason, at) => {
+    const n = (loop.badTries.get(seg.from) ?? 0) + 1;
+    loop.badTries.set(seg.from, n);
+    // **时刻必须来自 tick 的 `tNow`（= 可注入的 `deps.now()`），不能用 `Date.now()`**：
+    // 两者混用的话差值会是负的一万多亿毫秒，于是"10 分钟内跳过"变成"永远跳过"，
+    // 两段式投喂的等待门槛同理永远不成立。
+    if (n >= 3) loop.badSegments.set(seg.from, at);
+    note(`transcribe ${Math.round(seg.from)}s failed (${n}/3): ${String(reason).slice(0, 80)}`);
   };
   // `video.currentTime` 是**毫秒级真值**。拿不到就当作"这次没读到"，
   // 由上层决定是问用户还是停表 —— 不猜、不外推到很远。
@@ -354,8 +400,13 @@ export function startWatchLoop({
   // **同一个源 + 同一张批次表 → 接着跑，不要重开。**
   // 之前每次工具调用都 stopWatchLoop('restart')，于是：① 已说过的段（spoken）被清空；
   // ② 正在等的那一段被新表重切、原时间点消失。用户看到的就是"说要 04:45 开口，结果 05:45 才说"。
+  //
+  // 「同一个源」按 `sessionKey` 判，**不按字符串**：同一支片子会有两种写法 ——
+  // 扩展报的是带 `?trackid=…&spm_id_from=…` 的完整地址，模型手里是干净链接。
+  // 按字符串比，这两种写法每次都会判成"换源"，于是整场陪看每隔一次调用就重开一遍
+  // （spoken 清空 → 已经交付过的段又被叫醒一次）。
   const samePlan = loop.active
-    && loop.input === input
+    && sessionKey(loop.input) === sessionKey(input)
     && loop.sessionId === sessionId
     && loop.plan
     && loop.plan.segment === plan.segment
@@ -365,6 +416,9 @@ export function startWatchLoop({
     loop.depth = fixedDepth;
     loop.bufferSec = bufferSec;
     loop.lead = leadSec;
+    // 两段式投喂的两个旋钮也要跟着更新（用户中途嫌消息多就会改它）
+    loop.transcriptTrack = transcriptTrack !== false;
+    loop.feedLeadMs = Math.max(0, Number(feedTranscriptLeadMs) || 0);
     // **窗口守卫只许从关到开，不许从开改回关**：以前它是闭包变量，只在"新起一场"时定一次，
     // 于是第一场要不是这次开窗（比如窗口早就开着、或者上一次开窗失败），后面永远守卫不到 ——
     // 用户关了窗，钟照样跑（2026-10-31 实报："关了悬浮窗还在继续看"）。
@@ -425,6 +479,17 @@ export function startWatchLoop({
     cache: cache ?? null,
     lastBuildMs: 0,
     buildingFrom: null,
+    // ---- 字幕轨（和画面轨对称：各一个"正在跑"的 flag、各一个 Set）
+    transcribed: new Set(),      // 已经转过写的段（按 from 记）
+    transcribedAt: new Map(),    // 什么时候转好的（两段式投喂的等待门槛要用）
+    fedTranscript: new Set(),    // 台词已经单独推给模型的段
+    transcribing: null,          // 正在转写的那一个（同时只转一个）
+    transcribingFrom: null,
+    badTries: new Map(),         // 段 → 连续失败次数
+    badSegments: new Map(),      // 段 → 放弃时刻（10 分钟内不再试）
+    lastTranscript: null,        // { from, source, seconds, lines }，给 statusOnly 看
+    transcriptTrack: transcriptTrack !== false,
+    feedLeadMs: Math.max(0, Number(feedTranscriptLeadMs) || 0),
     lastSpeechLateSec: null,
     log,
   });
@@ -457,6 +522,7 @@ export function startWatchLoop({
       ctx: loop.ctx,
       sessionId: loop.sessionId,
       wake: wakeSignal,
+      note,
       text: `[一起看] 用户拖了进度条：${jump > 0 ? '跳到' : '回看到'} ${mmss(b.pos)}`
         + `（原来到 ${mmss(expected)}）。`
         + (jump < 0
@@ -474,7 +540,7 @@ export function startWatchLoop({
   const stopForSource = (reason, text) => {
     stopWatchLoop(reason);
     void wakeWithRetry({
-      ctx: loop.ctx, sessionId: loop.sessionId, wake: wakeSignal, text,
+      ctx: loop.ctx, sessionId: loop.sessionId, wake: wakeSignal, note, text,
     });
   };
 
@@ -493,7 +559,13 @@ export function startWatchLoop({
         let said = null;
         try { said = chatWatcher()?.() ?? null; } catch { said = null; }
         const chatText = String(said?.text ?? '').trim();
-        if (chatText) {
+        // **同一条不投第二遍**（2026-11-01 实报"大肥鱼已经重复了"）：`poll()` 自己按
+        // `lastAt` 去重，理论上不会重报；但它在**投递之前**就推进了游标 —— 万一投递
+        // 这一拍正好撞上模型刚被唤醒、新一轮还没开始读，下一拍不会有补偿，只会漏。
+        // 而那之后模型回完话再调 `watch_together`，`replyReminder` 又会把"你还没回"顶出来，
+        // 用户看到的就是同一句话被当成两件事。这里按 `at` 记一条已投，彻底封住重投。
+        if (chatText && said?.at !== loop.lastChatFed?.at) {
+          loop.lastChatFed = { at: said.at, text: chatText };
           note('user said → wake');
           void wakeWithRetry({
             ctx: loop.ctx,
@@ -501,8 +573,9 @@ export function startWatchLoop({
             // 措辞和阻塞等待里的插话**必须是同一份**（interject.js）：
             // 以前这里只写"先回这一句"，模型就以为"回"是指聊天框里的回复 ——
             // 而那句话用户根本看不见，表现出来就是"一声不吭"。
-            text: `${interjectNote(chatText.slice(0, 200))}\n\n回完再调 watch_together 接着陪。`,
+            text: `${interjectNote(chatText.slice(0, 200), { at: said.at })}\n\n回完再调 watch_together 接着陪。`,
             wake: chatWake,
+            note,
           });
         }
       }
@@ -513,18 +586,16 @@ export function startWatchLoop({
       // **这一下必须真的叫醒**（`wakeSignal`，不走 `wake`）：`wake:false` 关的是"段末该说话了"
       // 那种打扰，而"用户把窗口关了"是用户下的指令 —— 不叫他，模型那边只会看到时间停住，
       // 表现就是"关了他还在看、还在念台词，根本不会自己结束"（2026-10-31 实报）。
+      //
+      // **不投 followup，落一条待领的挂断**（2026-11-01 用户要求"不出现队列消息"）：
+      // `followup` 会进宿主 inbox 的 `next-turn`，而 DSH 的 QueueDock **不过滤 source**，
+      // 于是插件自己的提示会显示在输入框的"排队消息"里 —— 用户没说话却看见一条待发消息。
+      // 挂断本来也不需要模型立刻醒：钟已经停了，不会再念词、不会再建图，模型这一轮
+      // 是阻塞在被我们中断的工具调用里，返回结果时把这条带上就行（见 handler 的 hangupNote）。
       if (loop.windowGuard && !windowAlive()) {
-        try { await markHungUp(loop.input); } catch { /* 记不住也不影响停 */ }
         stopWatchLoop('widget-closed');
-        void wakeWithRetry({
-          ctx: loop.ctx,
-          sessionId: loop.sessionId,
-          wake: wakeSignal,
-          text: '[一起看·挂断] 悬浮窗被关掉了 —— 用户关它就是在说「不看了」，陪看已经停表。\n'
-            + '**不要再调 watch_together，也不要再念台词**（台词队列不再发出）。'
-            + '只回一句短的（用 `say`，否则他看不到），比如"好，先停在这儿"。'
-            + '他要接着看时会自己说一声，那时候再重新调 watch_together 开窗。',
-        });
+        try { await markHungUp(loop.input, undefined, HANGUP_NOTE); } catch { /* 记不住也不影响停 */ }
+        note('window closed → hung up (note delivered on next tool result)');
         return;
       }
 
@@ -558,7 +629,9 @@ export function startWatchLoop({
           }, tNow);
           // **基线跟着更新**：不更新的话，下一次读数永远和"刚开始那支"比 ——
           // 一支片子中途 dur 精确到小数变了都会被当成换片。
-          if (Number.isFinite(Number(s.dur))) loop.dur = Number(s.dur);
+          // `Number.isFinite(null)` 为 false，所以"扩展没报时长"不会把基线写成 0 秒
+          // （写成 0 的下一次读数就是"时长变了"→ 当场判定换片）。
+          if (Number.isFinite(s.dur)) loop.dur = s.dur;
           if (s.url) loop.sourceUrl = s.url;
           loop.status = s.paused ? 'paused' : 'playing';
         }
@@ -645,6 +718,7 @@ export function startWatchLoop({
               ctx: loop.ctx,
               sessionId: loop.sessionId,
               wake: wakeSignal,
+              note,
               text: `[一起看] 看起来停了一会儿（${Math.round(estIdle.pos)} 秒的位置上，`
                 + `${Math.round(idleMs / 60_000)} 分钟没动），我先停了。`
                 + '想继续就说一声，重新调 watch_together 就接着陪。',
@@ -680,6 +754,85 @@ export function startWatchLoop({
               loop.buildingFrom = null;
             }
           })();
+        }
+      }
+
+      // ---- 字幕轨：和画面轨**结构对称** —— 同一个 `windowAt`、同一个 `idxNow`，只换了 Set。
+      //
+      // 为什么必须共用窗口：两轨的"余量"口径不一样，就会出现"它说 04:00 开始、实际建的是 03:00 那段"
+      // （batches.js 里写过这个坑）。所以这里不复制任何常量。
+      //
+      // 字幕的生产速度是画面的 10 倍以上（实测 ASR RTF 0.019，5 分钟段 ≈ 6 秒），
+      // 所以它天然跑在前面；跑到窗口边界时 `find` 返回 undefined，这一轨自己就停了 ——
+      // "谁的余量满了谁停"是这段代码的自然结果，不需要额外判断。
+      if (transcribe && loop.transcriptTrack && !loop.transcribing) {
+        const nowEst = estimate(loop.anchor, tNow);
+        const idxNow = plan.indexAt(nowEst.pos);
+        const winNow = windowAt(nowEst.pos);
+        const next = loop.segments
+          .slice(idxNow, idxNow + winNow.length)
+          .find((sg) => {
+            if (loop.transcribed.has(sg.from)) return false;
+            const badAt = loop.badSegments.get(sg.from);
+            if (badAt && tNow - badAt < 600_000) return false;   // 放弃过，10 分钟内跳过
+            if (badAt) loop.badSegments.delete(sg.from);         // 过期了，允许再试一次
+            return true;
+          });
+        if (next) {
+          loop.transcribingFrom = next.from;
+          loop.transcribing = (async () => {
+            const t = Date.now();
+            try {
+              const r = await transcribe(next.from, next.to);
+              if (!r?.ok) {
+                failTranscribe(next, r?.reason ?? 'failed', tNow);
+                return;
+              }
+              loop.transcribed.add(next.from);
+              // 记的是**循环的钟**：投喂门槛拿它跟下一拍的 `tNow` 比，必须是同一个时钟。
+              loop.transcribedAt.set(next.from, tNow);
+              loop.badTries.delete(next.from);
+              const secs = +((Date.now() - t) / 1000).toFixed(1);
+              loop.lastTranscript = { from: next.from, source: r.source, seconds: secs, lines: r.segments?.length ?? 0 };
+              note(`transcribed ${Math.round(next.from)}s in ${secs}s (${r.source})`);
+            } catch (e) {
+              failTranscribe(next, String(e?.message ?? e), tNow);
+            } finally {
+              loop.transcribing = null;
+              loop.transcribingFrom = null;
+            }
+          })();
+        }
+      }
+
+      // ---- 两段式投喂的第一段：**字幕先到、画面还没到**的那一段，先把台词推给模型。
+      //
+      // 只喂**后面**的段：当前段会和图一起给，先喂一遍等于同一段说两遍。
+      // 图已经在建/已经建好的一律不喂 —— 那种情况让图带着词一起给（兜底路径，见设计里的第三种状态）。
+      // `feedLeadMs` 默认 0（一到就喂）；给 20000 就是"20 秒后画面还没来才推"。
+      if (feedTranscript && loop.transcriptTrack) {
+        const nowEst = estimate(loop.anchor, tNow);
+        const idxNow = plan.indexAt(nowEst.pos);
+        const winNow = windowAt(nowEst.pos);
+        for (const sg of loop.segments.slice(idxNow + 1, idxNow + winNow.length)) {
+          if (!loop.transcribed.has(sg.from) || loop.fedTranscript.has(sg.from)) continue;
+          if (loop.built.has(sg.from) || loop.buildingFrom === sg.from) continue;
+          if (tNow - (loop.transcribedAt.get(sg.from) ?? tNow) < loop.feedLeadMs) continue;
+          const got = await feedTranscript(sg.from, sg.to).catch(() => null);
+          if (!got?.ok) continue;                 // 拿不到就下一拍再说（**不标记**，别把这句吞了）
+          const w = await wakeWithRetry({
+            // 这一条是**推消息进会话**，和 `wakeSignal` 同一类（不受 `wake:false` 影响）：
+            // 台词先到就先送过去，不该因为"段末不打扰"而一声不响。
+            ctx: loop.ctx, sessionId: loop.sessionId, wake: wakeSignal, note, text: got.text,
+          });
+          recordWake(w, { segment: sg.from });
+          if (w?.ok) {
+            loop.fedTranscript.add(sg.from);
+            note(`fed transcript ${Math.round(sg.from)}s (${got.lines} lines)`);
+          } else {
+            note(`feed transcript ${Math.round(sg.from)}s → ${w?.reason ?? 'failed'}`);
+          }
+          break;    // 一拍只喂一段：一次 followup 就是一轮模型调用，别一口气塞三条
         }
       }
 
@@ -720,7 +873,7 @@ export function startWatchLoop({
             text: `[一起看·补词] 台词库存不够了：${list} 还没有词（现在 ${mmss(estR.pos)}）。`
               + '先用 watch_together({ speakNow: true }) 看画面，再用 lines: [...] 补上。',
           });
-          recordWake(loop, w, { segment: missing[0].from });
+          recordWake(w, { segment: missing[0].from });
           note(`refill-needed ${missing.map((m) => m.from).join(',')} → ${w?.ok ? 'ok' : w?.reason ?? 'failed'}`);
           return;
         }
@@ -806,7 +959,7 @@ export function startWatchLoop({
             text: `[一起看·高频] 现在 ${mmss(est.pos)}（这一段 ${mmss(seg.from)}–${mmss(seg.to)}）。`
               + '调 watch_together({ speakNow: true }) 拿当前画面，然后说一句。',
           });
-          recordWake(loop, w, { segment: seg.from });
+          recordWake(w, { segment: seg.from });
           note(`speak-now ${Math.round(est.pos)}s → ${w?.ok ? 'ok' : w?.reason ?? 'failed'}`);
           return;
         }
@@ -863,7 +1016,7 @@ export function startWatchLoop({
         ? `${head}\n你之前写好的那句：「${line}」\n直接说这句就行；觉得不对就调 watch_together 看一眼再改。`
         : `${head}\n调 watch_together 拿这一段的画面，然后只说一句。`;
       const w = await wake(loop.ctx, { sessionId: loop.sessionId, text });
-      recordWake(loop, w, { segment: r.segment });
+      recordWake(w, { segment: r.segment });
       note(`wake ${r.segment}s (${r.confidence}) → ${w?.ok ? 'ok' : w?.reason ?? 'failed'}`);
     },
   });

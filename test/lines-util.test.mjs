@@ -12,11 +12,12 @@ process.env.DSH_WATCH_BRIDGE = '0';
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { mkdtemp, rm } from 'node:fs/promises';
+import { writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
 import {
-  autoPick, pickCandidates, scoreSentence, sentencesBetween, sentencesIn,
+  autoPick, cachedCues, pickCandidates, scoreSentence, sentencesBetween, sentencesIn,
 } from '../src/lines-util.js';
 import { linesOverview, readSlot, saveLines } from '../src/watch-lines.js';
 
@@ -108,6 +109,30 @@ test('写进去的台词能读回来（saveLines ↔ readSlot 同一套 key）',
     const ov = await linesOverview(input);
     assert.deepEqual(ov.map((o) => o.from), [60]);
   } finally {
+    await rm(dir, { recursive: true, force: true });
+  }
+});
+
+/**
+ * 热路径：钟每 2 秒一拍都要问一次字幕（一拍拍好几次）。
+ * 以前每次都 readFileSync + JSON.parse 整份字幕，而 `makeLagFn` 的 memo 因为每次都是
+ * 新数组也一次都命不中。现在按 路径+大小+mtime 认缓存，返回的是同一个数组。
+ */
+test('cachedCues：文件没变就返回同一份，改了就重读', async () => {
+  const dir = await mkdtemp(join(tmpdir(), 'cues-'));
+  process.env.DSH_VIDEO_CACHE_DIR = dir;
+  try {
+    const file = join(dir, 'subs-memo.mp4.json');
+    writeFileSync(file, JSON.stringify({ cues: [{ from: 0, to: 1, text: '一' }] }), 'utf8');
+    const a = cachedCues('memo.mp4');
+    assert.equal(cachedCues('memo.mp4'), a, '同一份文件 → 同一个数组（上层按身份做 memo）');
+
+    writeFileSync(file, JSON.stringify({ cues: [{ from: 0, to: 1, text: '二' }, { from: 2, to: 3, text: '三' }] }), 'utf8');
+    const c = cachedCues('memo.mp4');
+    assert.notEqual(c, a, '文件变了就要重读');
+    assert.equal(c.length, 2);
+  } finally {
+    delete process.env.DSH_VIDEO_CACHE_DIR;
     await rm(dir, { recursive: true, force: true });
   }
 });

@@ -33,6 +33,28 @@ test('规范化：位置必须是有效数字，否则整条丢弃', () => {
   assert.equal(ok.at, 1000, '时刻用服务端收到的时刻，不信上报方的时钟');
 });
 
+/**
+ * `Number(null) === 0`：没报时长 / 没报位置时，转成数字就成了"0 秒"。
+ * 时长基线一旦被写成 0，下一次真实读数（600 秒）就会被判成"换片了"，陪看当场停表。
+ */
+test('空值不许变成 0：没报 dur 就是 null，没报 pos 就是没有位置', async () => {
+  const { dir, env } = await tempEnv();
+  try {
+    const s = normalizeBridgeSample({ pos: 10, dur: null, title: null }, 1000);
+    assert.equal(s.dur, null, '没报时长 → null，不是 0');
+    assert.equal(s.title, null);
+
+    await writeFile(join(dir, BRIDGE_FILE), JSON.stringify({ pos: 10, dur: null, at: 1000 }), 'utf8');
+    const got = await readBridge({ env, now: 1000 });
+    assert.equal(got.dur, null, '读回来也必须是 null');
+
+    await writeFile(join(dir, BRIDGE_FILE), JSON.stringify({ pos: null, at: 1000 }), 'utf8');
+    assert.equal(await readBridge({ env, now: 1000 }), null, 'pos 为空 = 没有位置，不能当成 0 秒');
+  } finally {
+    await rm(dir, { recursive: true, force: true });
+  }
+});
+
 test('存进去再读出来：数值和标题都在', async () => {
   const { dir, env } = await tempEnv();
   try {

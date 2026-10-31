@@ -53,14 +53,16 @@ export async function runWatchMode({ args, input, plan, browserPort, readBrowser
     const deadline = Date.now() + capSec * 1000;
     const below = Math.max(1, Number(args.refillBelow) || 2);
     let last = null;
+    // 结束原因要如实说：暂停/播完是**提前**结束的，写成"等到封顶"会让模型以为白等了十分钟
+    let why = 'timeout';
     // 这条通道现在归等待者（见 interrupt.js）：循环一旦把插话吃了，这里就再也看不见
     const leaveChatWait = enterChatWait();
     try {
       while (Date.now() < deadline && !signal?.aborted) {
         const b = await readPositionOrNull(readBrowser, browserPort);
         last = b?.pos ?? null;
-        if (b?.ended) break;
-        if (b?.paused) break;
+        if (b?.ended) { why = 'ended'; break; }
+        if (b?.paused) { why = 'paused'; break; }
 
         if (args.waitForRefill === true && last !== null) {
           const idx = plan.indexAt(last);
@@ -104,9 +106,14 @@ export async function runWatchMode({ args, input, plan, browserPort, readBrowser
         images: [],
       };
     }
+    const endText = {
+      timeout: `等到封顶（${capSec}s）也没等到条件成立`,
+      paused: '你暂停了，这次等待提前结束',
+      ended: '视频播完了，这次等待提前结束',
+    }[why];
     return {
       ok: true, reason: 'wait-timeout', at: last,
-      text: `等到封顶（${capSec}s）也没等到条件成立，现在 ${last !== null ? mmss(last) : '读不到位置'}。`,
+      text: `${endText}，现在 ${last !== null ? mmss(last) : '读不到位置'}。`,
       images: [],
     };
   }

@@ -369,26 +369,26 @@ export async function dueLine(input, pos, {
     : Number(at) + lagFor(at, text));
 
   let best = null;
-  let dirty = false;
+  let dirty = false;              // 整份有没有改动（决定结尾要不要写盘）
   for (const [key, slot] of Object.entries(lines)) {
     const from = Number(key);
     // 未来段落的词不参与：写 360s 的词不该在 150s 就被念出来
     if (!(from <= now)) continue;
     let items = slotItems(slot);
-    // **把"没写 at"的台词当场钉死**：一旦有了段长，就把它们铺进这一段并存回去。
-    // 不能每次读都现算：念掉一条之后队列长度变了，后面几条的时刻会跟着往前跳
-    // （实测：四句 60 秒的稿子，念掉第一句后第二句的时刻从 135 变成 120，于是连珠炮）。
-    //
     // **段长要按这一句自己所属的段算**：批次表是 1/2/3/4/5 分钟递进的，
     // 拿当前段（可能是 5 分钟）去铺开头那段 60 秒的稿子，后几句会被铺到段外，
     // 结果整段听着都错位。`sizeOf` 由调用方按批次表给。
-    const ownSize = (() => {
-      const v = typeof sizeOf === 'function' ? Number(sizeOf(from)) : NaN;
-      return Number.isFinite(v) && v > 0 ? v : size;
-    })();
+    const own = typeof sizeOf === 'function' ? Number(sizeOf(from)) : NaN;
+    const ownSize = Number.isFinite(own) && own > 0 ? own : size;
+    // **改动要按段算**：以前用的是外层那个 `dirty`，一段 pin 过之后后面每一段都会重写一遍
+    // watch.json（钟每 2 秒一拍，等于每 2 秒写一次盘），而内容其实没变。
+    let changed = false;
+    // **把"没写 at"的台词当场钉死**：一旦有了段长，就把它们铺进这一段并存回去。
+    // 不能每次读都现算：念掉一条之后队列长度变了，后面几条的时刻会跟着往前跳
+    // （实测：四句 60 秒的稿子，念掉第一句后第二句的时刻从 135 变成 120，于是连珠炮）。
     if (ownSize > 0 && items.some((x) => x.at === null)) {
       items = pinTimes(items, from, ownSize, subs);
-      dirty = true;
+      changed = true;
     }
     // **迟到就作废**：位置跳过去了（拖进度条 / 快进），那句描述的画面已经不在银幕上，
     // 补念出来只会和画面对不上。停顿几秒内的正常延迟仍然会念。
@@ -396,11 +396,8 @@ export async function dueLine(input, pos, {
     // **没写 at 的不参与作废**：它们的时刻还没算出来（见上面 pin 的那段），
     // 拿 -Infinity 去比就是"永远迟到" —— 那会把整批好词静默删掉。
     const kept = items.filter((x) => x.at === null || !(dueAt(x.at, x.text) < now - lateSec));
-    if (kept.length !== items.length) {
-      items = kept;
-      dirty = true;
-    }
-    if (dirty) writeSlot(lines, from, items);
+    if (kept.length !== items.length) { items = kept; changed = true; }
+    if (changed) { writeSlot(lines, from, items); dirty = true; }
     items.forEach((item, i) => {
       if (dueAt(item.at, item.text) > now) return;
       if (!best || item.at < best.at) best = { from, index: i, at: item.at, text: item.text };

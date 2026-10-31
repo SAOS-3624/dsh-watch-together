@@ -16,20 +16,38 @@
 import { randomUUID } from 'node:crypto';
 
 /**
- * 取 `sessionController`：先 `ctx.get()`（可选依赖的正规取法），老环境才退回属性访问，
- * 并把 cordis 那个"without inject"抛错吞掉。
+ * 从 cordis 上下文里取一个**可选**服务（取不到返回 null，绝不抛）。
+ *
+ * ## 为什么不能用 `ctx?.attachments?.saveImage`
+ *
+ * cordis 的 `ctx` 是个 Proxy：服务**没在 `inject` 里声明**时，`get` 陷阱会**直接抛**
+ * `cannot get property "attachments" without inject`。`?.` 只挡 `null` / `undefined`，
+ * **挡不住异常** —— 所以 `ctx?.attachments?.saveImage` 看着像运行期探测，在真宿主里照样炸。
+ *
+ * `ctx.get(name)` 是 cordis 给可选依赖的正规取法：服务没注册就返回 `undefined`。
+ * 老宿主没有 `get()` 才退回属性访问，并且**整段包在 try 里**。
  */
-export function controllerOf(ctx) {
+export function serviceOf(ctx, name) {
   if (!ctx) return null;
   try {
     if (typeof ctx.get === 'function') {
-      const viaGet = ctx.get('sessionController');
+      const viaGet = ctx.get(name);
       if (viaGet) return viaGet;
     }
   } catch { /* 没有 get() / 服务没注册，往下走 */ }
   try {
-    return ctx.sessionController ?? null;
-  } catch { return null; }
+    return ctx[name] ?? null;
+  } catch {
+    return null;      // Proxy 抛的那个 "without inject"，在这里收住
+  }
+}
+
+/**
+ * 取 `sessionController`：先 `ctx.get()`（可选依赖的正规取法），老环境才退回属性访问，
+ * 并把 cordis 那个"without inject"抛错吞掉。
+ */
+export function controllerOf(ctx) {
+  return serviceOf(ctx, 'sessionController');
 }
 
 /** 唤醒用的消息：DSH 的 `followup()` 要的是一条 user 角色的消息（`MessageBase`） */

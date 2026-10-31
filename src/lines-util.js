@@ -28,8 +28,8 @@
  * "台词对不上视频"。这里从字幕取的是**真实起始秒**，不是估计值。
  */
 
-import { existsSync, mkdirSync, readdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
-import { homedir, tmpdir } from 'node:os';
+import { existsSync, mkdirSync, readdirSync, readFileSync, rmSync, statSync, writeFileSync } from 'node:fs';
+import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { execFile } from 'node:child_process';
 import { promisify } from 'node:util';
@@ -39,16 +39,12 @@ const runFile = promisify(execFile);
 const CHUNK_SEC = 30;
 
 import { fetchRemoteSubtitles } from 'dsh-video-storyboard/subtitles';
+// **目录口径只有一份**（storyboard 的 cache.js）：自己再写一遍就会分叉 ——
+// 以前这份写的是 `LOCALAPPDATA/AppData/Local`，在 Linux/mac 上会造出一个根本不存在的
+// `~/AppData/Local`，字幕缓存和 chat.jsonl 落到两个地方去。
+import { cacheDir } from 'dsh-video-storyboard/cache';
 
 import { sessionKey } from './watch.js';
-
-/** 字幕缓存目录：和 chat.jsonl / watch.json 同一个根 */
-function cacheDir(env = process.env) {
-  const explicit = env.DSH_VIDEO_CACHE_DIR;
-  if (explicit) return explicit;
-  const base = env.LOCALAPPDATA || join(homedir(), 'AppData', 'Local');
-  return join(base, 'dsh-video-storyboard', 'cache');
-}
 
 function subsFile(input, env) {
   return join(cacheDir(env), `subs-${sessionKey(input)}.json`);
@@ -160,8 +156,9 @@ async function postWav(base, buf, cfg) {
 
 /** 这支片子的本地扫描副本（分镜跑过就有）：媒体目录里找 url 含同一 BV/文件名的那个 */
 function findCachedMedia(input, env = process.env) {
-  const dir = env.DSH_VIDEO_MEDIA_DIR
-    || join(env.LOCALAPPDATA || join(homedir(), 'AppData', 'Local'), 'Temp', 'dsh-video-storyboard', 'media');
+  // 和 storyboard 的 media-store 同一个默认值（`<tmpdir>/dsh-video-storyboard/media`）。
+  // 以前写的是 `LOCALAPPDATA/Temp/...` —— 在 Windows 上碰巧是同一个目录，换个系统就找不到。
+  const dir = env.DSH_VIDEO_MEDIA_DIR || join(tmpdir(), 'dsh-video-storyboard', 'media');
   const s = String(input ?? '');
   const m = s.match(/(BV[0-9A-Za-z]{10})/i);
   const needle = m ? m[1].toLowerCase() : null;
@@ -226,12 +223,28 @@ export async function loadCues(input, {
  *
  * 台词延迟要按"这句字幕本身有多少字"算 —— 那个字数就在字幕里。但延迟是每秒算好几次的，
  * 不能每次都去抓字幕/跑 ASR，所以这里只读 `subs-<key>.json`，没有就返回空数组。
+ *
+ * **而且只读一次**：这在热路径上（钟每 2 秒一拍，一拍要问好几次），
+ * 以前每次都 `readFileSync` + `JSON.parse` 整份字幕 —— 两小时片子几千条，几十到几百 KB，
+ * 一天下来纯粹是白烧。现在按 `路径 + 大小 + mtime` 认缓存，文件没动就返回**同一个数组**
+ * （同一身份很重要：`makeLagFn` 的 memo 挂在数组上）。
  */
+const cueCache = new Map();
+
 export function cachedCues(input, { env = process.env } = {}) {
+  const file = subsFile(input, env);
   try {
-    const j = JSON.parse(readFileSync(subsFile(input, env), 'utf8'));
-    return Array.isArray(j?.cues) ? j.cues : [];
+    const st = statSync(file);
+    const hit = cueCache.get(file);
+    if (hit && hit.size === st.size && hit.mtimeMs === st.mtimeMs) return hit.cues;
+    const j = JSON.parse(readFileSync(file, 'utf8'));
+    const cues = Array.isArray(j?.cues) ? j.cues : [];
+    cueCache.set(file, { size: st.size, mtimeMs: st.mtimeMs, cues });
+    // 一部片一份；只留最近 8 份，别让长进程攒下几百份字幕
+    if (cueCache.size > 8) cueCache.delete(cueCache.keys().next().value);
+    return cues;
   } catch {
+    cueCache.delete(file);
     return [];
   }
 }

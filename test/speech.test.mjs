@@ -83,3 +83,24 @@ test('dueLine: 延迟之后仍然算迟到作废（不能因为加了延就复�
     await rm(dir, { recursive: true, force: true });
   }
 });
+
+const CUES_A = [{ from: 100, to: 104, text: '一句话' }];
+
+test('makeLagFn: 同一个字幕数组只建一份，且二分结果和线性扫一致', () => {
+  assert.equal(makeLagFn(CUES_A), makeLagFn(CUES_A), '同一身份要复用（WeakMap）');
+
+  // 逐点比对：二分版（makeLagFn）和线性版（lagForAt）必须给出同一个延迟
+  const segs = Array.from({ length: 400 }, (_, i) => ({
+    from: +(i * 3.7 + 0.2).toFixed(1),
+    text: 'x'.repeat((i % 20) + 1),
+  }));
+  // 撒几条重复起点（B 站字幕常见），确认平手时也一致
+  segs.push({ from: 100, text: '同样的起点' }, { from: 100, text: '同样的起点2' });
+  segs.sort((a, b) => a.from - b.from);
+  const fast = makeLagFn(segs);
+  for (let k = 0; k < 200; k += 1) {
+    const at = +(k * 7.3).toFixed(1);
+    assert.equal(fast(at), lagForAt(segs, at), `at=${at}`);
+  }
+});
+

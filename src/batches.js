@@ -58,9 +58,7 @@ export function makePlan({ segment = DEFAULT_SEGMENT, ramp } = {}) {
     return rampEnd + (i - steps.length) * steady;
   };
 
-  /** 前 513 段的起点（保留给老调用方查看；真正的边界由 startAt 计算） */
-  const starts = Array.from({ length: 513 }, (_, i) => startAt(i));
-
+  /** pos 落在第几段。ramp 阶段二分，稳定阶段直接算（不再把时间轴展开成数组） */
   const indexAt = (pos) => {
     const p = Math.max(0, Number(pos) || 0);
     if (steps.length > 0 && p < rampEnd) {
@@ -81,7 +79,6 @@ export function makePlan({ segment = DEFAULT_SEGMENT, ramp } = {}) {
     segment: steady,
     ramp: steps,
     sizeAt,
-    starts,
     indexAt,
     /** 覆盖 pos 的那一段 */
     segmentAt(pos) {

@@ -24,12 +24,13 @@ import {
 import { floatingWindowAlive } from './floating-window.js';
 import { markMaterial, materialNote, materialState } from './watch-material.js';
 import { speechEvents } from './voice.js';
-import { appendSpoken } from './chat.js';
-import { describeLatency, recordLatency } from './latency.js';
+import { appendChat, appendSpoken } from './chat.js';
+import { describeLatency, aheadSeconds, loadLatency, recordLatency } from './latency.js';
 import { DEFAULT_LOOKAHEAD, DEFAULT_SEGMENT, makePlan, windowFor } from './batches.js';
 import { raceChat, sleepWithChat, chatWatcherShared, enterChatWait } from './interrupt.js';
 import { probeBrowser, readBrowserPosition } from 'dsh-video-storyboard/browser-time';
 import { boardOptions, charsForDetail } from 'dsh-video-storyboard/board';
+import { prefetchTranscript } from 'dsh-video-storyboard/transcript-pass';
 
 import { mmss } from './time.js';
 import { saveLines } from './watch.js';
@@ -41,7 +42,7 @@ import { resolveWatchSource } from './watch-source.js';
 import { runWatchMode } from './watch-modes.js';
 import { readBridge } from './position-bridge.js';
 import { interjectNote } from './interject.js';
-import { sourceSwitched, stopWatchLoop } from './watch-loop.js';
+import { isFedSegment, sourceSwitched, stopWatchLoop } from './watch-loop.js';
 
 /**
  * 给循环用的建段函数：传一次参数，返回 `build(from) => Promise`。
@@ -52,6 +53,59 @@ export function makeBuilder({ input, args = {}, runStoryboard, formatManifest, c
     input, segStart: from, size: Number(args.segment) > 0 ? Number(args.segment) : DEFAULT_SEGMENT,
     args, runStoryboard, formatManifest, cache,
   });
+}
+
+/**
+ * 字幕轨：`transcribe(from, to)` —— **只转写，不扫图**。
+ *
+ * 和建段走同一个 `boardOptions`（cookies / 清晰度这些参数只有一份定义），
+ * 差别是它只把窗口交给 `prefetchTranscript`：站点字幕 → 按片缓存 → ASR，三条路都秒回或几秒。
+ * 实测 ASR RTF 0.019（本机 CPU、int8 模型），5 分钟段约 6 秒 —— 比画面快一个数量级，
+ * 所以这一轨天然跑在前面，跑到窗口边界自己停下（`find` 返回 undefined）。
+ *
+ * @returns {(from:number, to:number) => Promise<{ok:boolean, source:string, segments:Array}>}
+ */
+export function makeTranscriber({ input, args = {} }) {
+  const opts = boardOptions({ ...args, input }, { kind: 'watch' });
+  return (from, to) => prefetchTranscript({
+    input,
+    from,
+    to,
+    fetchOptions: opts.fetchOptions,
+    // 转写用的是**原始输入**（本地文件或页面地址）：页面地址在 prefetchTranscript 里
+    // 走同一个 resolveInput 落成本地媒体，下载缓存按 mediaKey 复用，不会和画面轨各下一份。
+  });
+}
+
+/**
+ * 两段式投喂的第一段：把某一段的**台词文本**拼成一条消息（不发送、不唤醒）。
+ *
+ * 谁发送由循环决定（它手里才有 ctx/sessionId 和重试）。这样这一段只做"内容"，
+ * 投递策略（什么时候推、推给谁）留在一个地方。
+ *
+ * 实测一段台词 ~400 token、画面 ~300；画面那次带 `omitTranscript` 不带词，
+ * 2 小时 24 段合计 ~17k，否则 ~26k（+50%）。
+ *
+ * @returns {Promise<{ok:boolean, text:string, lines:number, source:string}>}
+ */
+export function makeFeeder({ input, args = {} }) {
+  const transcribe = makeTranscriber({ input, args });
+  return async (from, to) => {
+    const r = await transcribe(from, to).catch(() => null);
+    const segs = Array.isArray(r?.segments) ? r.segments : [];
+    if (!r?.ok || segs.length === 0) return { ok: false, text: '', lines: 0, source: r?.source ?? 'none' };
+    // 一行一句，时间码在左：模型靠它把两边对上（画面那次只给格子时间）
+    const body = segs.slice(0, 80).map((s) => `${mmss(s.from)}  ${String(s.text ?? '').trim()}`).join('\n');
+    const more = segs.length > 80 ? `\n…还有 ${segs.length - 80} 句（这一段太长，先给前 80 句）` : '';
+    return {
+      ok: true,
+      source: r.source,
+      lines: segs.length,
+      text: `[一起看·台词] ${mmss(from)}–${mmss(to)}（画面还在建）\n${body}${more}\n`
+        + '这是**还没看到的**那一段的台词，先收着。画面到了我再给你图 + 每格时间，'
+        + '那时候不会重复这些句子 —— 按时间码把两边对上就行。不要现在就把它们念出来。',
+    };
+  };
 }
 
 /**
@@ -151,13 +205,19 @@ async function buildOnce({
     // 陪看是持续调用：让本地 ASR 活过整段，别每段都冷启动一次（实测每段多 5 s）
     asrIdleMs: size * 1000 + 30_000,
   });
+  // **台词已经单独喂过就不再重复**：字幕轨可能早就把这一段的句子推给模型了
+  // （见 watch-loop 的两段式投喂）。图这一次只给格子时间，模型按时间码把两边对上。
+  // 判据只有一处：`isFedSegment`（循环手里的 `fedTranscript`）。
+  const omitTranscript = isFedSegment(input, segStart);
   const entry = {
     png: r.sheets?.[0]?.png ?? null,
     manifest: formatManifest(r, {
       maxChars: WATCH_MANIFEST_BUDGET[detail] ?? WATCH_MANIFEST_BUDGET.med,
       maxCellChars: charsForDetail(detail),
+      omitTranscript,
     }),
     cells: r.sheets?.[0]?.cells?.length ?? 0,
+    omitTranscript,
   };
   cache.set(key, entry);
   // 每段一张 PNG，一部电影会有几十段。只留最近 8 段，别把内存吃掉。
@@ -165,11 +225,19 @@ async function buildOnce({
   return entry;
 }
 
-// 模块级：latencyNote() 需要知道"这一轮从什么时候开始"
-let tStartForNote = Date.now();
+// 模块级：latencyNote() 需要知道"这一轮从什么时候开始"（每次 runWatchPass 开头写一次）
+let tStartForNote = 0;
 
-async function latencyNote() {
-  const st = await recordLatency(Date.now() - tStartForNote);
+/**
+ * 标定值只在**真正交付**时喂一次。
+ *
+ * `recordLatency` 会把这个耗时并进 EWMA，而"还没到点"的调用也走这里 ——
+ * 那种调用只花 0.3~0.5 秒（不建图、不等待），样本一多就把平均值拉到接近 0，
+ * 正式交付的 8~12 秒反而被淹没，标定等于没做（提前量 always ≈ 0.3 秒）。
+ * 所以：交付那条路 `record: true`，其余只读。
+ */
+async function latencyNote({ record = false } = {}) {
+  const st = record ? await recordLatency(Date.now() - tStartForNote) : await loadLatency();
   // 标定完成后就不再占 token 了
   return st.samples > 3 ? '' : `\n${describeLatency(st)}`;
 }
@@ -221,10 +289,15 @@ export async function runWatchPass(args, deps) {
   const { resolved } = src;
   const { input } = src;
 
-  // 已经交付过的段：wait 模式不能把同一段反复交出来
+  // 已经交付过的段：wait 模式不能把同一段反复交出来。
+  //
+  // **`Number(null) === 0`**：被"没台词"门槛挡回去的那次交付，会把 `lastDelivered` 写成
+  // `null`；直接 `Number()` 就成了 0 秒，而第一段（from=0）正好和它相等 ——
+  // 于是 00:00 那一段永远算"已交付过"，等待醒来只回一句 "already delivered"，
+  // 图和清单再也交不出去。空值必须还是 NaN。
+  const sk = sessionKey(input);
   const state0 = await loadWatch();
-  const sk0 = sessionKey(input);
-  const lastDelivered = Number(state0[sk0]?.lastDelivered);
+  const lastDelivered = Number(state0[sk]?.lastDelivered ?? NaN);
 
 
   // ---- 0.4 / 0.5 三种替代入口：命中就直接返回，不再往下走
@@ -313,8 +386,13 @@ export async function runWatchPass(args, deps) {
   const cur = plan.segmentAt(cursor);
   const segStart = cur.from;
   const size = cur.size;
-  const d = deliveryState({ cursor, segment: segStart, size, lead });
-  const key = `${sessionKey(input)}|${segStart}`;
+  // **提前量要吃掉标定出来的那几秒**：从"开始读位置"到"这句话真出现在屏幕上"要 8~12 秒
+  // （建图 + 模型开口）。后台钟已经在 `shouldSpeak` 里加了这个偏移，但**阻塞等待这条主路没有**
+  // —— 于是同一台机器上，钟会提前说、工具调用却卡在段末，台词整体慢半拍。
+  // 文案里仍然报 `lead`（"我将在 X 说"）：提前的是"开始动手"，不是"开口"。
+  const leadEff = lead + aheadSeconds(await loadLatency());
+  const d = deliveryState({ cursor, segment: segStart, size, lead: leadEff });
+  const key = `${sk}|${segStart}`;
 
   // **返回形态只在这一处定义**。这个函数有十一个出口（读不到位置、建图失败、插话 ×2、
   // 取消、空闲、插话、已交付、没到点、已说过、交付），以前每个出口各拼一份十字段对象，
@@ -351,6 +429,18 @@ export async function runWatchPass(args, deps) {
   let builtMs = 0;
   if (!entry?.png) {
     const t0 = Date.now();
+    // **建图期间让悬浮窗里有东西在动**：第一次要把整支视频下下来 + 建分镜，20~90 秒，
+    // 而工具调用期间说不了话 —— 用户看到的就是一片沉默（"它是不是卡了"）。
+    // 只在真的慢的时候才写一句，快的段不刷屏；写完不等回执。
+    // 阈值可用 `DSH_WATCH_SLOW_BUILD_MS` 调（也是这条路径唯一的测法）。
+    const slowMs = Number(process.env.DSH_WATCH_SLOW_BUILD_MS) || 4000;
+    const slowTick = setTimeout(() => {
+      try {
+        appendChat('meta', `[一起看] 正在取 ${mmss(segStart)}–${mmss(segStart + size)} 这一段`
+          + '（要下载 + 建分镜，第一次会久一点）…', {});
+      } catch { /* 写不进流不影响建图 */ }
+    }, slowMs);
+    slowTick.unref?.();
     try {
       // **一边建图一边听插话**：建一段要 8–10 秒（带 ASR 更久），这段时间干等没意义。
       // 注意不是"掐掉它" —— 图让它继续建完（结果会落进缓存），我们先回去回应用户；
@@ -388,6 +478,8 @@ export async function runWatchPass(args, deps) {
           + 'If that is a page URL, make sure it is the video page itself (not a homepage or a search page); '
           + 'otherwise pass the direct file path or a supported link.',
       });
+    } finally {
+      clearTimeout(slowTick);
     }
     builtMs = Date.now() - t0;
   }
@@ -405,10 +497,15 @@ export async function runWatchPass(args, deps) {
   const videoDur = Number.isFinite(browserState?.dur) ? browserState.dur : null;
   const winSegs = windowFor(plan, cursor, lookahead)
     .filter((s) => videoDur === null || s.from < videoDur);
+  // **片尾要放行**：最后一段永远等不到"段末前 lead 秒" —— 片子 04:30 就完了，而交付点是
+  // 04:45（段 00:00–05:00 减 15 秒）。播完停在片尾时 `cursor` 不再前进，这一段就永远交不出去，
+  // 用户看到的是"看完了一句话没有"。所以位置到片尾（或拖到片尾）就当到点。
+  const atEnd = videoDur !== null && cursor >= videoDur - 1;
+  if (atEnd) d.due = true;
   const willWait = !d.due && args.wait === true;
   const pending = winSegs
     .filter((s) => s.from !== segStart)
-    .filter((s) => !cache.get(`${sessionKey(input)}|${s.from}`)?.png);
+    .filter((s) => !cache.get(`${sk}|${s.from}`)?.png);
   const buildOne = (s) => buildSegment({
     input, segStart: s.from, size: s.size, args, runStoryboard, formatManifest, cache,
   });
@@ -448,7 +545,7 @@ export async function runWatchPass(args, deps) {
   // **报实数，不报计划**：以前这里写的是"打算建到哪"，于是出现"说 5 分钟余量、
   // 实际只有 3 分钟"——用户一眼就看穿了。现在以缓存里真的有图为准。
   const builtWin = winSegs.filter((s) => s.from === segStart
-    || cache.get(`${sessionKey(input)}|${s.from}`)?.png);
+    || cache.get(`${sk}|${s.from}`)?.png);
   const coverTo = builtWin.length > 0 ? builtWin[builtWin.length - 1].to : segStart + size;
   const stillBuilding = winSegs.length > builtWin.length;
   const bufferHint = (winSegs.length > 1)
@@ -656,7 +753,6 @@ export async function runWatchPass(args, deps) {
 
   // ---- 4. 到点：交付（同一段不重复说）
   const st = await loadWatch();
-  const sk = sessionKey(input);
   // 旧格式是数组，新格式是 {segStart: 说得有多久了}。倒回去重看同一段时，
   // 隔了 10 分钟以上允许重说一次 —— 否则"我刚才没听清，再看一遍"就永远得不到回应。
   const rawSpoken = st[sk]?.spoken ?? {};
@@ -710,7 +806,8 @@ export async function runWatchPass(args, deps) {
     if (images.length > 0) material = await markMaterial(input, segStart, 'image');
     // 清单里带逐格转写长这样：行首缩进 + 引号。用清单判断而不是猜上游来源 ——
     // 字幕轨 / ASR / 静音 三种情况的清单文案不一样，猜错会把"没字幕"记成"有字幕"。
-    const hasTranscriptText = /^\s{2,}"/m.test(String(entry?.manifest ?? ''));
+    // `omitTranscript` 时清单里没有引号，但那一段的句子**已经单独喂过**了（见 makeFeeder）。
+    const hasTranscriptText = /^\s{2,}"/m.test(String(entry?.manifest ?? '')) || entry?.omitTranscript === true;
     if (hasTranscriptText) material = await markMaterial(input, segStart, 'transcript');
   } catch { /* 记账失败不影响交付 */ }
   const materialLine = material ? materialNote(material) : '';
@@ -792,22 +889,23 @@ export async function runWatchPass(args, deps) {
     : '';
   const recapText = recap ? `${recap}\n` : '';
 
+  // 交付指引。**每段都会重发**，所以只留硬规则：一段 20 次 × 一千多字符是纯成本，
+  // 而"节奏/循环/插话"那些属于工具契约（tool-spec 的 description 里一直有），不必重复。
   const guidance = [
-    'PRIORITY ORDER (highest first): 1) write the segment lines (`lines`), 2) answer an interjection, '
-      + '3) anything else. A delivery without lines is NOT finished.',
-    `[together-watch] The user just watched ${mmss(segStart)}–${mmss(segStart + size)} (now at ${mmss(cursor)}).`,
+    'PRIORITY: 1) write this segment\'s lines (`lines`), 2) answer an interjection, 3) anything else.',
+    'A delivery without lines is NOT finished.',
+    `[together-watch] They just watched ${mmss(segStart)}–${mmss(segStart + size)} (now at ${mmss(cursor)}).`,
     'They watched it themselves — do NOT retell the plot.',
     `**NO SPOILERS**: they are only at ${mmss(cursor)} — anything after that is still in your hands. `
       + 'Never say 接下来 / 下一分钟 / 后面会 / 正片才 / 等下注意看; write only about what is on their screen. '
-      + 'The sheet shows the whole segment because you need it to write lines, NOT as permission to narrate ahead.',
-    'Default: one sentence about what changed or what is worth noticing, then stop.',
-    'Say more only if they ask, or if something genuinely deserves one callout.',
-    'If nothing is worth saying, say almost nothing — silence is a valid answer,',
-    'and so is watching two segments without commenting at all. There is no quota to fill.',
-    'IMPORTANT: text you write in your normal reply is NOT visible in the floating window.',
-    'To say something to the user there, pass it as `say` in the same call, e.g. '
-      + 'watch_together({ segment: 60, say: "one sentence" }). It is written to the window and spoken.',
+      + 'The sheet covers the whole segment because you need it to write lines, not as permission to narrate ahead.',
+    'Default: one sentence about what changed or what is worth noticing, then stop. '
+      + 'Silence is a valid answer; there is no quota.',
+    'Your normal reply is NOT visible in the floating window — only `say` is. To say something, '
+      + 'pass it in the same call: watch_together({ segment: 60, say: "one sentence" }).',
   ].join('\n');
+
+  const latencyLine = await latencyNote({ record: true });
 
   return pass({
     speaking: true,
@@ -815,8 +913,10 @@ export async function runWatchPass(args, deps) {
     // 两者分开报：handler 用 speaking 决定要不要把台词交给声音，用 complete 判断是否推进。
     complete: hasLines,
     status: note.includes('paused') ? 'paused' : 'playing',
-    speech,
-    text: `${gate}${materialLine}${linesNote}${owedNote}${head}${waitNote}\n${recapText}${guidance}${await latencyNote()}${bufferHint}\n\n${entry.manifest}`,
+    // 只报**还没念的**：`speech` 以前是整份稿子，连刚刚被 prune 掉的过期句都在里面，
+    // 模型会以为那几句还会念（`upcoming` 才是真的会响的）。
+    speech: upcoming,
+    text: `${gate}${materialLine}${linesNote}${owedNote}${head}${waitNote}\n${recapText}${guidance}${latencyLine}${bufferHint}\n\n${entry.manifest}`,
     images,
   });
 }

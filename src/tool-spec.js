@@ -241,7 +241,8 @@ export function watchToolSpec() {
       },
       maxWaitSec: {
         type: 'number',
-        description: 'Upper bound for wait: how long this call may block (default 180, max 600).',
+        description: 'Upper bound for wait: how long this call may block. Defaults to twice the segment '
+          + 'length (600 s with the default 5-minute batch), capped at 600.',
       },
       checkCookies: {
         type: 'boolean',
@@ -319,6 +320,20 @@ export function watchToolSpec() {
         description: 'Build the look-ahead window in the background from this call (on by default). '
           + 'Set false if you want this call to touch nothing but the current batch.',
       },
+      transcriptTrack: {
+        type: 'boolean',
+        description: 'Prefetch subtitles as a second, independent track (on by default). It covers the same '
+          + 'look-ahead window but skips the pictures, so it arrives far earlier (site CC: instantly, local '
+          + 'ASR: a few seconds a segment). When it lands first the text is sent to you on its own; the picture '
+          + 'batch that follows then carries only cell times, so nothing is said twice. '
+          + 'Set false to go back to one combined delivery per segment.',
+      },
+      feedTranscriptLeadMs: {
+        type: 'number',
+        description: 'How long a prefetched subtitle block may wait for its pictures before it is sent on its '
+          + 'own, in milliseconds. Default 0 = send the text as soon as it lands. Raise it (e.g. 20000) if you '
+          + 'find the two-part delivery too chatty and would rather usually get one combined message.',
+      },
       browserPort: {
         type: 'integer',
         description: 'Per-call CDP debug port for the browser holding the video (e.g. 9333). ' +
@@ -331,6 +346,15 @@ export function watchToolSpec() {
           + 'next call. Pass `open: true` ONLY when the human explicitly asks to start again '
           + '("重新打开悬浮窗" / "接着看"). Without it, a closed window stays closed and the watch is '
           + 'over - do not keep calling this tool to bring it back.',
+      },
+      window: {
+        type: 'string',
+        enum: ['hide', 'show'],
+        description: 'Hide or bring back the floating window WITHOUT ending the watch. Use `hide` when '
+          + 'the user wants it out of the way ("把窗口藏起来" / "收起来" / "别挡着画面") - the window '
+          + 'process stays alive, the clock keeps running, lines keep being spoken, and nothing is '
+          + 'marked as hung up. `show` brings it back. This is NOT the same as closing the window: '
+          + 'closing means "I am done watching" (that still stops the watch); hiding does not.',
       },
       say: {
         type: 'string',

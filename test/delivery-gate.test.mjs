@@ -82,8 +82,42 @@ test('补上台词之后再交付 → 放行，且欠账清掉', async () => {
   }
 });
 
-test('DSH_WATCH_REQUIRE_LINES=0 时门槛关掉（老用例用来验别的行为）', async () => {
-  const dir = await mkdtemp(join(tmpdir(), 'gate3-'));
+/**
+ * 门槛挡回去的那次会把 `lastDelivered` 写成 `null`。
+ * `Number(null) === 0`，而第一段正好 from=0 —— 直接 Number() 就变成"第 0 段已交付过"，
+ * 阻塞等待醒来只回一句 "already delivered"，图和清单再也交不出去。
+ */
+test('门槛挡下之后（lastDelivered=null）：wait 到点仍然必须交付第 0 段', async () => {
+  const dir = await mkdtemp(join(tmpdir(), 'gate-null-'));
+  process.env.DSH_VIDEO_CACHE_DIR = dir;
+  delete process.env.DSH_WATCH_REQUIRE_LINES;
+  try {
+    // ① 到点但没台词 → 门槛挡下，lastDelivered 记成 null
+    const first = await runWatchPass({ input: 'a.mp4', cursor: 106, segment: 120, lead: 15 }, deps());
+    assert.equal(first.complete, false);
+
+    // ② 补上台词，再从 100 等到交付点
+    await saveLines('a.mp4', [{ from: 0, at: 100, text: '补上的这一句。' }]);
+    let pos = 100;
+    const tick = setInterval(() => { pos += 2; }, 200);
+    let r;
+    try {
+      r = await runWatchPass(
+        { input: 'a.mp4', wait: true, maxWaitSec: 15, segment: 120, lead: 15 },
+        { ...deps(), readBrowser: async () => ({ pos, dur: 600, paused: false, url: 'file:///a.mp4' }) },
+      );
+    } finally {
+      clearInterval(tick);
+    }
+    assert.equal(r.speaking, true, `到点就该交（实得 ${JSON.stringify(r.text.slice(0, 80))}）`);
+    assert.doesNotMatch(r.text, /already delivered/, 'null 不是"已交付"');
+    assert.equal(r.images.length, 1, '图和清单要交出去');
+  } finally {
+    await rm(dir, { recursive: true, force: true });
+  }
+});
+
+test('DSH_WATCH_REQUIRE_LINES=0 时门槛关掉（老用例用来验别的行为）', async () => {  const dir = await mkdtemp(join(tmpdir(), 'gate3-'));
   process.env.DSH_VIDEO_CACHE_DIR = dir;
   process.env.DSH_WATCH_REQUIRE_LINES = '0';
   try {

@@ -25,7 +25,8 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
 import { runWatchPass } from '../src/watch-run.js';
-import { readSlot, saveLines } from '../src/watch-lines.js';
+import { dueLine, readSlot, saveLines } from '../src/watch-lines.js';
+import { loadWatch, sessionKey } from '../src/watch-state.js';
 import { onSpeech } from '../src/voice.js';
 import { loopStatus, startWatchLoop, stopWatchLoop } from '../src/watch-loop.js';
 
@@ -207,6 +208,30 @@ test('视频卡住不动：钟不许按时钟外推，把后面的台词提前�
     stopWatchLoop('test');
     process.env.DSH_WATCH_BRIDGE = '0';    // 还原：这个文件默认关掉扩展通道，别污染后面的用例
     try { off?.(); } catch { /* ignore */ }
+    await rm(dir, { recursive: true, force: true });
+  }
+});
+
+/**
+ * 钟每 2 秒拍一次，每一拍都要过一遍 `dueLine`。以前它用一个**跨段共享**的 `dirty`：
+ * 一段 pin 过之后，后面每一段都会被重写一遍 —— 等于每 2 秒写一次 watch.json，而内容没变。
+ */
+test('dueLine 只重写真改过的那一段，不顺手把别的段写一遍', async () => {
+  const dir = await mkdtemp(join(tmpdir(), 'dirty-'));
+  process.env.DSH_VIDEO_CACHE_DIR = dir;
+  try {
+    // 段 60 的裸台词会被 pinTimes 钉死（= 这一段改过）；段 61 不动，也不该被重写
+    await saveLines('dirty.mp4', [{ from: 60, text: '没写 at 的这一句' }]);
+    await saveLines('dirty.mp4', [{ from: 61, at: 61, text: '下一段的一句' }]);
+    const sk = sessionKey('dirty.mp4');
+    await new Promise((r) => setTimeout(r, 10));            // 让两次 savedAt 的毫秒数分得开
+    const before = (await loadWatch())[sk].lines['61'].savedAt;
+
+    await dueLine('dirty.mp4', 62, { size: 120, sizeOf: () => 120 });
+
+    const after = (await loadWatch())[sk].lines['61'].savedAt;
+    assert.equal(after, before, '第二段没有改动，就不该被重写');
+  } finally {
     await rm(dir, { recursive: true, force: true });
   }
 });

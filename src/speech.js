@@ -91,14 +91,52 @@ export function lagForAt(segments, at) {
  *
  * `dueLine` 每秒会被叫好几次，每次都遍历两百条字幕没必要 —— 而且同一批台词
  * 的 `at` 就固定那么几个，缓存起来几乎零成本。
+ *
+ * 两层 memo：
+ *   · 外层按**数组身份**（WeakMap）—— 字幕缓存（`cachedCues`）是同一份对象，
+ *     所以整段会话只排一次序；没有这一层，每次重建的 `memo` 都是空的，一次也命不中。
+ *   · 内层按 `at`（0.1 秒粒度）。
+ * 查找本身是二分，不是线性扫：两小时片子几千条字幕，乘以"每拍每句问一次"就很可观。
  */
+const lagFns = new WeakMap();
+
 export function makeLagFn(segments) {
+  if (!Array.isArray(segments)) return () => 0;
+  const cached = lagFns.get(segments);
+  if (cached) return cached;
+
+  const sorted = segments
+    .map((s) => ({ from: Number(s?.from), text: String(s?.text ?? '') }))
+    .filter((s) => Number.isFinite(s.from))
+    .sort((a, b) => a.from - b.from);
   const memo = new Map();
-  return (at) => {
+
+  const fn = (at) => {
     const t = Number(at);
     if (!Number.isFinite(t)) return 0;
     const key = Math.round(t * 10) / 10;
-    if (!memo.has(key)) memo.set(key, lagForAt(segments, key));
+    if (!memo.has(key)) memo.set(key, lagNear(sorted, key));
     return memo.get(key);
   };
+  lagFns.set(segments, fn);
+  return fn;
+}
+
+/**
+ * 在**已排序**的字幕里找离 `t` 最近、且不超过容差的那一条，返回它该延多久。
+ * 平手取更早那条（和原来的线性扫、严格 `<` 的结果一致）。
+ */
+function lagNear(sorted, t, toleranceSec = 4) {
+  let lo = 0;
+  let hi = sorted.length;
+  while (lo < hi) {                       // 第一个 from >= t
+    const mid = (lo + hi) >> 1;
+    if (sorted[mid].from < t) lo = mid + 1; else hi = mid;
+  }
+  const a = sorted[lo - 1];
+  const b = sorted[lo];
+  const dA = a ? Math.abs(a.from - t) : Infinity;
+  const dB = b ? Math.abs(b.from - t) : Infinity;
+  const pick = dA <= dB ? a : b;
+  return Math.min(dA, dB) <= toleranceSec && pick ? speechLag(pick.text.length) : 0;
 }

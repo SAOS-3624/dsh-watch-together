@@ -54,6 +54,19 @@ test('换了批次表 → 重开（这是有意的：新节奏要重新排）', 
   stopWatchLoop('done');
 });
 
+test('同一支片子的两种写法（带追踪参数 / 干净链接）不该判成换源', () => {
+  stopWatchLoop('t');
+  const clean = 'https://www.bilibili.com/video/BV1g3xN6hEuw/';
+  const tracked = 'https://www.bilibili.com/video/BV1g3xN6hEuw/?trackid=123&spm_id_from=333.788';
+  startWatchLoop({ ...base, input: clean, cursor: 30 });
+  const b = startWatchLoop({ ...base, input: tracked, cursor: 35 });
+  // 扩展报的是带参数的完整地址、模型手里是干净链接；按字符串比就会每次重开一场，
+  // spoken 被清空 → 已经交付过的段又被叫醒一次。
+  assert.equal(b.resumed, true, '同一个 sessionKey 就该续跑');
+  assert.equal(loopStatus().input, clean, '源没变');
+  stopWatchLoop('done');
+});
+
 test('叫不醒要能查出来：reason=wake-failed，且记下原因', async () => {
   stopWatchLoop('t');
   const deps = {
