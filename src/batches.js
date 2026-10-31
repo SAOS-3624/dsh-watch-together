@@ -39,17 +39,42 @@ export function makePlan({ segment = DEFAULT_SEGMENT, ramp } = {}) {
     ? source.map((x) => Number(x)).filter((x) => Number.isFinite(x) && x > 0)
     : [];
 
-  const sizeAt = (index) => (index < steps.length ? steps[index] : steady);
+  const sizeAt = (index) => {
+    const i = Math.floor(Number(index));
+    return Number.isFinite(i) && i >= 0 && i < steps.length ? steps[i] : steady;
+  };
 
-  /** 前 n 段的起点（含第 n 段起点，便于取边界） */
-  const starts = [0];
-  for (let i = 0; i < 512; i += 1) starts.push(starts[i] + sizeAt(i));
+  // ramp 阶段用前缀和；稳定阶段是线性的，按公式取起点，不再把整条时间轴展开成数组。
+  // 旧实现固定只算 513 个起点：10 小时、1 分钟一段（600 段）之后，indexAt 就永远
+  // 停在 512，segmentAt 会把后面所有的位置都报成 05:07 左右那一段。
+  const prefix = [0];
+  for (let i = 0; i < steps.length; i += 1) prefix.push(prefix[i] + steps[i]);
+  const rampEnd = prefix[steps.length];
+
+  const startAt = (index) => {
+    const i = Math.floor(Number(index));
+    if (!Number.isFinite(i) || i <= 0) return 0;
+    if (i < steps.length) return prefix[i];
+    return rampEnd + (i - steps.length) * steady;
+  };
+
+  /** 前 513 段的起点（保留给老调用方查看；真正的边界由 startAt 计算） */
+  const starts = Array.from({ length: 513 }, (_, i) => startAt(i));
 
   const indexAt = (pos) => {
     const p = Math.max(0, Number(pos) || 0);
-    let i = 0;
-    while (i < starts.length - 1 && starts[i + 1] <= p) i += 1;
-    return i;
+    if (steps.length > 0 && p < rampEnd) {
+      // 找最后一个 from <= p 的 ramp 段。
+      let lo = 0;
+      let hi = steps.length - 1;
+      while (lo < hi) {
+        const mid = Math.ceil((lo + hi + 1) / 2);
+        if (prefix[mid] <= p) lo = mid;
+        else hi = mid - 1;
+      }
+      return lo;
+    }
+    return steps.length + Math.floor((p - rampEnd) / steady);
   };
 
   return {
@@ -61,7 +86,9 @@ export function makePlan({ segment = DEFAULT_SEGMENT, ramp } = {}) {
     /** 覆盖 pos 的那一段 */
     segmentAt(pos) {
       const i = indexAt(pos);
-      return { index: i, from: starts[i], to: starts[i] + sizeAt(i), size: sizeAt(i) };
+      const from = startAt(i);
+      const size = sizeAt(i);
+      return { index: i, from, to: from + size, size };
     },
     /**
      * 从第 index 段开始，往后取 count 段。
@@ -73,14 +100,16 @@ export function makePlan({ segment = DEFAULT_SEGMENT, ramp } = {}) {
      */
     from(index, count) {
       const out = [];
-      for (let k = 0; k < count; k += 1) {
-        const i = index + k;
-        out.push({
-          index: i,
-          from: starts[i],
-          to: starts[i] + sizeAt(i),
-          size: sizeAt(i),
-        });
+      const start = Number(index);
+      const n = Number(count);
+      if (!Number.isFinite(start) || !Number.isFinite(n) || n <= 0) return out;
+      const base = Math.max(0, Math.floor(start));
+      const take = Math.floor(n);
+      for (let k = 0; k < take; k += 1) {
+        const i = base + k;
+        const from = startAt(i);
+        const size = sizeAt(i);
+        out.push({ index: i, from, to: from + size, size });
       }
       return out;
     },
