@@ -11,7 +11,7 @@
  */
 
 import { recallSegments } from 'dsh-video-storyboard/locate';
-import { makeLagFn } from './speech.js';
+import { makeLagFn, speechLag } from './speech.js';
 import { loadWatch, saveWatch, sessionKey } from './watch-state.js';
 
 /**
@@ -171,7 +171,7 @@ export async function consumeLine(input, from, { env = process.env } = {}) {
  * @param {number} pos  当前播放位置（秒）
  * @param {{ size?: number, lateSec?: number }} [o] 当前段长（给没写 at 的台词分位）、迟到宽限
  */
-export async function dueLine(input, pos, { size = 0, lateSec = 3, env = process.env } = {}) {
+export async function dueLine(input, pos, { size = 0, lateSec = 3, lagSec = null, env = process.env } = {}) {
   const now = Number(pos);
   if (!Number.isFinite(now)) return null;
   const st = await loadWatch(env);
@@ -179,11 +179,23 @@ export async function dueLine(input, pos, { size = 0, lateSec = 3, env = process
   const lines = st[sk]?.lines;
   if (!lines) return null;
 
-  // 台词要往后挪多久：`at` 对齐的是"这句话开始说的时刻"，直接开口会跟原声抢话。
-  // 字幕在 locate 的记忆层里（跑分镜时顺手记下的），拿不到就退化成不延迟。
+  // 台词要往后挪多久：`at` 对齐的是"这句字幕**出现**的时刻"，TTS 一开口就和原声抢话。
+  // 优先用 locate 记忆层里那份字幕（`speechLag(原文长度)`）；**拿不到就按台词自己的长度算**
+  // —— 这是 2026-10-31 用户实报"台词快了一点"的根因：locate 的 in-memory 记忆在新进程里
+  // 常常是空的（跑分镜的和念台词的未必同一个进程），于是 lag 恒为 0，一句不差地卡在 `at` 上。
   const lagOf = makeLagFn(recallSegments(input) ?? []);
+  const lagFor = (at, text) => {
+    // 测试要确定性：显式给 `lagSec`（通常 0）就直接用它，不查字幕也不按长度估
+    if (Number.isFinite(lagSec)) return Number(lagSec);
+    const fromSubs = lagOf(at);
+    if (fromSubs > 0) return fromSubs;
+    // 回退：按这一句自己的字数估（越长的句子，原声说完需要越久）
+    return speechLag(String(text ?? '').length);
+  };
   // 真正可以开口的时刻。没写 at 的老台词不参与（它们按"进入这一段"处理）。
-  const dueAt = (at) => (at === null || !Number.isFinite(Number(at)) ? -Infinity : Number(at) + lagOf(at));
+  const dueAt = (at, text) => (at === null || !Number.isFinite(Number(at))
+    ? -Infinity
+    : Number(at) + lagFor(at, text));
 
   let best = null;
   let dirty = false;
@@ -203,14 +215,14 @@ export async function dueLine(input, pos, { size = 0, lateSec = 3, env = process
     // **迟到就作废**：位置跳过去了（拖进度条 / 快进），那句描述的画面已经不在银幕上，
     // 补念出来只会和画面对不上。停顿几秒内的正常延迟仍然会念。
     // 判断用"该开口的时刻"（at + 后延），否则加了延以后正常的一句也会被当成迟到删掉。
-    const kept = items.filter((x) => !(dueAt(x.at) < now - lateSec));
+    const kept = items.filter((x) => !(dueAt(x.at, x.text) < now - lateSec));
     if (kept.length !== items.length) {
       items = kept;
       dirty = true;
     }
     if (dirty) writeSlot(lines, from, items);
     items.forEach((item, i) => {
-      if (dueAt(item.at) > now) return;
+      if (dueAt(item.at, item.text) > now) return;
       if (!best || item.at < best.at) best = { from, index: i, at: item.at, text: item.text };
     });
   }
