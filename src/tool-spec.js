@@ -316,7 +316,28 @@ export function watchToolSpec() {
       transcript: {
         type: 'string',
         enum: ['auto', 'off'],
-        description: 'auto (default) transcribes each segment; off skips speech entirely.',
+        description: 'auto (default) transcribes each segment; off skips speech entirely. '
+          + 'This is about the PICTURE delivery. To fetch the sentences on their own, use `transcriptOnly`.',
+      },
+      transcriptOnly: {
+        type: 'boolean',
+        description: 'Return ONLY the sentences with their real `at` seconds for one window — no image, no '
+          + 'position read. Use it when the picture and the subtitles come back separately. Needs `input` + '
+          + '`from` (plus `size`, `max`). It records that the transcript half arrived, so the next delivery '
+          + 'can say "material is complete, write the lines now".',
+      },
+      from: {
+        type: 'number',
+        description: 'Window start in seconds — used by `transcript: true` and `lines` bookkeeping.',
+      },
+      size: {
+        type: 'number',
+        description: 'Window length in seconds for `transcript: true` (defaults to `segment`, then 120).',
+      },
+      max: {
+        type: 'number',
+        description: 'Cap on how many transcript sentences `transcript: true` returns (default 10). '
+          + 'Keeps the reply small when a window is dense.',
       },
       cookies: { type: 'string', description: 'cookies.txt path for login-gated sources.' },
       allowAnonymous: { type: 'boolean', description: 'Allow anonymous fetches for links.' },
@@ -367,6 +388,14 @@ export function validateWatchArgs(args) {
   if (args?.browserPort !== undefined
     && (!Number.isInteger(args.browserPort) || args.browserPort < 1 || args.browserPort > 65535)) {
     problems.push('browserPort must be an integer 1..65535');
+  }
+  // transcript 只管"画面那一次带不带转写"；单独取字幕用 transcriptOnly。
+  if (typeof args?.transcript === 'string' && !['auto', 'off'].includes(args.transcript)) {
+    problems.push("transcript must be 'auto' or 'off' (use transcriptOnly: true to fetch sentences only)");
+  }
+  if (args?.transcriptOnly === true) {
+    if (typeof args?.input !== 'string' || args.input.trim() === '') problems.push('transcriptOnly: true needs input');
+    if (!Number.isFinite(Number(args?.from))) problems.push('transcriptOnly: true needs from (window start in seconds)');
   }
   if (args?.loop !== undefined && typeof args.loop !== 'boolean') {
     problems.push('loop must be a boolean');

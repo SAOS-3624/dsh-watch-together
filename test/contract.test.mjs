@@ -93,6 +93,14 @@ test('contract: watch_together schema 暴露文档里写了的 browserPort / loo
   // stop 是 stopLoop 的别名：用户说"停止一起看"时模型会敲 stop
   assert.equal(spec.parameters.stop.type, 'boolean');
   assert.deepEqual(validateWatchArgs({ stop: true }), []);
+  // 图与字幕分开返回：`transcriptOnly` 只给句子（+真实秒数），必须带 input/from
+  assert.equal(spec.parameters.transcriptOnly.type, 'boolean');
+  assert.equal(spec.parameters.from.type, 'number');
+  assert.equal(spec.parameters.size.type, 'number');
+  assert.deepEqual(validateWatchArgs({ transcriptOnly: true, input: 'u', from: 360 }), []);
+  assert.ok(validateWatchArgs({ transcriptOnly: true, from: 360 }).length > 0, '缺 input 要拦');
+  assert.ok(validateWatchArgs({ transcriptOnly: true, input: 'u' }).length > 0, '缺 from 要拦');
+  assert.ok(validateWatchArgs({ transcript: 'bogus' }).length > 0, 'transcript 只认 auto/off');
   // 语音参数已经从核心移除
   for (const gone of ['tts', 'voice', 'rate', 'listVoices', 'speakAloud', 'text']) {
     assert.equal(spec.parameters[gone], undefined, `${gone} 应该已从 watch_together 移除`);

@@ -337,6 +337,34 @@ node bin/watch.mjs cue '[[字幕from,"台词"]]'
 
 `node bin/watch.mjs help` 就是完整用法。
 
+## 素材：图和字幕是两半，缺一不可
+
+台词来自"看到什么"＋"听到什么"，所以一段的素材有两半，工具会记账：
+
+| 一半 | 从哪来 | 记在过去哪 |
+|---|---|---|
+| `image` | storyboard 九宫格（一次交付给一张） | `watch.json` 的 `material[段起点].image` |
+| `transcript` | 句子 + 每句**真实起始秒**（字幕轨或 ASR） | `material[段起点].transcript` |
+
+两半都交出去过，交付结果里就会出现：
+
+```
+[素材] 图 ✔ 字幕 ✔ —— 两半都到了，现在写台词（`lines`）。
+```
+
+缺一半时它会直接写出下一步该调什么：
+
+```
+[素材] 图 ✔ 字幕 ✘ —— 句子的真实秒数还没有，先取字幕：
+  watch_together({ transcriptOnly: true, input: <同一个 input>, from: <段起点>, size: <段长> })
+```
+
+`transcriptOnly: true` 就是"**图与字幕分开返回**"那个开关：只给句子和秒数、不出图、不读播放位置。
+命令行等价物是 `node bin/lines.mjs scan`（读的是同一份字幕缓存）。
+
+记住口径：它只记"我交出去过什么"，不假装能验证"模型有没有看"——
+但没交出去过的东西，不会被当成素材用。
+
 ## 写台词的两条路（省 token）
 
 写一段台词的代价，全在"看图"上：一张 storyboard 400~700 vision token。
@@ -359,8 +387,8 @@ node bin/lines.mjs cues --input <url> --from 180 --size 60   # 原始字幕，�
 字幕会缓存在 `<cache>/subs-<sessionKey>.json`，同一支片子只抓一次；
 `--refresh` 强制重抓，`--quiet` 关掉头部那行说明。
 
-**代价对比（每段）**：看图写 ≈ 1,200~1,900 token，`scan` + `set` ≈ 300 token，
-`auto` ≈ 0（脚本自己挑）。剧情片别用 `auto` —— 它只会把字幕复述一遍。
+**代价对比（每段）**：看图写 ≈ 1,200~1,900 token，`scan`（只看候选句）+ `set` ≈ 300 token，
+`auto` ≈ 0（脚本自己挑，**应急用**）。`auto` 只会把字幕复述一遍，它的定位是「这段我懒得管」，不是默认路径 —— 正常还是看图 + 字幕写人话。
 
 ## 它不是全片概览
 

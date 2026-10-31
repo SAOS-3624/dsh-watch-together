@@ -17,10 +17,13 @@
 
 import { configuredPort, probeBrowser } from 'dsh-video-storyboard/browser-time';
 import { checkBiliLogin, fetchRemoteSubtitles } from 'dsh-video-storyboard/subtitles';
+import { loadCues, sentencesBetween } from './lines-util.js';
+import { markMaterial, materialNote } from './watch-material.js';
 import { controllerOf, wakeSession } from './timer.js';
 import { loopStatus, stopWatchLoop } from './watch-loop.js';
 import { appendAssistantSay } from './chat.js';
 import { lastSpeech } from './voice.js';
+import { mmss } from './time.js';
 
 export async function runWatchAction(args, { ctx = null, sessionId = null, browserPort } = {}) {
   // 模型插话时说的那一句：写进统一流 + 交给声音。不占图片、不等位置，所以排在所有单发命令最前面。
@@ -32,6 +35,42 @@ export async function runWatchAction(args, { ctx = null, sessionId = null, brows
   // `stop` 是别名：用户说"停止一起看"时，模型第一反应就是敲 stop
   if (args.stopLoop === true || args.stop === true) {
     return { text: JSON.stringify(stopWatchLoop('requested')), images: [] };
+  }
+
+  // **只取字幕**：图和字幕要拆开返回时走这条（`transcript: true`）。
+  // 台词需要的是"句子 + 它的真实秒数"，两样字幕里都有；图另一次给。
+  // 这里顺带记下"字幕这一半已经交到模型手里了"，交付时才敢说"素材齐了，写台词"。
+  if (args.transcriptOnly === true || args.transcript === true) {
+    const input = typeof args.input === 'string' ? args.input : '';
+    if (!input) return { text: '[transcriptOnly] 需要 `input`（视频链接或路径）', images: [] };
+    const size = Number(args.size) > 0
+      ? Number(args.size)
+      : (Number(args.segment) > 0 ? Number(args.segment) : 120);
+    const from = Number.isFinite(Number(args.from)) ? Number(args.from) : null;
+    if (from === null) {
+      return {
+        text: '[transcriptOnly] 需要 `from`（这一段从第几秒开始）。不知道就先用 statusOnly 看当前段。',
+        images: [],
+      };
+    }
+    const cuesRes = await loadCues(input).catch((e) => ({ ok: false, reason: String(e?.message ?? e) }));
+    if (!cuesRes.ok) {
+      return {
+        text: `[transcriptOnly] 拿不到字幕（${cuesRes.reason}）。`
+          + '那就用带图交付里每格下面那行转写 —— 它和这里是同一批句子。别凭印象写 `at`。',
+        images: [],
+      };
+    }
+    const max = Number(args.max) > 0 ? Number(args.max) : 10;
+    const sents = sentencesBetween(cuesRes.cues, from, from + size).slice(0, max);
+    const mat = await markMaterial(input, from, 'transcript').catch(() => null);
+    const body = sents.map((s) => `${s.at.toFixed(1)}\t${s.text}`).join('\n');
+    return {
+      text: `段 ${mmss(from)}–${mmss(from + size)}｜字幕 ${sents.length} 句（每行：秒数 + 句子）\n${body}`
+        + (mat ? materialNote(mat) : '')
+        + `\n写台词：\`watch_together({ lines: [{ from: ${from}, at: <上面那个秒数>, text: "…" }] })\``,
+      images: [],
+    };
   }
 
   // 只看钟的状态，不读进度、不出图 —— 排查"它为什么不说话"时用。

@@ -22,6 +22,7 @@ import {
   sessionKey, WATCH_LEAD,
 } from './watch.js';
 import { floatingWindowAlive } from './floating-window.js';
+import { markMaterial, materialNote, materialState } from './watch-material.js';
 import { speechEvents } from './voice.js';
 import { appendSpoken } from './chat.js';
 import { describeLatency, recordLatency } from './latency.js';
@@ -621,6 +622,22 @@ export async function runWatchPass(args, deps) {
   await saveWatch(st);
 
   const images = entry?.png ? [await saveImage({ data: entry.png, name: `watch-${segStart}.png` })] : [];
+
+  // ---- 素材账本：把"这次交出了哪一半"记下来
+  //
+  // 台词要两半素材才写得出来：**图**（画面发生了什么）+ **字幕**（句子和它的真实秒数）。
+  // 以前两半在同一次返回里；现在允许拆开（`transcript: true` 单独取字幕），
+  // 所以必须显式记账 —— 结果里才敢说"现在该写台词了"，也才知道缺哪一半。
+  let material = await materialState(input, segStart).catch(() => null);
+  try {
+    if (images.length > 0) material = await markMaterial(input, segStart, 'image');
+    // 清单里带逐格转写长这样：行首缩进 + 引号。用清单判断而不是猜上游来源 ——
+    // 字幕轨 / ASR / 静音 三种情况的清单文案不一样，猜错会把"没字幕"记成"有字幕"。
+    const hasTranscriptText = /^\s{2,}"/m.test(String(entry?.manifest ?? ''));
+    if (hasTranscriptText) material = await markMaterial(input, segStart, 'transcript');
+  } catch { /* 记账失败不影响交付 */ }
+  const materialLine = material ? materialNote(material) : '';
+
   // **文字流那一半**：这一段的稿子连同 `at` 一起交出去，谁接了声音谁就能照着念。
   // 核心自己不发声，也不因此多加载任何东西（见 voice.js）。
   const speech = speechEvents(segLines, { fallbackAt: segStart, segment: segStart });
@@ -671,7 +688,7 @@ export async function runWatchPass(args, deps) {
     complete: hasLines,
     status: note.includes('paused') ? 'paused' : 'playing',
     speech,
-    text: `${gate}${owedNote}${head}${waitNote}\n${guidance}${await latencyNote()}${bufferHint}\n\n${entry.manifest}`,
+    text: `${gate}${materialLine}${owedNote}${head}${waitNote}\n${guidance}${await latencyNote()}${bufferHint}\n\n${entry.manifest}`,
     images,
   });
 }
