@@ -102,16 +102,13 @@ export function attachSpeechToChat({ env = process.env, onEntry = null, fallback
    * `emitSpeech` 会另给一个序号，拿 `seq` 去等就永远等不到自己那一句（而兜底会把字又摆一遍）。
    * `at` 是这句在时间轴上的位置，配上正文就够唯一了。
    */
-  const keyOf = (e) => `${e?.at}|${String(e?.text ?? '')}`;
   /** 等声音开口的那几条：`key → 兜底定时器` */
   const waiting = new Map();
-  /** 已经摆过字的 `key`（兜底摆过一次之后 `spoken` 再到，不能摆第二遍） */
-  const written = new Set();
 
   const write = (e) => {
     const entry = appendChat('line', e.text, { t: e.at, say: true }, env);
-    written.add(keyOf(e));                  // 只留最近的一小段：这是防重，不是账本
-    if (written.size > 500) written.clear();
+    writtenKeys.add(speechKey(e.at, e.text));   // 只留最近的一小段：这是防重，不是账本
+    if (writtenKeys.size > 500) writtenKeys.clear();
     try { onEntry?.(entry); } catch { /* 展示层的事，别影响写盘 */ }
   };
 
@@ -121,27 +118,48 @@ export function attachSpeechToChat({ env = process.env, onEntry = null, fallback
     if (e.state !== 'due' && e.state !== 'spoken') return;
     const text = String(e.text ?? '').trim();
     if (!text) return;
-    const key = keyOf({ at: e.at, text });
+    const key = speechKey(e.at, text);
 
     if (e.state === 'spoken') {
       const timer = waiting.get(key);
       if (timer) { clearTimeout(timer); waiting.delete(key); }
-      if (written.has(key)) return;          // 兜底已经摆过字了
+      if (writtenKeys.has(key)) return;       // 兜底/写盘那一步已经摆过字了
       write({ at: e.at, text });
       return;
     }
 
     // `due`：没人会出声就直接写 —— 零依赖路径不能因为等不到 `spoken` 而变哑
     if (speechSubscribers() === 0) { write({ at: e.at, text }); return; }
-    if (waiting.has(key) || written.has(key)) return;
+    if (waiting.has(key) || writtenKeys.has(key)) return;
     const timer = setTimeout(() => {
       waiting.delete(key);
-      if (written.has(key)) return;
+      if (writtenKeys.has(key)) return;
       write({ at: e.at, text });             // 适配器没上报：宁可早一点，也别把字吞掉
     }, waitMs);
     timer.unref?.();
     waiting.set(key, timer);
   }, { voice: false });
+}
+
+/**
+ * 已经写进流的句子（`at|text`）—— **跨所有写盘路径**共用一个集合。
+ *
+ * 为什么它在模块级：`appendSpoken()`（写盘的人）和 `attachSpeechToChat()`（展示层订阅者）
+ * 必须看到同一份账。以前 `written` 只在订阅者闭包里，而 `appendSpoken` 没法登记自己
+ * 刚写过的那句，于是：`say` 那条在 `due` 时被 `origin:'chat'` 挡掉、**不出字**；
+ * 一会儿声音适配器发来 `spoken`（没有 origin），订阅者认不出这句已经写过了，
+ * 就再写一条 —— 悬浮窗里同一句话出现两遍，只念一遍（2026-10-31 实报）。
+ */
+const writtenKeys = new Set();
+
+/** 一句在时间轴上的唯一标识：`at|text`（`at` 可能为 null，配正文也够） */
+function speechKey(at, text) {
+  return `${Number.isFinite(Number(at)) ? Number(at) : 'null'}|${String(text ?? '')}`;
+}
+
+/** 这句是不是已经写进流了 */
+export function wasWritten(at, text) {
+  return writtenKeys.has(speechKey(at, text));
 }
 
 /**
@@ -167,6 +185,9 @@ export function appendSpoken(role, text, { t = null, env = process.env, speak = 
   const clean = String(text ?? '').trim();
   if (!clean) return null;
   const entry = appendChat(role, clean, { t, say: speak }, env);
+  // **登记**：这句已经在流里了。之后声音适配器发来的 `spoken`（没有 origin）看到这条就不会再写一遍。
+  writtenKeys.add(speechKey(t, clean));
+  if (writtenKeys.size > 500) writtenKeys.clear();
   if (speak) emitSpeech({ at: t, text: clean, state: 'due', origin: 'chat' });
   return entry;
 }

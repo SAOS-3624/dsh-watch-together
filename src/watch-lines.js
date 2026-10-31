@@ -172,6 +172,54 @@ export async function consumeLine(input, from, { env = process.env } = {}) {
  * @param {number} pos  当前播放位置（秒）
  * @param {{ size?: number, lateSec?: number }} [o] 当前段长（给没写 at 的台词分位）、迟到宽限
  */
+
+/**
+ * 给"没写 `at`"的台词补上时刻。
+ *
+ * 以前是**均匀铺开**（`from + i*size/n`）：三段词就是 0/40/80 秒。
+ * 问题是画面里的句子不会按这个节奏出现 —— 那几句往往比对应画面早十几二十秒，
+ * 用户看到的就是"台词比画面早"（2026-10-31 实报，截图里标签 01:51 / 02:39 都在画面前面）。
+ *
+ * 现在优先**贴着真实句子起点**：字幕（CC 或 ASR 的时间码）里这一段的句子起点，
+ * 按顺序分给各句；分完还有剩，才退回均匀铺开。
+ *
+ * @param {Array<{at:number|null,text:string}>} items
+ * @param {number} from 段起点（秒）
+ * @param {number} size 段长（秒）
+ * @param {Array<{from:number,to:number,text:string}>} cues 这一段附近的时间码
+ */
+export function pinTimes(items, from, size, cues = []) {
+  const end = from + size;
+  const starts = (Array.isArray(cues) ? cues : [])
+    .map((c) => Number(c?.from))
+    .filter((t) => Number.isFinite(t) && t >= from - 0.5 && t < end)
+    .sort((a, b) => a - b);
+
+  const n = items.length;
+  const out = [];
+  let cursor = from;
+  let pi = 0;
+  for (let i = 0; i < n; i++) {
+    const it = items[i];
+    if (it?.at !== null && Number.isFinite(Number(it?.at))) {
+      out.push(it);
+      cursor = Math.max(cursor, Number(it.at) + 1);
+      continue;
+    }
+    // 找下一个还没用过的句子起点
+    while (pi < starts.length && starts[pi] <= cursor) pi += 1;
+    if (pi < starts.length) {
+      out.push({ ...it, at: starts[pi] });
+      cursor = starts[pi] + 1;
+      pi += 1;
+    } else {
+      // 没有字幕可用：退回均匀铺开（至少不会全部挤在段首）
+      out.push({ ...it, at: from + (i * size) / n });
+    }
+  }
+  return out;
+}
+
 export async function dueLine(input, pos, { size = 0, lateSec = 3, lagSec = null, env = process.env } = {}) {
   const now = Number(pos);
   if (!Number.isFinite(now)) return null;
@@ -213,8 +261,7 @@ export async function dueLine(input, pos, { size = 0, lateSec = 3, lagSec = null
     // 不能每次读都现算：念掉一条之后队列长度变了，后面几条的时刻会跟着往前跳
     // （实测：四句 60 秒的稿子，念掉第一句后第二句的时刻从 135 变成 120，于是连珠炮）。
     if (size > 0 && items.some((x) => x.at === null)) {
-      const n = items.length;
-      items = items.map((x, i) => (x.at === null ? { ...x, at: from + (i * size) / n } : x));
+      items = pinTimes(items, from, size, subs);
       dirty = true;
     }
     // **迟到就作废**：位置跳过去了（拖进度条 / 快进），那句描述的画面已经不在银幕上，
