@@ -34,6 +34,7 @@ import { boardOptions, charsForDetail } from 'dsh-video-storyboard/board';
 import { mmss } from './time.js';
 import { saveLines } from './watch.js';
 import { pinTimes } from './watch-lines.js';
+import { recapFor, recapOptions } from './recap.js';
 import { cachedCues } from './lines-util.js';
 import { describeBrowser, readPositionOrNull } from './watch-browser.js';
 import { resolveWatchSource } from './watch-source.js';
@@ -781,6 +782,16 @@ export async function runWatchPass(args, deps) {
     ? `\n[欠台词] 还有这些段没有台词：${owed.map((s) => mmss(s)).join('、')} —— 有空就补上。`
     : '';
 
+  // 长视频的短前情：默认关闭，显式开启后只读已经看过的上一两段字幕原句。
+  // 只读缓存、只取少量句子；没有素材就是空串，不增加网络/ASR。
+  const recapCfg = recapOptions({ args });
+  const recap = recapCfg.enabled
+    ? await recapFor(input, {
+      plan, segStart, maxSegments: recapCfg.maxSegments, maxChars: recapCfg.maxChars,
+    }).catch(() => '')
+    : '';
+  const recapText = recap ? `${recap}\n` : '';
+
   const guidance = [
     'PRIORITY ORDER (highest first): 1) write the segment lines (`lines`), 2) answer an interjection, '
       + '3) anything else. A delivery without lines is NOT finished.',
@@ -805,7 +816,7 @@ export async function runWatchPass(args, deps) {
     complete: hasLines,
     status: note.includes('paused') ? 'paused' : 'playing',
     speech,
-    text: `${gate}${materialLine}${linesNote}${owedNote}${head}${waitNote}\n${guidance}${await latencyNote()}${bufferHint}\n\n${entry.manifest}`,
+    text: `${gate}${materialLine}${linesNote}${owedNote}${head}${waitNote}\n${recapText}${guidance}${await latencyNote()}${bufferHint}\n\n${entry.manifest}`,
     images,
   });
 }
