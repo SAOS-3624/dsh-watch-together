@@ -57,6 +57,8 @@
   },
   "scripts": {
     "test": "node --test",
+    "pretest": "node scripts/sync-dep.mjs",
+    "sync:dep": "node scripts/sync-dep.mjs",
     "prepublishOnly": "npm test",
     "check": "node scripts/check-syntax.mjs",
     "sim": "node scripts/watch-sim.mjs",

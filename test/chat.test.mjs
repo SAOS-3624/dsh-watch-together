@@ -128,6 +128,20 @@ test('插话通道不受影响：makeChatWatcher 只认 role=user', async () => 
   });
 });
 
+test('一批里有多条用户消息：只消费到被报告的那条，剩下的下次接着报', async () => {
+  __resetSpeech();
+  await withCache(async (env) => {
+    const poll = makeChatWatcher(env);
+    // 模型思考那段时间用户连着说了两句，下一次 poll 一次全看见了
+    appendChat('user', '先说的', {}, env);
+    appendChat('user', '后说的', {}, env);
+
+    assert.equal(poll()?.text, '先说的');
+    assert.equal(poll()?.text, '后说的', '同批的第二条不该被整批标成已读而丢掉');
+    assert.equal(poll(), null);
+  });
+});
+
 test('空的插话不写、不广播', async () => {
   __resetSpeech();
   await withCache(async (env) => {

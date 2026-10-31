@@ -115,12 +115,12 @@ export async function speak(text, {
 /* ------------------------------------------------------- TTS 配置 */
 
 /**
- * 只读 `~/.dsh/tts.json` 里的音色偏好。
+ * 只读 `~/.dsh/tts.json` 里的音色偏好（`voice` / `rate` / `edgeTts`）。
  *
- * 这里原本还有一条"调 DSH 那个 tts 插件 HTTP 接口"的路（`dshTtsAlive` / `speakViaDsh`），
- * 已经删掉：DSH 每次启动都换 webServer 端口（实测 4310 → 37465 → 10627），
- * 写死 endpoint 的调用永远连不上；而且那个端点回 184 字节、既不是音频也不是 url，
- * 本来就不是给外部进程用的。留着只会让人以为"配一下就能用"。
+ * 这里原本还有一条"调 DSH 那个 tts 插件的 HTTP 接口"的路（`dshTtsAlive` / `speakViaDsh`），
+ * 已经删掉：DSH 每次启动都换 webServer 端口，写死 endpoint 的调用永远连不上；
+ * 而且那个端口回的是 184 字节二进制，既不是音频也不是 url —— 它本来就不是给外部进程用的。
+ * 所以 **`tts.json` 不需要、也不该有 `endpoint` 这一项**，留着只会让人以为"配一下就能用"。
  */
 export function configuredDshTts(env = process.env) {
   const home = env.DSH_HOME || join(env.USERPROFILE || env.HOME || homedir(), '.dsh');
@@ -142,8 +142,8 @@ export function configuredDshTts(env = process.env) {
  * 为什么不用 SAPI：SAPI 那三个中文声音（Huihui / Yaoyao / Kangkang）是十年前的拼接合成，
  * 一听就是导航软件；edge-tts 是神经端到端，语气和断句都自然得多。
  *
- * 为什么不用 DSH 那个 tts 插件的 HTTP 接口：实测它在 `127.0.0.1:4310` 上回 184 字节、
- * 31 毫秒——既不是音频（1 秒的 mp3 至少几 KB），也不是 `{url}`。那个端点不是给外部调的。
+ * 为什么不用 DSH 那个 tts 插件的 HTTP 接口：那个端口回的是 184 字节二进制、31 毫秒就返回，
+ * 既不是音频（1 秒的 mp3 至少几 KB），也不是 `{url}` —— 它压根不是给外部进程调的。
  *
  * 依赖：`pip install edge-tts`（在独立 venv 里），播放用 ffplay。
  * 拿不到就安静退回 SAPI —— 念台词不能因为音色插件没装就哑掉。

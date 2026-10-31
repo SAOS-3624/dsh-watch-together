@@ -7,18 +7,9 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 
 import {
-  deliveryState, segmentStart, WATCH_LEAD, WATCH_SEGMENT,
+  deliveryState, WATCH_LEAD,
 } from '../src/watch.js';
 import { validateWatchArgs, watchToolSpec } from '../src/tool-spec.js';
-
-test('segmentStart: 按段长向下取整', () => {
-  assert.equal(segmentStart(0, 120), 0);
-  assert.equal(segmentStart(10, 120), 0);
-  assert.equal(segmentStart(119.9, 120), 0);
-  assert.equal(segmentStart(120, 120), 120);
-  assert.equal(segmentStart(125, 60), 120);
-  assert.equal(segmentStart(-5, 120), 0);
-});
 
 test('deliveryState: 到段末前 lead 秒才算该说', () => {
   const size = 120;
@@ -34,9 +25,13 @@ test('deliveryState: 到段末前 lead 秒才算该说', () => {
 });
 
 
-test('默认参数是"120 秒一段、提前 15 秒说"', () => {
-  assert.equal(WATCH_SEGMENT, 120);
+test('交付点是段末前 15 秒（段长本身由 batches.js 定义，这里不再锁死）', () => {
   assert.equal(WATCH_LEAD, 15);
+  // 段长只有一处定义：`batches.DEFAULT_SEGMENT`。以前这里还断言 WATCH_SEGMENT === 120，
+  // 等于给一个生产路径根本不用的值上了锁。
+  const s = deliveryState({ cursor: 0, segment: 0, size: 300 });
+  assert.equal(s.segmentEnd, 300);
+  assert.equal(s.due, false);
 });
 
 test('validateWatchArgs: input 可省略（自动探测），给了就必须非空', () => {

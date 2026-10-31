@@ -63,7 +63,14 @@ export function makePlan({ segment = DEFAULT_SEGMENT, ramp } = {}) {
       const i = indexAt(pos);
       return { index: i, from: starts[i], to: starts[i] + sizeAt(i), size: sizeAt(i) };
     },
-    /** 从第 index 段开始，往后取 count 段 */
+    /**
+     * 从第 index 段开始，往后取 count 段。
+     *
+     * **只给边界，不给"什么时候说"**。交付时刻由调用方按 `to - lead` 自己算（见
+     * `position.js` 的 `shouldSpeak`）。这里曾经顺手产出 `sayAt: to - 15`，
+     * 于是提前量在代码里有三个来源（批次表的 15、循环的 15、调用方的 lead）——
+     * 传 `lead: 30` 时只有一条路生效，另外两条照样按 15 秒触发。
+     */
     from(index, count) {
       const out = [];
       for (let k = 0; k < count; k += 1) {
@@ -73,7 +80,6 @@ export function makePlan({ segment = DEFAULT_SEGMENT, ramp } = {}) {
           from: starts[i],
           to: starts[i] + sizeAt(i),
           size: sizeAt(i),
-          sayAt: starts[i] + sizeAt(i) - 15,
         });
       }
       return out;

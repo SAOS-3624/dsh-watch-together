@@ -152,20 +152,6 @@ export function watchToolSpec() {
         description: 'Block until playback reaches this many seconds. Use it to check on the timeline just '
           + 'before the next segment without busy-waiting.',
       },
-      attachOnly: {
-        type: 'boolean',
-        description: 'OPTIONAL. When true the plugin NEVER starts a browser of its own: if no '
-          + 'playback position can be read, it returns an error instead of launching one. Use this '
-          + 'when the user watches in their own browser and does not want another instance opened. '
-          + 'It also skips navigating or opening tabs.',
-      },
-      wakeOnLinesEmpty: {
-        type: 'boolean',
-        description: 'OPTIONAL, off by default. Wake once when the current segment runs out of '
-          + 'pre-written lines, so you can look at the picture and write the next batch. Useful '
-          + 'whenever a voice consumer is attached: it keeps speaking your script, and without this '
-          + 'you would not notice the script ran dry until the user says something.',
-      },
       refillBelow: {
         type: 'number',
         description: 'OPTIONAL and off by default (0). If you set it, the loop wakes you when fewer than N '
@@ -246,7 +232,11 @@ export function watchToolSpec() {
           + 'about what is said instead of what is shown. '
           + 'The background loop reads each line out on position, so nothing has to be generated at that moment, '
           + 'and pausing the video pauses the script. Only write them for the prefetched window (lookahead, '
-          + 'default 5 minutes).',
+          + 'default 5 minutes).\n\n'
+          + 'THIS IS PART OF THE DELIVERY, NOT AN EXTRA. A segment delivered without lines is NOT a finished '
+          + 'delivery: the plugin refuses to advance the watch position, and the next call will land on the same '
+          + 'segment with a [DELIVERY INCOMPLETE] banner on top. Writing lines outranks answering an interjection '
+          + '— do it first.',
       },
       depth: {
         type: 'number',
@@ -274,11 +264,6 @@ export function watchToolSpec() {
         description: 'Build the look-ahead window in the background from this call (on by default). '
           + 'Set false if you want this call to touch nothing but the current batch.',
       },
-      title: {
-        type: 'string',
-        description: 'Video title. Only needed when the source has to be resolved by hand; normally the page '
-          + 'URL identifies the video and no guessing is involved.',
-      },
       browserPort: {
         type: 'integer',
         description: 'Per-call CDP debug port for the browser holding the video (e.g. 9333). ' +
@@ -288,14 +273,27 @@ export function watchToolSpec() {
         type: 'string',
         description: 'Say this NOW, in your own words. It is appended to the shared chat stream ' +
           '(the same timeline the user sees) and handed to whoever listens for speech, so it is ' +
-          'spoken and displayed exactly like a scripted line. Use it to answer an interjection: the ' +
-          'plugin cannot see your normal reply, so without this the chat box shows only the script.',
+          'spoken and displayed exactly like a scripted line.\n\n' +
+          'Use it **any time you actually want to say something out loud** - not only to answer an ' +
+          'interjection. Something in the picture strikes you, the user asks something, a thought ' +
+          'lands while you are waiting for the next batch: this is the only way out, because the ' +
+          'plugin cannot see your normal reply and the chat box would otherwise show only the script. ' +
+          'Do not wait for the user to speak first.\n\n' +
+          'It is the cheapest call there is: no position read, no frame built, no batch advanced. ' +
+          'One round trip and the sentence is out.',
       },
       loop: {
         type: 'boolean',
         description: 'Default true: after this call, keep a background loop running so each new segment ' +
           'wakes the session on its own. Set false to drive everything by hand — you call watch_together ' +
           'again whenever you want the next segment, and nothing wakes you in between.',
+      },
+      wake: {
+        type: 'boolean',
+        description: 'Default false: the background loop does NOT post "[一起看] … is due" messages ' +
+          'into the session. A blocking call already returns by itself at the segment boundary, and an ' +
+          'extra wake shows up as queued messages that also push the user\'s own words aside. ' +
+          'Pass true only if you really want the timer to re-invoke you.',
       },
       detail: {
         type: 'string',

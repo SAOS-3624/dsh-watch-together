@@ -17,7 +17,7 @@
 
 import { configuredPort, probeBrowser } from 'dsh-video-storyboard/browser-time';
 import { checkBiliLogin, fetchRemoteSubtitles } from 'dsh-video-storyboard/subtitles';
-import { wakeSession } from './timer.js';
+import { controllerOf, wakeSession } from './timer.js';
 import { loopStatus, stopWatchLoop } from './watch-loop.js';
 import { appendAssistantSay } from './chat.js';
 import { lastSpeech } from './voice.js';
@@ -66,11 +66,13 @@ export async function runWatchAction(args, { ctx = null, sessionId = null, brows
       sessionId,
       text: '[一起看] 这是一次唤醒连通性测试，收到就不用回复内容，回一句"收到"即可。',
     });
+    // **不能写 `ctx.sessionController`**：没 inject 的服务取它会直接抛错
+    const sc = controllerOf(ctx);
     return {
       text: JSON.stringify({
         sessionId: sessionId ?? null,
-        hasSessionController: Boolean(ctx?.sessionController),
-        hasPrompt: typeof ctx?.sessionController?.prompt === 'function',
+        hasSessionController: Boolean(sc),
+        hasResolveAgent: typeof sc?.resolveAgent === 'function',
         ...r,
       }),
       images: [],

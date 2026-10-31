@@ -13,13 +13,18 @@
     python  examples/floating-chat/window.py        # 有控制台，方便看报错
 
 窗口：无边框、置顶、半透明、按住顶部拖动；回车发送；Esc 关闭。
+🎤 按钮：开实时语音输入（说的每句话自动转成文字，写进同一条流）。
 
 依赖：标准库 tkinter（不装任何第三方包）。
+      🎤 会另起 `mic.py` 进程，那条路需要 sounddevice+numpy+sherpa-onnx，
+      所以用 **ASR 的 venv**（可用 `DSH_ASR_PYTHON` 指定）来跑，跟本窗口的解释器无关。
 """
 
 import json
 import os
+import subprocess
 import sys
+import threading
 import time
 
 try:
@@ -54,6 +59,23 @@ def cache_dir():
 
 
 CHAT_FILE = os.path.join(cache_dir(), "chat.jsonl")
+
+HERE = os.path.dirname(os.path.abspath(__file__))
+MIC_SCRIPT = os.path.join(HERE, "mic.py")
+
+
+def asr_python():
+    """跑 mic.py 的解释器：要有 numpy/sounddevice/sherpa-onnx，本机就是 ASR 的 venv。
+
+    为什么不能直接用本窗口这个解释器：悬浮窗必须用**带 tkinter** 的那个
+    （商店版 Python），而它多半没有 numpy —— 两边不是同一个 Python。
+    """
+    for cand in (os.environ.get("DSH_ASR_PYTHON"),
+                 r"D:/asr-local/.venv/Scripts/python.exe",
+                 os.path.join(HERE, "..", "..", "..", "asr-local", ".venv", "Scripts", "python.exe")):
+        if cand and os.path.exists(cand):
+            return os.path.abspath(cand)
+    return sys.executable          # 兜底：缺依赖时 mic.py 自己会打印清楚缺什么
 
 
 def read_entries():
@@ -98,6 +120,7 @@ class FloatChat:
         self.root.geometry(f"{w}x{h}+{sw - w - 40}+{sh - h - 90}")
 
         self.family = self._pick_font()
+        self.mic_proc = None
         self._build()
         self.seen = 0
         self.poll()
@@ -157,6 +180,13 @@ class FloatChat:
         bar = tk.Frame(self.root, bg="#161616")
         bar.pack(fill="x", padx=8, pady=(0, 8))
 
+        # 麦：开/关实时语音输入。说的每句话自动转成文字，写进同一条流
+        # （不用 🎤 —— tkinter 指定的字体里经常没有这个字形，会显示成方块）
+        self.mic_btn = tk.Label(bar, text="麦", bg="#2a2a2a", fg="#9a9a9a",
+                                font=(self.family, 11), padx=9, cursor="hand2")
+        self.mic_btn.pack(side="left", ipady=6, padx=(0, 6))
+        self.mic_btn.bind("<Button-1>", lambda _e: self.toggle_mic())
+
         self.entry = tk.Entry(bar, bg="#202020", fg="#eee", insertbackground="#eee",
                               relief="flat", font=(self.family, 10))
         self.entry.pack(side="left", fill="x", expand=True, ipady=7, padx=(0, 6))
@@ -168,6 +198,58 @@ class FloatChat:
         send.bind("<Button-1>", lambda _e: self._send())
 
         self.bar = bar
+
+    # ---- 语音输入 ----
+    def toggle_mic(self):
+        if self.mic_proc and self.mic_proc.poll() is None:
+            self._stop_mic()
+            return
+        if not os.path.exists(MIC_SCRIPT):
+            self._append("meta", f"找不到 {MIC_SCRIPT}\n")
+            return
+        py = asr_python()
+        try:
+            self.mic_proc = subprocess.Popen(
+                [py, MIC_SCRIPT, "--engine", "local"],
+                stdout=subprocess.DEVNULL,          # 识别结果走聊天流，这里不重复显示
+                stderr=subprocess.PIPE,             # 状态/报错显示在窗口里
+                text=True, encoding="utf-8", errors="replace",
+                creationflags=0x08000000 if os.name == "nt" else 0,   # 别弹控制台
+            )
+        except Exception as exc:
+            self._append("meta", f"起不来麦克风进程：{exc}\n")
+            return
+        self.mic_btn.configure(text="●", bg="#7a2b2b", fg="#ffd9d9")
+        self.hint.configure(text="录音中")
+        threading.Thread(target=self._mic_log, args=(self.mic_proc,), daemon=True).start()
+
+    def _stop_mic(self):
+        p = self.mic_proc
+        self.mic_proc = None
+        if p and p.poll() is None:
+            try:
+                p.terminate()
+            except Exception:
+                pass
+        self.mic_btn.configure(text="麦", bg="#2a2a2a", fg="#9a9a9a")
+        self.hint.configure(text=f"{self.seen} 条")
+
+    def _mic_log(self, proc):
+        """把 mic.py 的状态/报错搬进窗口；它一退出就把按钮复位"""
+        try:
+            for line in proc.stderr:
+                line = (line or "").rstrip()
+                if line:
+                    self.root.after(0, lambda l=line: self._append("meta", l + "\n"))
+        except Exception:
+            pass
+        proc.wait()
+        self.root.after(0, self._mic_exited)
+
+    def _mic_exited(self):
+        # 自己挂了（依赖缺失/设备被占）也要把按钮复位，别停在"录音中"
+        if self.mic_proc is not None:
+            self._stop_mic()
 
     # ---- 拖动 ----
     def _drag_start(self, event):
@@ -186,6 +268,7 @@ class FloatChat:
             self.root.geometry("470x520")
 
     def close(self):
+        self._stop_mic()      # 窗口关了就别留个录音进程在后台
         self.root.destroy()
 
     def _send(self, _event=None):

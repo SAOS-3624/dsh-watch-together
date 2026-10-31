@@ -48,16 +48,19 @@ function sourceOf(b) {
 /**
  * "为什么没有视频"的那一行。两处失败文案共用同一份措辞 ——
  * 以前各写一遍，改一处就会让两条路径说出两种解释。
+ *
+ * 主通道是**浏览器扩展上报**，调试端口只是备路 —— 所以"没配端口"不是第一嫌疑人，
+ * 以前这里写成"去配 browserPort 再用 start-edge-debug.cmd 起浏览器"，把兜底说成了正路。
  */
 async function whyNoVideo(browserPort) {
+  const ext = 'the browser extension reports nothing either '
+    + '(installed + enabled on the tab that is playing?)';
   if (!browserPort) {
-    return 'browser: NOT configured — set browserPort in ~/.dsh/video.json '
-      + 'and start it with scripts/start-edge-debug.cmd';
+    return `browser: no debug port configured, and ${ext}`;
   }
   return await hasDebugPort({ port: browserPort })
-    ? `browser: open :${browserPort} but no tab is holding a <video>`
-    : `browser: CLOSED :${browserPort} — no debug port is listening `
-      + '(start it with scripts/start-edge-debug.cmd)';
+    ? `browser: open :${browserPort} but no tab is holding a <video>; ${ext}`
+    : `browser: debug port ${browserPort} is not listening, and ${ext}`;
 }
 
 /** 把一次失败拼成完整的工具结果 */

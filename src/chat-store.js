@@ -80,21 +80,45 @@ export function attachSpeechToChat({ env = process.env, onEntry = null } = {}) {
   }, { voice: false });
 }
 
-/** 模型插话时说的那一句：写进流 + 交给声音（同一条事件，两个消费者各取所需） */
-export function appendAssistantSay(text, { t = null, env = process.env } = {}) {
+/**
+ * **唯一出口**：往悬浮窗（`chat.jsonl`）写一句话，并且**一定经过语音播报**。
+ *
+ * 为什么必须收成一个入口：以前有两条写盘的路 ——
+ *   `appendAssistantSay()`（写 + 发语音事件）和直接 `appendChat('line', …)`（只写）。
+ * 于是"我补写的台词"在窗口里看得见、却一点声都没有（实测用户第一反应就是
+ * "为什么你写的台词没有语音播报"）。凡是**说给用户的话**，都得走这里：
+ * 写盘和发声是同一次调用的两个副作用，谁也离不开谁。
+ *
+ * `speak: false` 只留给**诊断行**（麦克风状态、写盘失败之类的 `meta`），
+ * 那些是给眼睛看的日志，不该念出来。
+ *
+ * `origin: 'chat'` 是给展示层订阅者的信号："这条已经在流里了，别再写第二遍"
+ * （见 `attachSpeechToChat`）。
+ *
+ * @param {'assistant'|'line'|'meta'} role
+ * @param {string} text
+ * @param {{t?: number|null, env?: object, speak?: boolean}} [o]
+ */
+export function appendSpoken(role, text, { t = null, env = process.env, speak = true } = {}) {
   const clean = String(text ?? '').trim();
   if (!clean) return null;
-  const entry = appendChat('assistant', clean, { t, say: true }, env);
-  // `origin: 'chat'` 告诉展示层的订阅者"这条已经在流里了，别再写第二遍"
-  emitSpeech({ at: t, text: clean, state: 'due', origin: 'chat' });
+  const entry = appendChat(role, clean, { t, say: speak }, env);
+  if (speak) emitSpeech({ at: t, text: clean, state: 'due', origin: 'chat' });
   return entry;
+}
+
+/** 模型插话时说的那一句 —— 就是 `appendSpoken('assistant', …)` 的别名，保留旧名字 */
+export function appendAssistantSay(text, { t = null, env = process.env } = {}) {
+  return appendSpoken('assistant', text, { t, env });
 }
 
 /**
  * 盯"新来的用户消息"。
  *
  * 以创建时刻的条数为基线，之后只看增量 —— 历史消息一条都不会被误判成新插话。
- * 同一批里如果有多条，先返回最早那条（模型回完话再来取剩下的）。
+ * 同一批里如果有多条用户消息，**只消费到被报告的那条**：剩下的留在未读区，
+ * 下次 poll（模型回完话再来）接着报。一口气把整批标成已读的话，
+ * "回完话再来取剩下的"就变成"永远取不到" —— 那是丢用户的话。
  */
 export function makeChatWatcher(env = process.env) {
   let seen = readChat(env).length;
@@ -102,8 +126,13 @@ export function makeChatWatcher(env = process.env) {
     const all = readChat(env);
     if (all.length <= seen) return null;
     const fresh = all.slice(seen);
-    seen = all.length;
-    const u = fresh.find((m) => m.role === 'user' && String(m.text ?? '').trim());
-    return u ? { text: u.text, at: u.at } : null;
+    const k = fresh.findIndex((m) => m.role === 'user' && String(m.text ?? '').trim());
+    if (k < 0) {
+      seen = all.length;          // 这批里没有用户消息（都是台词/插话）：全部读过
+      return null;
+    }
+    const u = fresh[k];
+    seen += k + 1;                // 只消费到这条为止；后面可能还有用户消息，留着下次
+    return { text: u.text, at: u.at };
   };
 }

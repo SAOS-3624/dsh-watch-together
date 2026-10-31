@@ -23,12 +23,10 @@
 
 export {
   WATCH_LEAD,
-  WATCH_SEGMENT,
   deliveryState,
   loadWatch,
   norm,
   saveWatch,
-  segmentStart,
   sessionKey,
   watchPath,
 } from './watch-state.js';

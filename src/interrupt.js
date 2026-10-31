@@ -51,18 +51,26 @@ const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
  *
  * @param {Promise} promise 正在做的那件慢事（**不会被取消**）
  * @param {{ watcher?: Function, everyMs?: number }} o
- * @returns {Promise<{kind:'done', value:*} | {kind:'interrupted', text:string, at:number, pending:Promise}>}
+ * @returns {Promise<{kind:'done', value:*} | {kind:'error', error:*}
+ *   | {kind:'interrupted', text:string, at:number, pending:Promise}>}
  */
 export async function raceChat(promise, { watcher = null, everyMs = 500 } = {}) {
   const poll = watcher ?? chatWatcherShared();
-  if (!poll) return { kind: 'done', value: await promise };
+  if (!poll) {
+    try {
+      return { kind: 'done', value: await promise };
+    } catch (error) {
+      return { kind: 'error', error };
+    }
+  }
 
   let settled = false;
   let value = null;
+  let failure = null;
   // **不 await 这个** —— 我们要的是"先回去回应用户"，不是"等它跑完"
   const pending = Promise.resolve(promise).then(
     (v) => { settled = true; value = v; return v; },
-    (e) => { settled = true; throw e; },
+    (e) => { settled = true; failure = e; throw e; },
   );
   // 没人取结果时别变成 unhandledRejection（Node 15 起会带崩进程）
   pending.catch(() => {});
@@ -77,6 +85,11 @@ export async function raceChat(promise, { watcher = null, everyMs = 500 } = {}) 
     // 视频早就过了交付点 —— 阻塞等待一进去就立刻返回，等于没等。
     await Promise.race([pending.then(() => {}, () => {}), sleep(everyMs)]);
   }
+  // **失败要原样带出去**：以前这里失败也返回 `{kind:'done', value:null}`，
+  // 于是"建图抛错"变成调用方几百行之后的 `null.png` ——
+  // 真正的错误信息（ffmpeg 报错、地址不是视频页、网络断）全丢了，
+  // 用户只看到 `Cannot read properties of null (reading 'png')`。
+  if (failure) return { kind: 'error', error: failure };
   return { kind: 'done', value };
 }
 

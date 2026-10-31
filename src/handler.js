@@ -13,35 +13,59 @@
  */
 
 import { DEFAULT_RAMP, DEFAULT_SEGMENT } from './batches.js';
-import { configuredLaunch, configuredPort } from 'dsh-video-storyboard/browser-time';
-import { ensureChatSession } from './chat.js';
+import { configuredPort } from 'dsh-video-storyboard/browser-time';
 import { formatManifest } from 'dsh-video-storyboard/format';
 import { runStoryboard } from 'dsh-video-storyboard/pipeline';
+import { createInputSurface } from './input-surface.js';
+import { appendAssistantSay } from './chat.js';
 import { validateWatchArgs } from './tool-spec.js';
 import { makeBuilder, runWatchPass } from './watch-run.js';
 import { runWatchAction } from './watch-actions.js';
-import { DEFAULT_LOOKAHEAD, startWatchLoop } from './watch-loop.js';
+import { DEFAULT_LOOKAHEAD, startWatchLoop, stopWatchLoop } from './watch-loop.js';
 
 /**
  * @param {object} ctx   宿主上下文（存图用）
  * @param {object} args  工具参数
- * @param {{sessionId?: string|null, cache?: Map}} deps
+ * @param {{sessionId?: string|null, cache?: Map, signal?: AbortSignal|null}} deps
  *   sessionId 来自 session/event 钩子；没有它就不起循环（除非已有声音订阅者，见 voice.js）。
  *   cache 由外层持有 —— 一次会话里跨多次调用复用同一批已建好的段。
+ *   signal 是宿主的取消信号（`ToolRunContext.signal`）：阻塞等待必须看它，否则"停止"按不住。
  */
-export async function execute(ctx, args, { sessionId = null, cache = new Map() } = {}) {
+export async function execute(ctx, args, {
+  sessionId = null, cache = new Map(), signal = null,
+} = {}) {
   const problems = validateWatchArgs(args);
 
-  // 即将进入阻塞：把聊天框支起来（第一次会起服务 + 开标签，之后什么都不做）
+  // **我要说的话，走 `say` 参数**：它才会写进 `chat.jsonl`，悬浮窗里才看得见。
+  // 只写在普通回复里的字，插件这一侧收不到 —— 用户那边就是"你一句话都没说"。
   //
-  // 这里踩过一个坑：原来写的是 `ensureChatSession(args.browserPort ?? configuredPort())`
-  // —— 把**浏览器调试端口**（9333）当成**聊天服务端口**传进去了。那个端口被浏览器占着，
-  // listen 必然失败，异常又被吞掉，于是 DSH 里聊天框一直没起来，而没人知道为什么。
-  // 两个端口没有任何关系：聊天框有自己固定的 9377。
-  //
-  // 顺带：这个服务也是"浏览器扩展上报位置"的落点（POST /api/position），
-  // 所以它必须在陪看期间一直活着。
-  if (args.wait === true) void ensureChatSession();
+  // 而且**允许和其他参数同时给**：以前 `say` 会被 `runWatchAction` 拦下来直接返回，
+  // 于是"交付这一段 + 顺带说一句"得调两次工具（多一次模型往返）。
+  // 现在：只有 `say` 就当场返回；带着别的活就写进流、继续跑主流程。
+  let saidNote = '';
+  if (typeof args.say === 'string' && args.say.trim()) {
+    const entry = appendAssistantSay(args.say.trim());
+    const others = Object.keys(args)
+      .filter((k) => k !== 'say' && k !== 'browserPort')
+      .filter((k) => args[k] !== undefined && args[k] !== null && args[k] !== false && args[k] !== '');
+    if (others.length === 0) {
+      return {
+        text: JSON.stringify({ ok: true, said: entry?.text ?? '', inChat: true }),
+        images: [],
+      };
+    }
+    saidNote = `\n[said] 这句已写进悬浮窗：「${entry?.text ?? ''}」`;
+    args = { ...args };
+    delete args.say;
+  }
+
+
+  // 输入面（悬浮窗 + 聊天服务）：跟"陪看"无关的那一侧，整体在 input-surface.js。
+  // 它幂等 —— 这个 execute 里调几次都只开一次窗，返回同一句 note。
+  const prepareInputSurface = createInputSurface();
+
+  // waitForVideo 这一条在主流程之外就开始等，所以先备好；wait:true 由 watch-run 在真要阻塞前回调
+  if (args.waitForVideo === true) void prepareInputSurface();
 
   // 单发命令（status / voices / speak / cookies / wake / stop）在这里分流
   const quick = await runWatchAction(args, {
@@ -55,25 +79,39 @@ export async function execute(ctx, args, { sessionId = null, cache = new Map() }
   const ramp = args.ramp === undefined ? [...DEFAULT_RAMP] : args.ramp;
   const callArgs = { ...args, segment, ramp };
 
-  // 机器配置只在这里读一次，然后显式传给库层
+  // 机器配置只在这里读一次，然后显式传给库层。
+  // **只读端口，不读"要不要自动开浏览器"**：那条路已删（位置主通道是扩展上报）。
   const browserPort = args.browserPort ?? configuredPort() ?? undefined;
-  const autoLaunch = configuredLaunch();
 
   const r = await runWatchPass(callArgs, {
-    browserPort, autoLaunch,
+    browserPort,
     cache,
     runStoryboard,
     formatManifest,
+    signal,
+    prepareWait: prepareInputSurface,
     saveImage: async ({ data, name }) => ctx.attachments.saveImage({
       data, mediaType: 'image/png', name,
     }),
   });
 
+  // 用户在等待期间按了停止：**钟也要停** —— 否则宿主那边已经收工，后台还在轮询浏览器
+  if (signal?.aborted) stopWatchLoop('aborted');
+
+  // 这一趟**真的在看**（有位置、没被取消）：把输入面备好，并拿到那句话。
+  // 为什么要在这里再补一次：`watch-run` 只在"还没到交付点、真要阻塞"时回调，
+  // 于是"第一次调用时这一段恰好已经到交付点"就不会走 wait —— 整场陪看就没有插话入口了。
+  let widgetNote = '';
+  if ((args.wait === true || args.loop !== false) && Number.isFinite(r.cursor) && !signal?.aborted) {
+    widgetNote = (await prepareInputSurface()).note;
+  }
+
   // 起陪看循环：从这里往后每 120 秒一段，到点自己叫醒。
   // 没有会话 id 就不起（只是不会自动说话，工具本身照常可用）。
+  // **有人已经按了停止就别再起钟**：那等于"停止"之后又从后台活过来。
   // **有没有人接声音不影响这里**：循环里只在有订阅者时才把台词交出去（见 voice.js），
   // 没订阅者就照旧叫醒模型，两条路都不需要核心自带引擎。
-  const canLoop = Boolean(sessionId);
+  const canLoop = Boolean(sessionId) && !signal?.aborted;
   if (args.loop !== false && canLoop && Number.isFinite(r.cursor)) {
     const size = r.size ?? 120;
     // 余量按**时间**算（默认 5 分钟）：开头段短就多备几段。
@@ -91,8 +129,13 @@ export async function execute(ctx, args, { sessionId = null, cache = new Map() }
     startWatchLoop({
       ctx, sessionId, input: r.input,
       cursor: r.cursor, status: r.status,
-      // 段长 / 阶梯 / 余量交给循环：之后它自己往前滚、自己补建
-      segment, ramp, lookahead, depth, speakEvery, refillBelow,
+      // 段长 / 阶梯 / 余量 / 提前量交给循环：之后它自己往前滚、自己补建。
+      // **lead 必须传**：钟和 watch-run 用的必须是同一个提前量，否则"说好的时间点"会差一截。
+      segment, ramp, lookahead, depth, speakEvery, refillBelow, lead: args.lead,
+      // **到点发不发 `[一起看] … 该说话了` 这种会话消息**：默认不发（`wake` 显式 true 才发）。
+      // 阻塞式调用本来就会在段末自己返回，钟再 `followup()` 一次，用户看到的是
+      // "N 条排队消息"，而且会挡住他自己要说的话。
+      wake: args.wake === true,
       // 循环负责"什么时候建"，这里给它"怎么建"
       deps: {
         browserPort,
@@ -103,6 +146,7 @@ export async function execute(ctx, args, { sessionId = null, cache = new Map() }
       log: () => {},
     });
   }
-  return { text: r.text, images: r.images };
+  // 第一次真进入阻塞时，把输入框状态附在结果里 —— 模型才知道该告诉用户去哪说话
+  return { text: `${r.text}${widgetNote}${saidNote}`, images: r.images };
 }
 

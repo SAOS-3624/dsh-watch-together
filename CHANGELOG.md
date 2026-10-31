@@ -5,6 +5,193 @@ This package starts its own version line at `0.1.0` — it is not a continuation
 
 ## [Unreleased]
 
+### Fixed — scripted lines never reached the chat window without a voice engine
+
+`watch-loop.js` consumed the due line inside `if (speechSubscribers() > 0)`. That helper counts only
+`voice: true` subscribers (real engines), while `attachSpeechToChat` — the one that writes lines into
+`chat.jsonl`, which is exactly what the floating window reads — subscribes with `voice: false`.
+So with no voice adapter, or one that failed to load, a scripted line was **never taken from the
+queue at all**: not spoken, not displayed, and the queue silently accumulated.
+
+Display and speaking are two separate things. The line is now handed out at its due moment
+regardless: `emitSpeech` delivers it to every subscriber, and only a real `voice: true` subscriber
+counts as "said" (`if (speechSubscribers() > 0) return;` still stops the wake, so nothing changes
+when a voice engine *is* attached).
+
+`test/lines-to-chat.test.mjs` covers both sides. The test was checked against the bug: restoring the
+old condition makes the no-voice case fail while the with-voice case still passes.
+
+### Changed — `say` no longer reads as "only to answer an interjection"
+
+It always worked at any moment: it writes the sentence into the shared stream and hands it to
+whoever listens for speech, exactly like a scripted line. But the description ended with
+"use it to answer an interjection", which reads as "only after the user speaks". A model follows
+that literally, so the one path for saying something **unprompted** went unused.
+
+The description now says any time, and says it explicitly: something in the picture strikes you,
+the user asks something, a thought lands while waiting for the next batch — plus
+"do not wait for the user to speak first". It also states the cost, because that is what makes it
+usable mid-wait: no position read, no frame built, no batch advanced, one round trip.
+
+`test/say.test.mjs` pins the wiring — parameter → stream (one `assistant` row with `say: true`) →
+speech event with `origin: 'chat'`, no image, no state advanced. The store layer was already covered
+by `test/chat.test.mjs`; the uncovered part was the parameter entry itself.
+
+### Added — an end-to-end test for "talk while the frame is building"
+
+The mechanism already existed (`raceChat(buildSegment(...))` in `runWatchPass`), and
+`test/interrupt.test.mjs` covered `raceChat` itself — but the `built.kind === 'interrupted'`
+branch had **no** coverage. If a refactor ever dropped the wrapper, or `chatWatcherShared()` got
+replaced with a fresh watcher per call, every existing test would still pass.
+
+`test/interject-build.test.mjs` builds a segment that takes 1.2 s, writes a user message at 0.2 s,
+and asserts all four things at once: the call returns before the build finishes, it carries that
+exact message, it carries no image, and the build still completes into the cache afterwards.
+
+### Changed — three implicit couplings now have exactly one source each
+
+A pass over the module boundaries. Same behaviour except the `lead` fix at the end, which was a
+real bug: the parameter only worked on one of the three paths that used it.
+
+- **`handler.js` stopped preparing UI.** The floating window, the chat service and the "where do I
+  type" note moved to `input-surface.js` (`createInputSurface()`). `handler` is a router again —
+  three exits: quick action, one pass, start the loop. The `widgetNote` variable no longer travels
+  from the top of the function to the bottom.
+- **`watch-run.js` has one return shape.** Eleven exits each used to build their own ten-field
+  object; now they all call one `pass()` closure. Adding a field is one edit instead of eleven, and
+  a branch can no longer quietly forget one.
+- **One segment length.** `watch-state.js` exported `WATCH_SEGMENT = 120` while `batches.js`
+  declared `DEFAULT_SEGMENT = 300`; whichever fallback fired first decided how long a segment was.
+  `batches.js` is now the only source, and `WATCH_SEGMENT` is gone.
+- **One lead.** The delivery lead was hardcoded in three places: `batches.from()` produced
+  `sayAt = to - 15`, `watch-loop.js` passed `lead: 15` to `shouldSpeak`, and only `watch-run.js`
+  actually read `args.lead`. Segments no longer carry `sayAt`; `shouldSpeak` computes `to - lead`,
+  and `startWatchLoop` takes `lead` from the caller. `lead: 60` now really moves the trigger point
+  (checked against a 300 s segment: at 241 s, `lead=15` stays quiet, `lead=60` fires).
+
+### Removed — no more auto-launched browsers, no more browser widget
+
+Both were early paths from before the browser extension existed. Neither could produce a position
+for the tab the user is actually watching, so both are gone rather than kept as fallbacks.
+
+- **Auto-launching a browser**: `ensureWatchBrowser()` (`launchBrowser` + `waitForPort`), the
+  `autoLaunch` flag on `runWatchPass`, the `attachOnly` parameter, and the `launchBrowser: true`
+  branch in `~/.dsh/video.json`. The extension already reports `currentTime` every second from the
+  page the user is on; opening a second Edge with its own profile never helped that page. When no
+  position can be read the tool now asks "how far are you" instead of starting a program.
+- **The browser widget page**: `GET /widget`, `WIDGET_PAGE`, `openWidgetInBrowser()`, `widgetUrl()`,
+  and the `documentPictureInPicture` button in the chat page. The input box is the native tkinter
+  window (`examples/floating-chat/window.py`); the HTML page stays as a read-only fallback at `/`
+  (`chatPageUrl()`), and is never opened automatically.
+- **Dead parameters**: `wakeOnLinesEmpty` (the handler never passed it, so its 30-line branch in
+  `watch-loop.js` could never run), `title` (nothing in `src/` or in storyboard read it), and
+  `segmentStart()` (every caller uses `plan.segmentAt()`). Parameter count 36 → 34.
+
+### Fixed — interjections used to get swallowed (four different ways)
+
+The interjection path was the one place where losing user input was silent: nothing crashed, nothing
+logged, the words just never arrived. All four ways of losing them are now closed, and each one has
+a regression test (`test/cli-interrupt.test.mjs` — the CLI had **no** test coverage before this).
+
+- **Between two `cue` runs.** Every `cue` is a fresh process, and the watcher took "however many
+  lines exist right now" as its baseline — so anything the user typed while the model was thinking,
+  building a segment or replying was never read by anyone. The read position now lives in
+  `<watch>/chat-cursor.json`: a `cue` starts from where the last one stopped, and delivers what it
+  finds the moment it enters the wait. Baseline is persisted as soon as it is established, because a
+  `cue` that hears nothing (the common case) otherwise leaves no cursor for the next one.
+- **Two messages arriving in the same poll.** Both watchers (chat box and host session file) marked
+  the whole batch as read and reported only the first, so the second was gone. They now consume up
+  to the message they hand over and no further — "reply first, then take the next one".
+- **Wrong conversation.** `findActiveSessionFile()` took the most recently modified session jsonl
+  across *all* projects, so a chat in another window could interrupt the watch session. It now
+  prefers the project matching the current directory and only falls back to global when that one has
+  no active session.
+- **The host writing old messages late.** WorkBuddy flushes a user's message into the session file
+  *after* the reply to it. The watcher saw new bytes and treated them as a fresh interjection —
+  interrupting the current turn with the message that started it. Messages whose `timestamp`
+  predates the watcher are now ignored.
+
+Also in this path: interjections heard via the host input box are appended to the chat stream too
+(they used to appear only in `cue`'s stdout, so the page showed a stream with a hole in it); the
+chat page puts the words back in the input box when a send fails instead of losing them; and
+`POST /api/say` answers `ok:false` for requests it did not write, which is what makes that recovery
+possible.
+
+### Fixed — `cue` and `say`
+
+- `cue` no longer waits forever when the video changes underneath it. It compared against the
+  segment delivery point of the *old* video, and if the new one was shorter, `deliverAt` was a
+  position that would never be reached. It now detects a changed URL or duration and exits with
+  `VIDEO-CHANGED` (pending lines are saved under the old source), and exits with `REWIND` when the
+  user drags the progress bar back more than a minute — the model should hear about that instead of
+  sitting on lines written for a position the user left.
+- Two `cue` processes can no longer run at once: a state file saying `blocking` with a **live** pid
+  is refused with `BUSY` (exit 1). A dead pid is taken for what it is — the residue of a killed run —
+  and does not block anything. `check` mode is read-only and never takes the lock.
+- `check` mode no longer leaves `cue-state.json` at `blocking`, which used to make the next run
+  report "last wait was killed externally" for a run that was never waiting.
+- `say` called edge-tts once by hand and then again inside `speak()` (twice the synthesis, and the
+  manual attempt passed the raw configured voice, so a SAPI-style name like `Huihui` never matched
+  and silently fell back). It now calls `speak()` once, which does the mapping and the fallback.
+- `voices` was advertised in `help` and crashed with `cmdVoices is not defined` when called. It now
+  lists the SAPI voices plus whether edge-tts is present and which voice is configured — the first
+  place to look when "why am I still hearing the navigation lady" comes up.
+
+### Added — talk instead of type: a microphone button in the floating window
+
+`examples/floating-chat/mic.py` is a separate process the window starts from its `麦` button. It
+listens, cuts what you say into utterances with the Silero VAD already sitting in `models-sherpa/`,
+transcribes each one, and writes it into the **same** `chat.jsonl` the typing path uses — so a
+running `cue` picks it up through the interjection cursor and the model answers without anyone
+typing a character. Measured end to end on this machine (i9-12900HX, int8 paraformer):
+
+- one model instance ≈ **284 MB** working set, loads in ~2 s
+- a 3 s utterance transcribes in **0.15 s**; a 45 s one in ~1.2–3.3 s (RTF ≈ 0.05, 20× realtime)
+- concurrent transcription barely queues: a 3 s short request takes 0.14 s even while a 45 s
+  transcription is running
+
+**It runs its own model by default** (`--engine local`), which is the answer to "can ASR run twice":
+yes, and it is cheap. It also means the microphone never waits behind a video transcription. The
+existing service cannot offer that yet — see the note below. `--engine http` shares port 8000
+instead, saving 284 MB at the cost of queuing behind long audio.
+
+**It refuses to hear itself.** The agent speaks through speakers; the microphone hears it; without a
+guard that gets transcribed as if the user had said it, and the model answers its own line forever.
+Every utterance is checked against `quiet-until.json` (the same window `say` and `cue` already take
+before speaking) and dropped if the agent is talking.
+
+### Added — acoustic echo cancellation, so the microphone hears you and not the computer
+
+`examples/floating-chat/aec.py`: the microphone picks up whatever the speakers are playing, which
+means the video's narration gets transcribed as if you had said it. Since neither `speexdsp` nor
+`webrtc-audio-processing` builds on this machine (no C compiler, no wheels), this is a frequency-domain
+adaptive filter (overlap-save FDAF, power-normalised NLMS) in numpy — one FFT per 32 ms frame.
+
+It captures the **loopback** channel (what the computer is playing, auto-detected as the
+speaker/loopback device, never "stereo mix" — that one can contain the microphone too) and subtracts
+the estimated echo from the microphone. On top of that, an utterance whose energy drops below
+`--echo-gate` (default 30 %) after cancellation is discarded outright: that is the hard guarantee
+that pure-echo segments are never transcribed, whatever the filter is doing.
+
+Two things that mattered more than the filter itself:
+
+- **Double-talk detection cannot compare against the echo estimate.** At startup the filter is zero,
+  so the estimate is zero, so "mic > 2 × estimate" is always true, so the filter freezes and never
+  converges (first version: 498 frames frozen, 0 dB). It now compares against the **reference**
+  signal (Geigel-style), which does not depend on the filter's state.
+- **Measured on a synthetic but honest mixture** (real speech as the video, a different real speech
+  segment as you, through a 150 ms-delayed reverberant echo path):
+  ERLE **13.6 dB** during echo-only passage; the video's words in the transcript went from **25 % →
+  0 %**, and an 8 s passage with nothing but video audio produced **no transcription at all**.
+
+Tunables: `--dt-ratio` (1.4 — mic peak vs reference peak before the filter freezes), `--taps`
+(8192 ≈ 512 ms of reverb tail), `--echo-gate`, `--no-aec`, `--loopback`.
+
+Honest limits: it is a software AEC, not magic. The first second or two of your speech, right as the
+filter re-converges after you start talking, is where the damage shows (a few characters in the test
+above). Speaker loudness and room reverb both make it harder. **Headphones remove the problem
+entirely** — with headphones there is no echo to cancel, and everything above is unnecessary.
+
 ### Added — a browser extension, so you never open a special window again
 
 Position used to require a browser started with `--remote-debugging-port`, and Chromium 136+ refuses

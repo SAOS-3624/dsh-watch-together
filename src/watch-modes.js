@@ -16,7 +16,7 @@ import { mmss } from './time.js';
 import { readPositionOrNull } from './watch-browser.js';
 import { chatWatcherShared, sleepWithChat } from './interrupt.js';
 
-export async function runWatchMode({ args, input, plan, browserPort, readBrowser }) {
+export async function runWatchMode({ args, input, plan, browserPort, readBrowser, signal = null }) {
   // ---- 0.4 两种"阻塞到条件成立"的等待（模型侧的节奏由它自己掌握）
   //
   // 用户描述的模型循环：
@@ -30,7 +30,7 @@ export async function runWatchMode({ args, input, plan, browserPort, readBrowser
     const deadline = Date.now() + capSec * 1000;
     const below = Math.max(1, Number(args.refillBelow) || 2);
     let last = null;
-    while (Date.now() < deadline) {
+    while (Date.now() < deadline && !signal?.aborted) {
       const b = await readPositionOrNull(readBrowser, browserPort);
       last = b?.pos ?? null;
       if (b?.ended) break;
@@ -66,6 +66,14 @@ export async function runWatchMode({ args, input, plan, browserPort, readBrowser
       const said = await sleepWithChat(2000, { watcher: chatWatcherShared() });
       if (said) return chatResult(said, last);
     }
+    // 宿主取消：条件等待立刻结束（以前会一直等到封顶）
+    if (signal?.aborted) {
+      return {
+        ok: true, reason: 'stopped', at: last,
+        text: `[stopped] 这一轮被取消了，等待结束（现在 ${last !== null ? mmss(last) : '读不到位置'}）。`,
+        images: [],
+      };
+    }
     return {
       ok: true, reason: 'wait-timeout', at: last,
       text: `等到封顶（${capSec}s）也没等到条件成立，现在 ${last !== null ? mmss(last) : '读不到位置'}。`,
@@ -85,7 +93,7 @@ export async function runWatchMode({ args, input, plan, browserPort, readBrowser
     const due = lastAt + everySec * 1000;
     let waited = 0;
     // 阻塞到点；中途暂停/视频结束就提前返回，让模型能说话
-    while (Date.now() < due) {
+    while (Date.now() < due && !signal?.aborted) {
       // 等到这一句到点期间也听得见插话
       const said = await sleepWithChat(1000, { watcher: chatWatcherShared(), everyMs: 300 });
       if (said) return chatResult(said, null);
@@ -96,6 +104,12 @@ export async function runWatchMode({ args, input, plan, browserPort, readBrowser
       if (waited > 600) break;
     }
     const b = await readPositionOrNull(readBrowser, browserPort);
+    if (signal?.aborted) {
+      return {
+        ok: true, reason: 'stopped', at: b?.pos ?? null,
+        text: '[stopped] 这一轮被取消了，停止等待。', images: [],
+      };
+    }
     const pos = b?.pos ?? null;
     const plan2 = plan;
     const seg = pos !== null ? plan2.segmentAt(pos) : { from: 0, to: 0 };

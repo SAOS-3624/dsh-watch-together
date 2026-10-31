@@ -47,15 +47,8 @@ location.href                                  // 页面地址 = 视频地址
 
 或者双击仓库里的 [`scripts/start-edge-debug.cmd`](../scripts/start-edge-debug.cmd)。
 
-**也可以让插件自己起**（推荐，省得每次手动开）：
-
-```jsonc
-// ~/.dsh/video.json
-{ "browserPort": 9333, "launchBrowser": true }
-```
-
-之后第一次调用 `watch_together` 时，如果端口没开，插件会自己把浏览器拉起来（独立 profile 那个窗口）。
-默认关，因为不想在用户没同意的情况下随便开程序。
+> 插件**不会自己开浏览器**了（`launchBrowser` 那条老路 2026-10-31 删除）：
+> 它只读你已经开着的那个窗口。位置的主通道仍然是浏览器扩展，这条路只在没装扩展时用。
 
 **这意味着：带端口的是一个独立窗口，和你平时那个 Edge 不是同一个。**
 它有自己的 profile，所以**B 站要在这个窗口里登录一次**（之后会记住，cookie 存在

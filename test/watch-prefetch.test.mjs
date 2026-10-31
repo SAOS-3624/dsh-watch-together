@@ -112,7 +112,6 @@ test('wait 之前先把余量建完（进入阻塞的前提）', async () => {
       formatManifest: () => 'm',
       probe: async () => ({ ok: true, sessions: [] }),
       browserPort: 1,
-      autoLaunch: false,
       readBrowser: async () => ({ pos: 10, dur: 900, paused: false, url: 'file:///b3.mp4' }),
     };
     const r = await runWatchPass({ input: 'b3.mp4', wait: true, maxWaitSec: 5, segment: 120 }, deps);

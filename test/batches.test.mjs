@@ -39,12 +39,12 @@ test('ramp 为空就全程等长（库默认行为不变）', () => {
   assert.equal(p.segmentAt(125).to, 240);
 });
 
-test('from(index, count) 给的是连续段，且 sayAt = 段末 - 15', () => {
+test('from(index, count) 给的是连续段（只给边界，不给 sayAt）', () => {
   const p = makePlan({});
   const segs = p.from(0, 3);
   assert.deepEqual(segs.map((s) => [s.from, s.to, s.size]), [[0, 60, 60], [60, 180, 120], [180, 360, 180]]);
-  assert.equal(segs[0].sayAt, 45);
-  assert.equal(segs[2].sayAt, 345);
+  // 交付时刻由调用方按 to - lead 算，批次表不再冻结一个 15 秒的快照
+  assert.equal('sayAt' in segs[0], false);
 });
 
 test('describePlan 能人读', () => {

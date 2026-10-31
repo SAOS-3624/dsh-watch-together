@@ -1,46 +1,25 @@
 /**
- * watch-browser.js — 「浏览器到底在不在」这一件事，加上"没有就拉起来"，以及"读一次位置"。
+ * watch-browser.js — 「浏览器到底在不在」这一件事，加上"读一次位置"。
  *
- * 位置有两条通道（CDP / 浏览器扩展上报），都在 `readPositionOrNull()` 里收口 ——
+ * **这里不负责开浏览器**：位置的主通道是浏览器扩展上报（`position-bridge.js`），
+ * 插件自己拉一个带调试端口的 Edge 是旧方案，2026-10-31 已删除 —— 它会在用户眼前
+ * 多开一个窗口、还得等端口起来，而扩展本来就把 `currentTime` 每秒报过来了。
+ *
+ * 位置有两条通道（扩展 / CDP），都在 `readPositionOrNull()` 里收口 ——
  * 调用方不需要知道这一次是从哪来的。
  *
- * 从 watch-run.js 拆出来的。为什么值得单独一个文件：**这三件事的错误都是静默的**。
+ * 从 watch-run.js 拆出来的。为什么值得单独一个文件：**这两件事的错误都是静默的**。
  * 读不到位置以前是 `.catch(() => null)`，于是"浏览器关着"和"开着但没视频"在模型眼里
  * 一模一样，它只能拿位置去倒推浏览器状态 —— 猜错就对着空气写台词。
  * 所以这里的每个返回值都要求能翻译成一句人话（`describeBrowser`）。
  */
 
-import { launchBrowser, waitForPort } from 'dsh-video-storyboard/browser-time';
 import { readBridge } from './position-bridge.js';
 import { mmss } from './time.js';
 
 /**
- * 把插件自己拉起来的浏览器准备好。
- * 只在"读不到位置 + 配了端口 + 允许自动开 + 不是 attachOnly"时才调用。
- *
- * @param {number} port 调试端口
- * @param {string} [url] 要打开的地址（`file:///…` 或 http 链接）—— 直接落到用户要看的那一页
- *
- * @returns {Promise<{ok:boolean, launched:boolean, via?:string|null, reason?:string|null}>}
- */
-export async function ensureWatchBrowser(port, url = '') {
-  if (!port) return { ok: false, launched: false, reason: 'no-port' };
-  // 带上要看的那个片子：用户说了"陪我看这个链接"，就别让他再在这个窗口里手动打开一次。
-  // 这是"零安装"那条路的体验关键 —— 插件开的窗口直接就是要看的片。
-  const r = launchBrowser({ port, url });
-  if (!r.ok) return { ok: false, launched: true, via: null, reason: r.reason ?? 'launch-failed' };
-  const up = await waitForPort(port);
-  return {
-    ok: up,
-    launched: true,
-    via: r.via ?? null,
-    reason: up ? null : 'port-never-opened',
-  };
-}
-
-/**
  * 读一次播放位置。**两条通道，按优先级**：
- *   1. 浏览器调试端口（CDP）—— 有端口才试
+ *   1. 浏览器调试端口（CDP）—— 配了端口才试
  *   2. 浏览器扩展上报的（`position-bridge.js`）—— 扩展把位置 POST 到本地 9377
  *
  * 没配端口、读不到、CDP 挂了，都不算错 —— 继续试下一条；都不行才返回 null。
@@ -76,31 +55,29 @@ export async function readPositionOrNull(readBrowser, browserPort, { bridge = tr
  * 有位置完全不代表"这个端口上的浏览器开着"。
  *
  * @param {object} state `probeBrowser()` 的返回值
- * @param {string} [launchNote] 本次调用如果自己开了浏览器，附在后面
  */
-export function describeBrowser(state = {}, launchNote = '') {
+export function describeBrowser(state = {}) {
   const port = state?.port;
-  const tail = String(launchNote ?? '');
   switch (state?.state) {
     case 'unconfigured':
-      return 'browser: NOT configured — no debug port (the extension can still report a position)' + tail;
+      return 'browser: NOT configured — no debug port (the extension can still report a position)';
     case 'closed':
-      return `browser: CLOSED :${port} — nothing is listening there; a position (if any) comes from the browser extension, not from this port${tail}`;
+      return `browser: CLOSED :${port} — nothing is listening there; a position (if any) comes from the browser extension, not from this port`;
     case 'no-video': {
       const urls = Array.isArray(state.urls) && state.urls.length > 0
         ? ` (its tabs: ${state.urls.join(' | ')})`
         : '';
-      return `browser: open :${port} but NO tab is holding a <video>${urls}${tail}`;
+      return `browser: open :${port} but NO tab is holding a <video>${urls}`;
     }
     case 'error':
-      return `browser: :${port} is up but the debugger did not answer — treat this as unknown, not as "closed"${tail}`;
+      return `browser: :${port} is up but the debugger did not answer — treat this as unknown, not as "closed"`;
     case 'watching': {
       const what = state.paused ? 'paused' : 'playing';
       const at = Number.isFinite(state.pos) ? ` ${mmss(state.pos)}` : '';
       const title = state.title ? ` ${String(state.title).slice(0, 60)}` : '';
-      return `browser: open :${port}${title} ${what}${at}${tail}`;
+      return `browser: open :${port}${title} ${what}${at}`;
     }
     default:
-      return `browser: unknown (${state?.state ?? 'no state'})${tail}`;
+      return `browser: unknown (${state?.state ?? 'no state'})`;
   }
 }

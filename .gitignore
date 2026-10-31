@@ -21,3 +21,7 @@ cookies.txt
 * cookies*.txt
 video.json
 voice.json
+
+# Python 缓存（悬浮窗/麦克风脚本跑过就会生成）
+__pycache__/
+*.pyc

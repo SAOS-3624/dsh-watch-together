@@ -16,7 +16,6 @@ import { saveLines } from '../src/watch.js';
 const stubDeps = (pos) => ({
   cache: new Map(),
   browserPort: 1,
-  autoLaunch: false,
   readBrowser: async () => ({ pos, dur: 900, paused: false, ended: false, url: 'file:///a.mp4' }),
   probe: async () => ({ ok: true, sessions: [] }),
   saveImage: async ({ data }) => data,

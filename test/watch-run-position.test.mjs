@@ -35,7 +35,6 @@ const makeDeps = ({ reading = null, closed = false } = {}) => ({
   // 显式给端口，否则 readPositionOrNull 会直接返回 null；
   // 但读数由上面的 readBrowser 注入，不会真的去连本机浏览器。
   browserPort: 1,
-  autoLaunch: false,
 });
 
 const PLAYING = {

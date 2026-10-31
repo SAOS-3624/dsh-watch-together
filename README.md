@@ -24,19 +24,28 @@
 
 想只要视频识别、不要陪看：装 `dsh-video-storyboard` 就行，本包不会被拖进来。
 
-## 发布顺序（必须遵守）
+## 发布顺序 —— 但版本号不需要对齐
 
-本包依赖 `dsh-video-storyboard@^0.5.0`，而 **0.5.0 里有本包需要的子路径导出**
-（`./browser-time`、`./board`、`./cache` 等）。所以：
+本包依赖 `dsh-video-storyboard@^0.5.0`。**这是范围，不是等号**：semver 对 0.x 的规定是
+`^0.5.0` = `>=0.5.0 <0.6.0`，所以 storyboard 发 0.5.5、0.5.9 都不必动本包。
+两个包的版本号本来就不同（本包 `0.1.0`，storyboard `0.5.4`），**没有"对齐"这回事**。
+
+范围定在哪，取决于本包到底从它身上拿了什么：**7 个子路径、15 个导出**，
+全部列在 [`test/dep-contract.test.mjs`](test/dep-contract.test.mjs) 里。
+那张表才是真正的契约，版本号只是它的代理 —— 少了导出，`ERR_PACKAGE_PATH_NOT_EXPORTED`
+还算好查；签名悄悄变了才难查，本包不会报错，只是行为不对。
+
+下限为什么不能再低：0.4.5 的 `package.json` 只有 11 条 `exports`，
+本包 `import 'dsh-video-storyboard/browser-time'` 会直接 `ERR_PACKAGE_PATH_NOT_EXPORTED`。
+
+顺序上仍然有先后 —— npm 上必须先有满足这个范围的 storyboard，本包才装得上：
 
 ```
-1) npm publish dsh-video-storyboard@0.5.0   ← 先
-2) npm publish dsh-watch-together@0.1.0     ← 后
+1) npm publish dsh-video-storyboard@0.5.x   ← 先
+2) npm publish dsh-watch-together@0.1.x     ← 后
 ```
 
 反过来会装不上：`npm i dsh-watch-together` 找不到满足 `^0.5.0` 的版本。
-那个依赖范围**不能放宽到 `^0.4.5`** —— 0.4.5 的 `package.json` 只有 11 条 `exports`，
-本包 `import 'dsh-video-storyboard/browser-time'` 会直接 `ERR_PACKAGE_PATH_NOT_EXPORTED`。
 
 ## 安装
 
@@ -129,11 +138,11 @@ watch_together({ ramp: [] })              // 全程等长，不要阶梯
 > **装扩展**：双击 `scripts\install-extension.cmd` —— 它复制好扩展、把路径放进剪贴板、打开扩展管理页，
 > 然后**一直在那儿等**：你点完三下它自己会说「✓ 扩展装上了」，播个视频它再说「✅ 全部完成」。
 > 一个文件、一次双击，装和验证都在里面。步骤与常见错误：[docs/BRIDGE.zh.md](docs/BRIDGE.zh.md)。
->
-> **连三下都不想点？** `~/.dsh/video.json` 里加 `{ "launchBrowser": true }`，
-> 说一句「陪我看这个 <链接>」，插件自己开窗口把片子打开 —— 不用装任何东西，代价是在那个窗口里看。
 
 装了之后：你正常打开 Edge 播 B 站，插件就能看到你在第几秒。**不用开专用窗口，不用配端口。**
+
+> 插件**不会自己开浏览器**（这条老路 2026-10-31 已删）：多开一个窗口并不能让用户正在看的
+> 那一页报出位置。读不到就问一句「你看到几分几秒了」。
 
 两条通道任意通一条就行，插件优先用扩展那条（更新更勤）。
 
@@ -309,7 +318,8 @@ pythonw examples/floating-chat/window.py     # 无控制台
 > **一定要用带 tkinter 的 Python**：Windows 商店版自带；python.org 官方安装包勾上 tcl/tk 也有。
 > WorkBuddy 托管的那份**没有** tkinter。
 
-它和浏览器那个框看的是同一个文件，两个一起开着也不打架。
+它和聊天记录页（`http://127.0.0.1:9377/`，只读兜底）看的是同一个文件，两个一起开着也不打架。
+浏览器置顶小窗（`/widget` + 画中画）那条老路已经删了 —— 要先开一个标签页、关掉就没了。
 
 ## 命令行（没有 DSH 宿主时）
 
@@ -352,7 +362,7 @@ src/
   watch-lines.js    该说什么了：位置轴上的台词队列
 
   watch-source.js   这次看的是哪个源（就是当前页面的地址）
-  watch-browser.js  "浏览器在不在"＋没有就拉起来＋读一次位置
+  watch-browser.js  "浏览器在不在"＋从两条通道读一次位置（不负责开浏览器）
   position.js       位置可信度与推算
   latency.js        交付延迟记录与补偿
   batches.js        变速启动与批次窗口
@@ -363,8 +373,8 @@ src/
   speech.js         台词语速/后延的估算
 
   chat.js           门面 ─┬ chat-store.js    chat.jsonl 读写
-  chat-view.js      ──────┤ 两个 HTML 模板
-  chat-server.js    ──────┘ localhost 四条路由
+  chat-view.js      ──────┤ 聊天记录页模板
+  chat-server.js    ──────┘ localhost 五条路由
 
   time.js           mmss（秒 → "mm:ss"），只有一份实现
 ```

@@ -10,7 +10,7 @@
  */
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { existsSync } from 'node:fs';
+import { readdirSync, existsSync } from 'node:fs';
 import { homedir } from 'node:os';
 import { join } from 'node:path';
 import { pathToFileURL } from 'node:url';
@@ -18,16 +18,40 @@ import { pathToFileURL } from 'node:url';
 import { validateWatchArgs, watchToolSpec } from '../src/tool-spec.js';
 
 const HOST_TOOLS = join(homedir(), '.dsh/profiles/node_modules/@deepseek-ai/dsh-tools/lib/index.js');
+
+/**
+ * `~/.dsh/profiles/node_modules/@deepseek-ai/dsh-tools` 是个 **symlink**（npm 装的），
+ * 而本机穿不过任何重解析点 —— Node 的 stat/readlink/import 一律返回 `UNKNOWN`，
+ * 于是"路径明明在那儿"却读不到。这是本机环境的事实，不是没装 DSH。
+ *
+ * 所以再加一条：去 npx 缓存里找链接的真实目标（`_npx/<hash>/node_modules/…`）。
+ * 哈希每次 npx 都可能变，所以不写死，直接扫。
+ */
+function npxCandidates() {
+  const roots = process.platform === 'win32'
+    ? [join(homedir(), 'AppData/Local/npm-cache/_npx')]
+    : [join(homedir(), '.npm/_npx')];
+  const out = [];
+  for (const root of roots) {
+    if (!existsSync(root)) continue;
+    try {
+      for (const h of readdirSync(root)) out.push(join(root, h, 'node_modules/@deepseek-ai/dsh-tools/lib/index.js'));
+    } catch { /* 读不了就跳过 */ }
+  }
+  return out;
+}
+
 const CANDIDATES = [
   process.env.DSH_TOOLS_PATH,
   HOST_TOOLS,
   '/usr/local/lib/node_modules/@deepseek-ai/dsh-tools/lib/index.js',
+  ...npxCandidates(),
 ].filter(Boolean);
 
 let host;
 let hostPath;
 for (const candidate of CANDIDATES) {
-  if (!existsSync(candidate)) continue;
+  // 符号链接存在性也判不出来（UNKNOWN），所以直接试 import，失败就换下一个
   try {
     host = await import(pathToFileURL(candidate).href);
     hostPath = candidate;
@@ -38,7 +62,10 @@ for (const candidate of CANDIDATES) {
 }
 
 test('contract: watch_together schema 暴露文档里写了的 browserPort / loop / say', async (t) => {
-  if (!host) return t.skip('host @deepseek-ai/dsh-tools not found');
+  if (!host) {
+    return t.skip('host @deepseek-ai/dsh-tools 读不到：没装，或者本机穿不过那条 symlink'
+      + '（用 DSH_TOOLS_PATH 指向真实的 lib/index.js）');
+  }
   t.diagnostic(`host: ${hostPath}`);
   const spec = watchToolSpec();
   const tool = host.defineTool({ ...spec, execute: async () => ({ images: [], text: '' }) });

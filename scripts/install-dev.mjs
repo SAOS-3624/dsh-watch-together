@@ -1,10 +1,11 @@
 #!/usr/bin/env node
 /**
- * install-dev — 把本包（以及它依赖的 dsh-video-storyboard）同步进 DSH 的 desktop profile。
+ * install-dev — 把本包同步进 DSH 的 desktop profile。
  *
- *   node scripts/install-dev.mjs            # 安装 / 同步
- *   node scripts/install-dev.mjs --remove   # 卸载本包（还原 package.json 里本包的条目）
- *   node scripts/install-dev.mjs --check    # 只检查当前状态，不改动
+ *   node scripts/install-dev.mjs              # 只更新本包
+ *   node scripts/install-dev.mjs --with-dep   # 连 dsh-video-storyboard 一起更新
+ *   node scripts/install-dev.mjs --remove     # 卸载本包（还原 package.json 里本包的条目）
+ *   node scripts/install-dev.mjs --check      # 只检查当前状态，不改动
  *
  * 为什么要手动做这件事：desktop profile 由 Electron 应用独占管理，
  * `dsh plugin --profile desktop ...` 会被拒绝（"managed exclusively by the Electron application"）。
@@ -12,10 +13,14 @@
  * 为什么是复制而不是软链：Node 解析裸包名（`@deepseek-ai/dsh-tools`）时用的是真实路径，
  * 软链会让它从源码目录向上找、找不到宿主的包。复制到 profile 的 node_modules 里，
  * 解析链才是 profiles/desktop/node_modules → profiles/node_modules。
+ * （本机还有第二层原因：这台机器穿不过任何重解析点，见 scripts/sync-dep.mjs。）
  *
- * **和 storyboard 那份的差别**：本包 `import 'dsh-video-storyboard/xxx'` 是裸包名，
- * 所以在 profile 的 node_modules 里必须**同时存在** dsh-video-storyboard，否则陪看一加载就
- * ERR_MODULE_NOT_FOUND。这里顺手把同级的那个仓库也复制进去，省得你装两遍再想为什么报错。
+ * **和 storyboard 的关系**：本包 `import 'dsh-video-storyboard/xxx'` 用的是裸包名，所以
+ * profile 的 node_modules 里必须**存在** dsh-video-storyboard，否则陪看一加载就
+ * ERR_MODULE_NOT_FOUND —— 这是 Node 的模块解析，不是两个包绑在一起。
+ * 它存在就行；**不跟着本包一起更新**（`--with-dep` 才更新），因为两者是独立仓库、独立版本线，
+ * 各有各的发版节奏。早期这里无条件覆盖，结果是"改一句陪看的文案，顺手把别人正在改的
+ * 分镜算法也同步进了宿主"。
  */
 
 import { cp, readFile, writeFile, rm } from 'node:fs/promises';
@@ -120,14 +125,24 @@ await syncFiles(HERE, join(MODULES, PKG_NAME));
 await editProfile({ add: true, name: PKG_NAME, src: HERE });
 
 // 2) 依赖（本包裸包名 import 的那一半）
+//
+// **默认只在缺失时补**。两个包是独立的仓库、独立的版本线，各有各的发版节奏：
+// profile 里那份 storyboard 只要能解析到，陪看就能跑，没必要跟着 watch 一起更新 ——
+// 无条件覆盖等于"改一句陪看的文案，顺手把别人正在改的分镜算法也同步进宿主"。
+// 要强制一起更新（首次安装，或你确认过 storyboard 那边也一起上）：加 `--with-dep`。
+const depInstalled = existsSync(join(MODULES, DEP_NAME));
+const forceDep = process.argv.includes('--with-dep');
+
 if (!existsSync(join(DEP_SRC, 'package.json'))) {
   console.warn(`\n⚠️  找不到 ${DEP_NAME} 的源码：${DEP_SRC}`);
   console.warn('   陪看在宿主里会 ERR_MODULE_NOT_FOUND。');
   console.warn('   解决：把两个仓库并排放，或设 DSH_STORYBOARD_SRC=<它的路径>。\n');
-} else {
+} else if (!depInstalled || forceDep) {
   await syncFiles(DEP_SRC, join(MODULES, DEP_NAME));
   await editProfile({ add: true, name: DEP_NAME, src: DEP_SRC });
-  console.log(`依赖 ${DEP_NAME} 已同步（来自 ${DEP_SRC}）`);
+  console.log(`依赖 ${DEP_NAME} 已同步（来自 ${DEP_SRC}）${forceDep && depInstalled ? '（--with-dep 强制）' : ''}`);
+} else {
+  console.log(`依赖 ${DEP_NAME} 已在 profile 里，保持不动（要一起更新加 --with-dep）`);
 }
 
 await report();

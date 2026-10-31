@@ -9,7 +9,7 @@
  *   node watch.mjs status              当前位置 + 当前段 + 该跑什么（新会话先跑这个）
  *   node watch.mjs seg [auto|from to] [cells] [detail]   出宫格 + 清单 + 句子时间轴
  *   node watch.mjs subs [from to]      只拉字幕时间轴（不出图，1 秒）
- *   node watch.mjs say "文本"          立刻念一句（系统 TTS）
+ *   node watch.mjs say "文本"          立刻念一句（edge-tts 优先，退 SAPI）
  *   node watch.mjs cue '[[at,"词"],…]' [lateSec]         到点念，晚了就丢
  *
  * 陪看循环（一次一段）：
@@ -26,7 +26,7 @@
 import { execFile, execFileSync, spawn } from 'node:child_process';
 import { createHash } from 'node:crypto';
 import {
-  appendFileSync, closeSync, cpSync, existsSync, mkdirSync, openSync, readdirSync, readFileSync,
+  closeSync, cpSync, existsSync, mkdirSync, openSync, readdirSync, readFileSync,
   readSync, rmSync, statSync, writeFileSync,
 } from 'node:fs';
 import http from 'node:http';
@@ -46,14 +46,13 @@ import { runStoryboard, formatManifest } from 'dsh-video-storyboard/pipeline';
 import { boardOptions, charsForDetail } from 'dsh-video-storyboard/board';
 import { DEFAULT_LOOKAHEAD, makePlan, windowFor } from '../src/batches.js';
 import {
-  DEFAULT_CHAT_PORT, appendAssistantSay, attachSpeechToChat, chatAlive, chatFile, startChatServer,
+  DEFAULT_CHAT_PORT, appendAssistantSay, appendChat, attachSpeechToChat, chatAlive, chatFile,
+  startChatServer,
 } from '../src/chat.js';
 import { bridgeStatus, readHello } from '../src/position-bridge.js';
 import { readPositionOrNull } from '../src/watch-browser.js';
 import { lineNear, speechLag } from '../src/speech.js';
-import {
-  configuredDshTts, defaultEdgeTtsBin, speak, speakViaEdgeTts,
-} from './tts.mjs';
+import { configuredDshTts, defaultEdgeTtsBin, listVoices, speak } from './tts.mjs';
 
 export { speechLag };
 
@@ -870,26 +869,51 @@ async function cmdStatus() {
  */
 const WB_PROJECTS = `${process.env.USERPROFILE ?? ''}/.workbuddy/projects`;
 
+/**
+ * cwd 对应的 WorkBuddy 项目目录名。
+ * 命名规则（从实际目录反推的）：`D:/deepseek/3-Life` → `d-deepseek-3-Life`
+ * —— 盘符转小写，路径分隔符换成 `-`，其余原样。
+ */
+function wbProjectDirName() {
+  const cwd = process.cwd().replace(/\\/g, '/');
+  const m = cwd.match(/^([A-Za-z]):\/(.+?)\/?$/);
+  if (!m) return null;
+  return `${m[1].toLowerCase()}-${m[2].replace(/\/+$/, '').replace(/\//g, '-')}`;
+}
+
+/** 一批候选目录里最新活跃的会话文件（2 分钟内动过的才算"当前会话"） */
+function newestSessionFile(dirs) {
+  let best = null;
+  let bestM = 0;
+  for (const abs of dirs) {
+    let files;
+    try { files = readdirSync(abs); } catch { continue; }
+    for (const f of files) {
+      if (!f.endsWith('.jsonl') || f.endsWith('.file-rollback.ndjson')) continue;
+      const full = `${abs}/${f}`;
+      try {
+        const m = statSync(full).mtimeMs;
+        if (m > bestM) { bestM = m; best = full; }
+      } catch { /* 读不到就跳过 */ }
+    }
+  }
+  return best && Date.now() - bestM < 120_000 ? best : null;
+}
+
 export function findActiveSessionFile() {
   try {
     if (!existsSync(WB_PROJECTS)) return null;
-    let best = null;
-    let bestM = 0;
-    for (const dir of readdirSync(WB_PROJECTS)) {
-      const abs = `${WB_PROJECTS}/${dir}`;
-      let files;
-      try { files = readdirSync(abs); } catch { continue; }
-      for (const f of files) {
-        if (!f.endsWith('.jsonl') || f.endsWith('.file-rollback.ndjson')) continue;
-        const full = `${abs}/${f}`;
-        try {
-          const m = statSync(full).mtimeMs;
-          if (m > bestM) { bestM = m; best = full; }
-        } catch { /* 读不到就跳过 */ }
-      }
+    const all = readdirSync(WB_PROJECTS).map((d) => `${WB_PROJECTS}/${d}`);
+    // **先只看本项目**的会话：用户很可能同时开着另一个窗口聊天，
+    // 全局拿"最新"会把别的会话里的话当成这里的插话（真发生过）。
+    const mine = wbProjectDirName();
+    if (mine) {
+      const mineDirs = all.filter((d) => d.split('/').pop().toLowerCase() === mine.toLowerCase());
+      const hit = newestSessionFile(mineDirs);
+      if (hit) return hit;
     }
-    // 太久没动说明不是当前会话
-    return best && Date.now() - bestM < 120_000 ? best : null;
+    // 本项目没有活跃会话才退回全局（cwd 不在项目里等场合）
+    return newestSessionFile(all);
   } catch { return null; }
 }
 
@@ -899,37 +923,46 @@ export function makeInterruptWatcher(explicitFile = null) {
   let offset = 0;
   try { offset = statSync(file).size; } catch { return null; }
   let tail = '';
+  const queued = [];
+  // 只认"这之后说的话"：宿主会把**老消息事后补写**进文件（时间戳还是老的），
+  // 不按时间戳滤掉的话，本轮的起手消息会被当成插话、再打断一次自己。
+  const since = Date.now() - 5000;
   return {
     file,
-    /** 有新用户消息就返回 {at, text}，否则 null */
+    /** 有新用户消息就返回 {at, text}，否则 null。一批多条就一条条给，不丢 */
     poll() {
       let size;
       try { size = statSync(file).size; } catch { return null; }
-      if (size <= offset) return null;
-      const len = size - offset;
-      try {
-        const fd = openSync(file, 'r');
-        const buf = Buffer.alloc(len);
-        readSync(fd, buf, 0, len, offset);
-        closeSync(fd);
-        offset = size;
-        tail += buf.toString('utf8');
-      } catch { offset = size; return null; }
+      if (size > offset) {
+        const len = size - offset;
+        try {
+          const fd = openSync(file, 'r');
+          const buf = Buffer.alloc(len);
+          readSync(fd, buf, 0, len, offset);
+          closeSync(fd);
+          offset = size;
+          tail += buf.toString('utf8');
+        } catch { offset = size; }
 
-      const lines = tail.split('\n');
-      tail = lines.pop() ?? '';           // 最后一行可能写了一半，留到下次
-      for (const line of lines) {
-        if (!line.trim()) continue;
-        let j;
-        try { j = JSON.parse(line); } catch { continue; }
-        if (j.type !== 'message' || j.role !== 'user') continue;
-        const c = j.content;
-        const text = typeof c === 'string'
-          ? c
-          : (Array.isArray(c) ? c.find((x) => x?.type === 'text')?.text : '') ?? '';
-        return { at: j.timestamp ?? Date.now(), text: String(text).replace(/\s+/g, ' ').slice(0, 120) };
+        const lines = tail.split('\n');
+        tail = lines.pop() ?? '';           // 最后一行可能写了一半，留到下次
+        for (const line of lines) {
+          if (!line.trim()) continue;
+          let j;
+          try { j = JSON.parse(line); } catch { continue; }
+          if (j.type !== 'message' || j.role !== 'user') continue;
+          const ts = Number(j.timestamp);
+          if (Number.isFinite(ts) && ts < since) continue;   // 补写的老消息：不是插话
+          const c = j.content;
+          const text = typeof c === 'string'
+            ? c
+            : (Array.isArray(c) ? c.find((x) => x?.type === 'text')?.text : '') ?? '';
+          if (String(text).trim()) {
+            queued.push({ at: j.timestamp ?? Date.now(), text: String(text).replace(/\s+/g, ' ').slice(0, 120) });
+          }
+        }
       }
-      return null;
+      return queued.shift() ?? null;
     },
   };
 }
@@ -938,18 +971,38 @@ export function makeInterruptWatcher(explicitFile = null) {
 
 // 和插件共用同一个聊天记录（src/chat.js 的 chatFile）：两边读写同一份，插话才通
 const CHAT = chatFile();
+/** 模型对用户消息的"已读到第几条"。cue 每次都是新进程，没有这个文件的话，
+ *  两次 cue 之间（思考 / 建图 / 回话）用户说的话永远没人看见 —— 静默丢失。 */
+const CURSOR = `${OUT}/chat-cursor.json`;
+/** cursor 之后还压着未读、但整个流这么久没动过 → 认定是上次陪看的残留，不当新插话 */
+const CHAT_STALE_MS = 30 * 60_000;
 
-function chatRead() {
+function chatRead(file = CHAT) {
   try {
-    return readFileSync(CHAT, 'utf8').trim().split('\n').filter(Boolean)
+    return readFileSync(file, 'utf8').trim().split('\n').filter(Boolean)
       .map((l) => { try { return JSON.parse(l); } catch { return null; } })
       .filter(Boolean);
   } catch { return []; }
 }
 
-function chatAppend(role, text) {
-  mkdirSync(OUT, { recursive: true });
-  appendFileSync(CHAT, `${JSON.stringify({ role, text, at: Date.now() })}\n`, 'utf8');
+function readCursor(file = CURSOR) {
+  try {
+    const j = JSON.parse(readFileSync(file, 'utf8'));
+    const n = Number(j?.n);
+    return Number.isFinite(n) && n >= 0 ? { n, at: Number(j?.at) || 0 } : null;
+  } catch { return null; }
+}
+
+function writeCursor(n, file = CURSOR) {
+  try { writeFileSync(file, JSON.stringify({ n: Math.max(0, Math.floor(n)), at: Date.now() }), 'utf8'); } catch { /* 写不进就退化为进程内基线 */ }
+}
+
+/** 游标推到"当前末尾"。只在**确定模型已经看到**的时候用（比如插话是从宿主输入框
+ *  听来的、顺手补进聊天流之后）——盲目推进会把没交付的消息静默吞掉。 */
+function markChatRead(file = CHAT, cursorFile = CURSOR) {
+  const n = chatRead(file).length;
+  writeCursor(n, cursorFile);
+  return n;
 }
 
 /**
@@ -958,16 +1011,48 @@ function chatAppend(role, text) {
  * 为什么不是盯宿主的会话 jsonl：实测宿主不在阻塞期间落盘（用户 03:05:35 发的消息，
  * 写进文件时排在我 03:05:52 那条回复之后），所以那条路永远慢一拍。
  * 这个文件是我们自己写的，append 即落盘 —— 这才是真正"边等边能听见"的通道。
+ *
+ * 三条规矩，都是踩过坑才加的：
+ *   · **基线从 cursor 文件起**，不是"现在的条数"——否则两次 cue 之间说的话全部漏掉；
+ *   · **一批里有多条用户消息，只消费到被报告的那条**——"回完话再来取剩下的"，
+ *     一口气全标成已读会把没说完的话吞掉；
+ *   · 文件没长大就不重新解析（statSync 短路）——阻塞循环 500ms 一拍，别每拍全量读。
  */
-function makeChatWatcher() {
-  let seen = chatRead().length;
+export function makeChatWatcher({ file = CHAT, cursorFile = CURSOR, staleMs = CHAT_STALE_MS } = {}) {
+  let rows = chatRead(file);
+  let size = -1;
+  try { size = statSync(file).size; } catch { /* 还没有文件 = 空流 */ }
+  const cur = readCursor(cursorFile);
+  let seen = cur && cur.n <= rows.length ? cur.n : rows.length;
+  // 跨会话残留：压着未读、但流早就不动了（上次陪看没回完的话），别当成新插话
+  if (rows.length > seen) {
+    const lastAt = Number(rows[rows.length - 1]?.at) || 0;
+    if (lastAt && Date.now() - lastAt > staleMs) seen = rows.length;
+  }
+  // **基线一建立就必须落盘**（游标不存在时尤其要写）：
+  // 这一轮 cue 如果一句话都没等到（很常见），不落盘的话下一个进程又会拿
+  // "当前条数"当基线 —— 空窗期用户说的话照样全丢，等于没修。
+  if (!cur || seen !== cur.n) writeCursor(seen, cursorFile);
   return () => {
-    const all = chatRead();
-    if (all.length <= seen) return null;
-    const fresh = all.slice(seen);
-    seen = all.length;
-    const u = fresh.find((m) => m.role === 'user' && String(m.text ?? '').trim());
-    return u ? { text: u.text, at: u.at } : null;
+    let st;
+    try { st = statSync(file); } catch { return null; }
+    if (st.size !== size) {
+      rows = chatRead(file);
+      size = st.size;
+      if (seen > rows.length) seen = rows.length;   // 文件被清过：基线重置
+    }
+    if (rows.length <= seen) return null;
+    const fresh = rows.slice(seen);
+    const k = fresh.findIndex((m) => m.role === 'user' && String(m.text ?? '').trim());
+    if (k < 0) {
+      seen = rows.length;                            // 全是台词/插话：没有要报的
+      writeCursor(seen, cursorFile);
+      return null;
+    }
+    const u = fresh[k];
+    seen += k + 1;                                   // 只消费到这条；后面留着下次
+    writeCursor(seen, cursorFile);
+    return { text: u.text, at: u.at };
   };
 }
 
@@ -1055,6 +1140,18 @@ function markCueState(obj) {
   try {
     writeFileSync(CUE_STATE, JSON.stringify({ ...obj, at: Date.now(), pid: process.pid }, null, 1), 'utf8');
   } catch { /* 写不了就算了，不影响念词 */ }
+}
+
+/** 有没有**另一个** cue 进程正在阻塞。看 cue-state.json：phase=blocking
+ *  且里面记的 pid 还活着才算占线；进程已死的是被强杀后的残留，不算。
+ *  `file` 可注入 —— 单测里不能拿真的 .tmp/watch 去做并发实验。 */
+export function cueBusy(file = CUE_STATE) {
+  try {
+    const j = JSON.parse(readFileSync(file, 'utf8'));
+    if (!j || j.phase !== 'blocking' || !Number.isFinite(j?.pid) || j.pid === process.pid) return null;
+    try { process.kill(j.pid, 0); } catch { return null; }   // ESRCH = 那个进程已经没了
+    return j;
+  } catch { return null; }
 }
 
 /** 上次那条命是怎么没的 */
@@ -1233,32 +1330,41 @@ async function cmdSubs(from = 0, to = 1e9) {
 }
 
 async function cmdSay(text, engine = 'auto') {
-  if (!text) { console.log('用法: node watch.mjs say "文本" [dsh|sapi]'); return 2; }
+  if (!text) { console.log('用法: node watch.mjs say "文本" [sapi]'); return 2; }
   const t0 = Date.now();
   // 先占住窗口（大值），念完再收紧到"结束后 3 秒"——
   // 中间那几秒如果不占，cue 会趁这段时间把台词念进来，正好叠在一起
   setQuiet(t0 + 120_000);
 
-  let r = null;
-  let via = 'sapi';
-  // 1) edge-tts（神经音色，最好）—— 装了就用，不用等任何服务
-  if (engine !== 'sapi') {
-    const cfg = configuredDshTts();
-    const bin = defaultEdgeTtsBin();
-    if (bin) {
-      const e = await speakViaEdgeTts(text, { bin, voice: cfg?.voice || 'zh-CN-XiaoxiaoNeural' });
-      if (e.ok) { r = e; via = 'edge-tts'; }
-      else if (engine === 'dsh') console.log(`NOTE edge-tts 失败（${e.reason}）`);
-    }
-  }
-  if (!r) r = await speak(text, { rate: 0 });
+  // speak() 内部就是 edge-tts 优先、失败退 SAPI，音色映射（edgeVoiceFor）也在里面。
+  // 旧版在这里先手动抢跑一遍 edge-tts —— 除了白试两遍，还绕过了音色映射：
+  // ~/.dsh/tts.json 里配的是 SAPI 名（如 Huihui）时会原样传给 edge-tts，必然失败。
+  const r = engine === 'sapi'
+    ? await speak(text, { rate: 0, engine: 'sapi' })
+    : await speak(text, { rate: 0 });
 
   setQuiet(Date.now() + 3000);
   console.log(JSON.stringify({
-    ...r, via, text, ms: Date.now() - t0,
+    ...r, via: r.engine ?? 'sapi', text, ms: Date.now() - t0,
     quietUntil: new Date(Date.now() + 3000).toLocaleTimeString('zh-CN', { hour12: false }),
   }));
   return r.ok ? 0 : 1;
+}
+
+/** 列可用音色 + 当前配置。排查"为什么听到的还是那个导航女声"的第一站。 */
+async function cmdVoices() {
+  const cfg = configuredDshTts();
+  const bin = defaultEdgeTtsBin();
+  const sapi = await listVoices();
+  console.log(JSON.stringify({
+    engine: bin ? 'edge-tts（默认优先）' : 'SAPI（没找到 edge-tts）',
+    edgeTtsBin: bin,
+    configuredVoice: cfg?.voice ?? null,
+    sapiVoices: sapi,
+  }, null, 1));
+  console.log('换音色：改 ~/.dsh/tts.json 的 voice —— edge-tts 认 zh-CN-XiaoxuanNeural 这类名字，');
+  console.log('SAPI 认上面列表里的全名（如 Microsoft Huihui Desktop）。写错引擎的名字会静默回落默认声音。');
+  return 0;
 }
 
 /**
@@ -1283,6 +1389,19 @@ async function cmdCue(json, args = []) {
   const lagOff = strArgs.includes('off');
   const checkOnly = strArgs.includes('check');
   const maxWait = Number((strArgs.find((x) => x.startsWith('max-wait=')) ?? '').split('=')[1]) || 0;
+
+  // ---- 双 cue 防护：同时跑两个 cue 会各念各的、pending 互相覆盖。
+  // cue-state.json 里 phase=blocking 且那个 pid 还活着 = 真的有另一个在跑；
+  // 进程已死的是上次被强杀的残留，放行。check 模式只读不占，不受限制。
+  if (!checkOnly) {
+    const busy = cueBusy();
+    if (busy) {
+      const ago = Math.max(0, Math.round((Date.now() - (busy.at ?? Date.now())) / 1000));
+      console.log(`BUSY 已有一个 cue 在阻塞（pid ${busy.pid}，${ago}s 前开始），不能同时跑两个。`);
+      console.log('     先停掉那个后台任务再开新的；只想核对计划用 check 模式（不占锁）。');
+      return 1;
+    }
+  }
 
   const s0 = await pos();
   const src0 = await inputFor(s0);
@@ -1352,7 +1471,6 @@ async function cmdCue(json, args = []) {
   console.log(interrupt
     ? `NOTE 插话监听 → ${interrupt.file}`
     : 'NOTE 插话监听不可用（没找到当前会话的 jsonl，插话只能等阻塞结束）');
-  markCueState({ phase: 'blocking', deliverAt: +deliverAt.toFixed(1), pos0: +(s0?.pos ?? 0).toFixed(1), planned: planned.length });
   const deadline = maxWait > 0 ? Date.now() + maxWait * 1000 : Infinity;
   // ---- 可选的时间核对：进阻塞之前先看一眼，别闷头等
   if (checkOnly) {
@@ -1367,15 +1485,27 @@ async function cmdCue(json, args = []) {
     ].join('\n'));
     return 0;
   }
+  // 进阻塞才记 blocking 状态 —— check 模式到此已返回，不该把状态留成
+  // "正在阻塞"（那会让下次启动误报"上次被外部中止"，也会误触双 cue 防护）
+  markCueState({ phase: 'blocking', deliverAt: +deliverAt.toFixed(1), pos0: +(s0?.pos ?? 0).toFixed(1), planned: planned.length });
 
   let miss = 0;
   let i = 0;
   let brokeOnEnded = false;
+  let lastPos = null;   // 上一拍的位置，用来识别"用户拖了进度条"
   while (i < planned.length) {
     // 用户插话：唯一"边等边能听见"的通道。必须每次迭代**最先**检查 ——
     // 以前它放在 SKIP/SAY 之后，念词那几秒成了盲区，实测漏掉过一次。
-    const hitNow = chatPoll() ?? interrupt?.poll();
+    const fromChat = chatPoll();
+    const hitNow = fromChat ?? interrupt?.poll();
     if (hitNow) {
+      // 宿主输入框听来的插话也补进统一文本流：聊天框页面得看得到用户说了什么，
+      // 不然这条流就缺一块。补写后把游标推到末尾 —— 这条已经交付给模型了，
+      // 下次 cue 不能再报一遍（chatPoll 刚扫过，此刻没有别的未读压在下面）。
+      if (!fromChat) {
+        try { appendChat('user', String(hitNow.text ?? '').slice(0, 500)); } catch { /* 展示层的事 */ }
+        markChatRead();
+      }
       const restNow = planned.slice(i).map((p) => [p.at, p.text]);
       if (src0) savePending(src0, restNow);
       console.log(`INTERRUPT 用户插话 @${new Date(hitNow.at).toLocaleTimeString('zh-CN', { hour12: false })}「${hitNow.text}」`);
@@ -1397,6 +1527,33 @@ async function cmdCue(json, args = []) {
       continue;
     }
     miss = 0;
+    // ---- 换片：cue 挂着的时候用户换了视频。旧片的台词和交付点对新片毫无意义，
+    // 最坏情况（新片更短）会**永远等不到** deliverAt。立刻退出让模型重新规划。
+    {
+      const url0 = s0?.url ? normalizeInput({ url: s0.url }) : null;
+      const url1 = s.url ? normalizeInput({ url: s.url }) : null;
+      const changed = (url0 && url1 && url0 !== url1)
+        || (s0?.dur && Number.isFinite(s.dur) && Math.abs(s0.dur - s.dur) > 1);
+      if (changed) {
+        const rest = planned.slice(i).map((p) => [p.at, p.text]);
+        if (src0) savePending(src0, rest);
+        console.log(`VIDEO-CHANGED 片子换了（现在在放：${(s.title ?? '').slice(0, 60) || '未知'} @ ${tc(s.pos)}）`);
+        console.log(`             剩 ${rest.length} 句按旧片存进 pending；回去 status 重新规划`);
+        markCueState({ phase: 'end', reason: 'video-changed（用户换了片子）' });
+        return 0;
+      }
+    }
+    // ---- 回看：用户把进度条拖回去超过 1 分钟。已念的不会重念（避免复读），
+    // 但模型得知道用户在重看 —— 它还按旧进度憋着台词，一憋就是好几分钟。
+    if (lastPos !== null && lastPos - s.pos > 60) {
+      const rest = planned.slice(i).map((p) => [p.at, p.text]);
+      if (src0) savePending(src0, rest);
+      console.log(`REWIND 用户回看：从 ${tc(lastPos)} 拖回 ${tc(s.pos)}。已念的不重播，`
+        + `剩 ${rest.length} 句存 pending；回去看看要不要为新进度重新排词`);
+      markCueState({ phase: 'end', reason: 'rewind（用户拖进度条回看）' });
+      return 0;
+    }
+    lastPos = s.pos;
     // 迟到的容差按**实际开口时刻**算，不然加了延以后全都会被误判成 SKIP
     if (s.pos >= speakAt + late) {
       console.log(`SKIP ${tc(at)}${lag > 0 ? ` (+${lag}s)` : ''} (已在 ${tc(s.pos)}，晚了)`);
@@ -1460,10 +1617,10 @@ function usage() {
   node watch.mjs seg <from> <to> [cells] [detail]
   node watch.mjs fill [lookahead] [cells] [detail]  一次补满余量（默认 300s = 5 分钟）
   node watch.mjs subs [from] [to]      只看字幕时间轴
-  node watch.mjs say "文本" [dsh|sapi]  立刻念一句（dsh = 用 DSH 那个 edge-tts 插件的声音）
+  node watch.mjs say "文本" [sapi]  立刻念一句（默认 edge-tts 优先，失败退 SAPI；sapi = 强制系统声音）
   node watch.mjs chat [port]           起独立聊天框（默认 9377）—— 插话入口
   node watch.mjs reply "文本"           把话说进聊天框（页面能看到）
-  node watch.mjs voices               列可选音色 —— 改 ~/.dsh/tts.json 的 voice 就换声
+  node watch.mjs voices               列可选音色 + 当前配置 —— 换声先看这个
   node watch.mjs cue '[[at,"词"],…]' [lateSec] [off] [check] [max-wait=秒]
         到点念；按字数自动后延 0.4–2.0s。
         默认念到**本段交付点**（seg.to-15s）就返回，让模型去看下一段 —— 一段只醒一次。
@@ -1474,8 +1631,10 @@ function usage() {
 
 插话：chat 起的那个页面才是插话入口 —— 它自己写盘，阻塞中的 cue 600ms 内就能收到。
       宿主的输入框做不到（实测阻塞期间不落盘，消息要等这轮结束才写进文件）。
+      两次 cue 之间（思考/建图/回话时）说的话不会丢：游标文件记着已读到哪，下次 cue 一进来就报。
 余量：status 里的 buffer 行是"还能撑多久"。不足 5 分钟就 fill，别一段一段挤。
 阻塞不靠固定心跳（白烧 token）：cue 到段交付点自然返回。用户随时发消息就是打断。
+      片子被换掉 / 用户往回拖超过 1 分钟，cue 也会立刻退出（VIDEO-CHANGED / REWIND）。
 产物在 ${OUT}`);
 }
 
@@ -1500,8 +1659,13 @@ async function cli() {
       case 'fill': code = await cmdFill(rest); break;
       case 'subs': code = await cmdSubs(rest[0] ? Number(rest[0]) : 0, rest[1] ? Number(rest[1]) : 1e9); break;
       case 'say': {
+        // 'dsh' 是旧参数（那个 HTTP 接口已删）：保留兼容，按默认引擎处理
         const last = rest[rest.length - 1];
-        const eng = (last === 'dsh' || last === 'sapi') ? rest.pop() : 'auto';
+        let eng = 'auto';
+        if (last === 'sapi' || last === 'dsh') {
+          rest.pop();
+          if (last === 'sapi') eng = 'sapi';
+        }
         code = await cmdSay(rest.join(' '), eng);
         break;
       }

@@ -142,7 +142,9 @@ export function shouldSpeak({
   }
   const pos = est.pos + Math.max(0, aheadSec);
   for (const seg of segments) {
-    const sayAt = Number.isFinite(seg.sayAt) ? seg.sayAt : seg.to - lead;
+    // 交付时刻 = 段末 - lead。**不再读 `seg.sayAt`**：那是批次表在 lead=15 时冻结的快照，
+    // 一旦调用方传了别的 lead，两条路的"该说话时刻"就会差一截（见 batches.js 的 from()）。
+    const sayAt = seg.to - lead;
     if (spoken.includes(seg.from)) continue;
     if (pos < sayAt) continue;
     if (pos > seg.to + 60) continue;                     // 早就过去了，不补

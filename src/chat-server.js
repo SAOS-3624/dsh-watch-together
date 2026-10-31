@@ -1,9 +1,8 @@
 /**
- * chat-server.js — 聊天框的 localhost 服务：两条页面路由 + 两个 API + 生命周期。
+ * chat-server.js — 聊天框的 localhost 服务：一条页面路由 + 四个 API + 生命周期。
  *
  * 路由：
- *   GET  /              完整版页面（消息列表 + 输入框）
- *   GET  /widget        胶囊版（只有输入框）
+ *   GET  /              完整版页面（消息列表 + 输入框，只读兜底）
  *   GET  /api/messages  自 `since` 起的增量，给页面每 600ms 轮询
  *   POST /api/say       用户说的话，写进流并回调 onUser
  *   POST /api/position  浏览器扩展上报播放位置（见 position-bridge.js）
@@ -12,11 +11,14 @@
  * 页面内容在 `chat-view.js`，流在 `chat-store.js`。这里只做"收请求、派给谁"。
  * CLI（`watch.mjs`）和 DSH 插件（`watch_together`）都读同一个文件、同一套 watcher，
  * 谁先起服务谁占端口，另一个复用（`chatAlive` 判）。
+ *
+ * 输入框的主入口是 Python 悬浮窗（`floating-window.js`），不是这个页面：
+ * 浏览器置顶小窗（`GET /widget` + `documentPictureInPicture`）那条老路已删除。
  */
 
 import { createServer } from 'node:http';
 
-import { CHAT_PAGE, WIDGET_PAGE, renderPage } from './chat-view.js';
+import { CHAT_PAGE, renderPage } from './chat-view.js';
 import { appendChat, readChat } from './chat-store.js';
 import { readBridge, readHello, writeBridge, writeHello } from './position-bridge.js';
 
@@ -31,7 +33,6 @@ export async function startChatServer({
   port = DEFAULT_CHAT_PORT, env = process.env, onUser = null, log = null,
 } = {}) {
   const page = renderPage(CHAT_PAGE, port);
-  const widget = renderPage(WIDGET_PAGE, port);
 
   // 扩展从**网页的源**发请求，属于跨域；而且是从公网页面访问本地地址，
   // Chrome 的 Private Network Access 还要求预检里看到 allow-private-network。
@@ -101,11 +102,6 @@ export async function startChatServer({
       res.end(page);
       return;
     }
-    if (u.pathname === '/widget') {
-      res.writeHead(200, { 'content-type': 'text/html; charset=utf-8' });
-      res.end(widget);
-      return;
-    }
     if (u.pathname === '/api/messages') {
       const since = Math.max(0, Number(u.searchParams.get('since')) || 0);
       const all = readChat(env);
@@ -117,17 +113,21 @@ export async function startChatServer({
       let body = '';
       req.on('data', (c) => { body += c; if (body.length > 8000) req.destroy(); });
       req.on('end', () => {
+        let ok = false;
         try {
           const j = JSON.parse(body);
           const text = String(j?.text ?? '').trim().slice(0, 500);
           if (text) {
             appendChat('user', text, {}, env);
+            ok = true;
             log?.(`[用户] ${text}`);
             onUser?.(text);
           }
         } catch { /* 坏请求就算了 */ }
+        // ok:false 让页面能把话回填进输入框 —— 之前一律 ok:true，
+        // 服务端没写进去用户也不知道，字就丢了
         res.writeHead(200, { 'content-type': 'application/json' });
-        res.end('{"ok":true}');
+        res.end(JSON.stringify({ ok }));
       });
       return;
     }
@@ -153,7 +153,14 @@ export async function startChatServer({
 let chatSession = null;
 export function ensureChatSession(port = DEFAULT_CHAT_PORT) {
   if (!chatSession) {
-    chatSession = startChatServer({ port }).catch(() => null);
+    // **起不来不许把失败永久缓存**：以前一被赋成"失败的 promise"，这一整个进程里就再也不会
+    // 尝试监听 —— 端口被别人占过一下，插话通道就永久废掉，而且完全没有提示。
+    chatSession = startChatServer({ port })
+      .catch(() => null)
+      .then((srv) => {
+        if (!srv) chatSession = null;
+        return srv;
+      });
   }
   return chatSession;
 }
@@ -175,4 +182,14 @@ export async function chatAlive(port = DEFAULT_CHAT_PORT, timeoutMs = 1200) {
     const r = await fetch(`http://127.0.0.1:${port}/api/messages?since=0`, { signal: ac.signal });
     return r.ok;
   } catch { return false; } finally { clearTimeout(timer); }
+}
+
+/**
+ * 聊天记录页的地址。**只读兜底**：输入框的主入口是 `floating-window.js` 打开的
+ * Python 悬浮窗（`examples/floating-chat/window.py`）。两个前端读同一个 `chat.jsonl`，
+ * 都开着也不冲突。页面里说的话 → `POST /api/say` → 写进 chat.jsonl → 阻塞循环
+ * 每 150–500ms 读一次，立刻把这一句交还给模型（见 interrupt.js / watch-run.js 的 wait 循环）。
+ */
+export function chatPageUrl(port = DEFAULT_CHAT_PORT) {
+  return `http://127.0.0.1:${port}/`;
 }

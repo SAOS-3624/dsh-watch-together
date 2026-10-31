@@ -16,7 +16,6 @@ import { saveLines } from '../src/watch.js';
 const depsWith = (posAt) => ({
   cache: new Map(),
   browserPort: 1,
-  autoLaunch: false,
   readBrowser: async () => ({ pos: posAt(), dur: 900, paused: false, ended: false, url: 'file:///a.mp4' }),
   probe: async () => ({ ok: true, sessions: [] }),
   saveImage: async ({ data }) => data,

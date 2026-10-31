@@ -20,7 +20,6 @@ const deps = (posAt) => ({
   formatManifest: () => 'm',
   probe: async () => ({ ok: true, sessions: [] }),
   browserPort: 1,                       // 只有给了端口才会读浏览器（假端口，不会真起浏览器）
-  autoLaunch: false,                    // 测试里绝不能真去 spawn 一个 Edge
   readBrowser: async () => ({ pos: posAt(), dur: 600, paused: false, url: 'file:///a.mp4' }),
 });
 
@@ -196,7 +195,6 @@ test('waitForVideo: 视频一出现就认出来（不再 2 秒一拍地等）', 
     const d = {
       ...deps(() => 100),
       browserPort: 1,
-      autoLaunch: false,
       // 前两次读不到，第三次才出现 —— 以前一次要等 2 秒，现在 300ms 一拍
       readBrowser: async () => {
         reads += 1;
@@ -223,7 +221,6 @@ test('位置长时间不动就自己收工（不永远挂着）', async () => {
     const d = {
       ...deps(() => 100),
       browserPort: 1,
-      autoLaunch: false,
       // 在"播放"，但位置一直是 100 —— 缓冲卡死/页签挂起的样子
       readBrowser: async () => ({ pos: 100, dur: 600, paused: false, url: 'file:///a.mp4' }),
     };

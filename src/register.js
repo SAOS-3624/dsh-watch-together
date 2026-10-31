@@ -24,7 +24,11 @@ export function watchTools(defineTool, ctx, { getSessionId = () => null, cache =
   return [
     defineTool({
       ...watchToolSpec(),
-      execute: (args) => handler.execute(ctx, args, { sessionId: getSessionId(), cache }),
+      // 第二个参数是宿主的 `ToolRunContext`：`signal` 是"这一轮被取消了"的唯一通知。
+      // 丢掉它的话，用户按停止之后阻塞循环还会继续轮询浏览器（默认 2×段长，封顶 600s）。
+      execute: (args, run) => handler.execute(ctx, args, {
+        sessionId: getSessionId(), cache, signal: run?.signal ?? null,
+      }),
     }),
   ];
 }

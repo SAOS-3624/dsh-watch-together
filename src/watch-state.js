@@ -12,16 +12,19 @@ import { mkdir, readFile, writeFile } from 'node:fs/promises';
 import { join } from 'node:path';
 
 import { cacheDir } from 'dsh-video-storyboard/cache';
+import { DEFAULT_SEGMENT } from './batches.js';
 
-/** 默认一段多长（秒）。120 s：60 分钟片 = 30 段，成本与连贯性的折中。 */
-export const WATCH_SEGMENT = 120;
-/** 提前多少秒交付：用户还在看，但这段快到尾巴了，此刻插话不打断。 */
+/**
+ * 提前多少秒交付：用户还在看，但这段快到尾巴了，此刻插话不打断。
+ *
+ * **段长不在这里** —— 它由 `batches.js` 的批次表唯一定义（1/2/3/4 分钟 → 5 分钟稳定）。
+ * 这里以前还导出一个 `WATCH_SEGMENT = 120`，和批次表的 300 并存，于是
+ * "一段多长"在代码里有两个答案：谁先兜底就用谁的。2026-10-31 收成一处。
+ */
 export const WATCH_LEAD = 15;
 
 /** 路径归一成小写正斜杠 —— 同一个文件在不同写法下必须算同一个会话。 */
 export const norm = (p) => String(p ?? '').replace(/\\/g, '/').toLowerCase();
-
-export const segmentStart = (cursor, size = WATCH_SEGMENT) => Math.floor(Math.max(0, cursor) / size) * size;
 
 export function watchPath(env = process.env) {
   return join(cacheDir(env), 'watch.json');
@@ -56,7 +59,7 @@ export function sessionKey(input) {
  * 交付点刻意放在**段末前 lead 秒**，不是段末：
  * 用户正看着的时候插一句"这段快完了"，比卡在切换点更自然。
  */
-export function deliveryState({ cursor, segment, size = WATCH_SEGMENT, lead = WATCH_LEAD }) {
+export function deliveryState({ cursor, segment, size = DEFAULT_SEGMENT, lead = WATCH_LEAD }) {
   const end = segment + size;
   const remaining = end - cursor;
   return {
