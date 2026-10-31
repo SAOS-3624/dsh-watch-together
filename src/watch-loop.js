@@ -18,6 +18,7 @@ import {
 import { startTicker, wakeSession } from './timer.js';
 import { DEFAULT_LOOKAHEAD, DEFAULT_SEGMENT, describePlan, makePlan, windowFor } from './batches.js';
 import { readBrowserPosition } from 'dsh-video-storyboard/browser-time';
+import { floatingWindowAlive } from './floating-window.js';
 import { readPositionOrNull } from './watch-browser.js';
 import { emitSpeech, speechSubscribers } from './voice.js';
 import { consumeLine, dueLine, hasLine, loadLine, WATCH_LEAD } from './watch.js';
@@ -150,6 +151,10 @@ export function startWatchLoop({
   // 钟再额外 `followup()` 一次，用户那边看到的是"2 条排队消息：[一起看] 00:00–01:00 该说话了…"，
   // 而这些消息还会挡住用户真正要说的话。要恢复旧行为就显式传 `wake: true`。
   wake: wakeOpt = false,
+  // **关窗即收工**：用户把悬浮窗一关就是"我看完了"，比任何位置推断都直接。
+  // 只有真的开过窗才生效（`windowGuard: true` 由 handler 在窗口就绪时传）；
+  // 没开窗（环境变量关掉、Python 缺失、或压根不需要插话）时为 false，不会误停。
+  windowGuard = false,
 }) {
   const wake = wakeOpt === true
     ? (deps.wake ?? ((c, o) => wakeSession(c, o)))
@@ -169,6 +174,8 @@ export function startWatchLoop({
   // `video.currentTime` 是**毫秒级真值**。拿不到就当作"这次没读到"，
   // 由上层决定是问用户还是停表 —— 不猜、不外推到很远。
   const readBrowser = deps.readBrowser ?? ((o) => readBrowserPosition(o));
+  // 窗口"还开着吗"也可注入：真机用 pid 判活，测试里给个假的
+  const windowAlive = deps.windowAlive ?? floatingWindowAlive;
   // 端口来源：显式参数 → ~/.dsh/video.json → 环境变量（桌面版读不到 setx 的 env，所以文件优先）
   // 端口只从调用方传进来（工具层读配置）；库层不隐式读机器配置，否则单测会被本机状态影响
   const browserPort = explicitPort ?? deps.browserPort ?? null;
@@ -274,6 +281,17 @@ export function startWatchLoop({
     everyMs: TICK_MS,
     tick: async () => {
       const tNow = now();
+
+      // 每一拍先看窗口还在不在：关掉就别再跟了。
+      // 放在读位置之前 —— 窗口没了就没有"插话入口"，继续跟只会占着会话。
+      if (windowGuard && !windowAlive()) {
+        void wake(loop.ctx, {
+          sessionId: loop.sessionId,
+          text: '[一起看] 悬浮窗被关掉了，陪看已自动停止。要看就再说一声，我会重新开窗接着跟。',
+        });
+        stopWatchLoop('widget-closed');
+        return;
+      }
 
       if (tNow - loop.lastProbeAt >= probeEveryMs) {
         loop.lastProbeAt = tNow;

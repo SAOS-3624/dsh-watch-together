@@ -84,6 +84,7 @@ async function open() {
       } catch { /* 写不进流不影响陪看 */ }
     }
     return {
+      windowOpen: true,
       note: `\n[widget] 悬浮窗已打开（${win.python} ${win.script}）：`
         + '在里面打字、或点「麦」说话，我等待时会立刻被唤醒。'
         + `\n[voice] ${voiceNote}。`,
@@ -91,12 +92,14 @@ async function open() {
   }
   if (win.reason === 'already-opened') {
     return {
+      windowOpen: true,
       note: '\n[widget] 悬浮窗已经开着 —— 直接在里打字/说话即可。'
         + `\n[voice] ${voiceNote}。`,
     };
   }
   // 开不起来要说清楚原因，并给一条能走通的兜底：只有 Python 悬浮窗和（只读的）聊天记录页
   return {
+    windowOpen: false,
     note: `\n[widget] 悬浮窗没开起来（${win.reason}）。`
       + (alive
         ? `兜底：浏览器打开 ${chatPageUrl(port)}（只读记录 + 可输入），`

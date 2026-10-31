@@ -79,8 +79,10 @@ export async function execute(ctx, args, {
   // 以前只在"真要阻塞"或"到点交付"时才备 —— 用户中途把窗口关掉，下一次调用就再也不会开，
   // 整场陪看没有插话入口（而且模型还以为入口在）。
   let widgetNote = '';
+  let surface = null;
   if (!signal?.aborted) {
-    widgetNote = (await prepareInputSurface()).note;
+    surface = await prepareInputSurface();
+    widgetNote = surface.note;
   }
 
   // 批次表的默认值在这里定一次，工具和循环共用同一份（否则两边段边界会各算各的）
@@ -99,6 +101,8 @@ export async function execute(ctx, args, {
     formatManifest,
     signal,
     prepareWait: prepareInputSurface,
+    // 关窗即收工：只有这次真把窗口开起来了，才把"窗口没了"当作"不看了"
+    expectWindow: surface?.windowOpen === true,
     saveImage: async ({ data, name }) => ctx.attachments.saveImage({
       data, mediaType: 'image/png', name,
     }),
@@ -140,6 +144,8 @@ export async function execute(ctx, args, {
       // 阻塞式调用本来就会在段末自己返回，钟再 `followup()` 一次，用户看到的是
       // "N 条排队消息"，而且会挡住他自己要说的话。
       wake: args.wake === true,
+      // 窗口关掉就收工（只有这次真把窗口开起来时才生效）
+      windowGuard: surface?.windowOpen === true,
       // 循环负责"什么时候建"，这里给它"怎么建"
       deps: {
         browserPort,

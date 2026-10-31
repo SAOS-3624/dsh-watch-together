@@ -29,7 +29,8 @@ export async function runWatchAction(args, { ctx = null, sessionId = null, brows
     return { text: JSON.stringify({ ok: true, said: entry?.text ?? '', inChat: true }), images: [] };
   }
 
-  if (args.stopLoop === true) {
+  // `stop` 是别名：用户说"停止一起看"时，模型第一反应就是敲 stop
+  if (args.stopLoop === true || args.stop === true) {
     return { text: JSON.stringify(stopWatchLoop('requested')), images: [] };
   }
 

@@ -139,7 +139,12 @@ export function watchToolSpec() {
       },
       stopLoop: {
         type: 'boolean',
-        description: 'Stop the background watch loop (it wakes the session on its own). Idempotent.',
+        description: 'Stop the background watch loop (it wakes the session on its own). Idempotent. '
+          + '`stop: true` is accepted as an alias — 用户说"停止一起看"时模型很自然会敲 stop。',
+      },
+      stop: {
+        type: 'boolean',
+        description: 'Alias of `stopLoop` (same behavior).',
       },
       waitForRefill: {
         type: 'boolean',
@@ -369,11 +374,15 @@ export function validateWatchArgs(args) {
   if (args?.say !== undefined && (typeof args.say !== 'string' || args.say.trim() === '')) {
     problems.push('say must be a non-empty string');
   }
-  // 台词：at 必须在它所属的段里，否则这句永远不会到点（dueLine 只认 from <= 当前位置 的槽）
+  // 台词：at 必须在它所属的段里，否则这句永远不会到点（dueLine 只认 from <= 当前位置 的槽）。
+  // `at` 可以直接写字幕原文片段 —— 那种情况这里**没法**比大小（真实秒数要查转写才知道），
+  // 交给 saveLines 去解析；字符串传错只会在解析时被丢弃，不会让整次调用失败。
   if (Array.isArray(args?.lines)) {
     args.lines.forEach((l, i) => {
       if (!(Number(l?.from) >= 0)) {
         problems.push(`lines[${i}].from must be >= 0`);
+      } else if (typeof l?.at === 'string') {
+        if (l.at.trim() === '') problems.push(`lines[${i}].at is an empty string`);
       } else if (l?.at !== undefined && !(Number(l.at) >= Number(l.from))) {
         problems.push(`lines[${i}].at (${l.at}) must be >= its from (${l.from})`);
       }

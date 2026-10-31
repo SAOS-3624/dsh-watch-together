@@ -92,6 +92,17 @@ function stillRunning() {
 }
 
 /**
+ * 悬浮窗还开着吗？（给"关窗就结束陪看"用）
+ *
+ * 用户把窗口一关，就是"我看完了"最直接的表达 —— 比任何位置推断都准。
+ * 所以这里只认 pid 存活，不猜别的。
+ */
+export function floatingWindowAlive() {
+  if (process.env.DSH_WATCH_NO_WIDGET === '1') return false;
+  return stillRunning();
+}
+
+/**
  * 开窗（幂等）。
  *
  * @param {{log?: (m: string) => void, force?: boolean}} [o]

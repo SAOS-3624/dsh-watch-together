@@ -85,6 +85,14 @@ test('contract: watch_together schema 暴露文档里写了的 browserPort / loo
   assert.equal(spec.parameters.say.type, 'string');
   assert.deepEqual(host.validateArgs(spec.parameters, { say: '这句' }), []);
   assert.ok(validateWatchArgs({ say: '  ' }).length > 0);
+  // lines[].at 允许直接写字幕原文片段（字符串）—— 真实秒数要查转写才知道，这里不该拦；
+  // 但空字符串要拦，数字仍要 >= from。这条以前把字符串一律拒，模型照着文档传片段就报错。
+  assert.deepEqual(validateWatchArgs({ lines: [{ from: 0, at: '富士康工厂组装出来的', text: 'x' }] }), []);
+  assert.ok(validateWatchArgs({ lines: [{ from: 0, at: '   ', text: 'x' }] }).length > 0);
+  assert.ok(validateWatchArgs({ lines: [{ from: 60, at: 30, text: 'x' }] }).length > 0);
+  // stop 是 stopLoop 的别名：用户说"停止一起看"时模型会敲 stop
+  assert.equal(spec.parameters.stop.type, 'boolean');
+  assert.deepEqual(validateWatchArgs({ stop: true }), []);
   // 语音参数已经从核心移除
   for (const gone of ['tts', 'voice', 'rate', 'listVoices', 'speakAloud', 'text']) {
     assert.equal(spec.parameters[gone], undefined, `${gone} 应该已从 watch_together 移除`);

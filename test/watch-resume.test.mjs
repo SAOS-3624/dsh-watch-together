@@ -8,6 +8,10 @@
 // 这些用例验的是别的行为（循环/场景/等待），台词门槛在这里关掉：见 delivery-gate.test.mjs
 process.env.DSH_WATCH_REQUIRE_LINES = '0';
 
+// 这些用例注入自己的 probe，不需要也不该读到这台机器上真实的播放位置
+// （扩展在页面可见时会一直写 position.json，读到它会让"暂停/到点"的判断飘）。
+process.env.DSH_WATCH_BRIDGE = '0';
+
 import test from 'node:test';
 import assert from 'node:assert/strict';
 
@@ -56,7 +60,7 @@ test('叫不醒要能查出来：reason=wake-failed，且记下原因', async ()
     ...base.deps,
     // 位置直接越过第一个到期点
     probe: async () => ({ ok: true, sessions: [
-      { app: 'x', status: 4, pos: 50, dur: 600, title: 'same.mp4', updated: Date.now() },
+      { app: 'x', status: 4, pos: 50, dur: 600, paused: false, title: 'same.mp4', updated: Date.now() },
     ] }),
     wake: async () => ({ ok: false, reason: 'no-session-controller' }),
   };

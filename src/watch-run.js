@@ -21,6 +21,7 @@ import {
   deliveryState, loadWatch, readSlot, saveWatch,
   sessionKey, WATCH_LEAD,
 } from './watch.js';
+import { floatingWindowAlive } from './floating-window.js';
 import { speechEvents } from './voice.js';
 import { appendSpoken } from './chat.js';
 import { describeLatency, recordLatency } from './latency.js';
@@ -181,7 +182,13 @@ export async function runWatchPass(args, deps) {
     signal = null,
     /** 进入阻塞前的准备（起聊天服务 + 开悬浮窗）。只有真要走 wait 才回调它 */
     prepareWait = null,
+    /** 窗口"还开着吗"（可注入；默认 pid 判活） */
+    windowAlive = floatingWindowAlive,
+    /** 这次真的开过窗吗 —— 只有开过才知道"关掉"是什么意思 */
+    expectWindow = false,
   } = deps;
+  // 关窗即收工：等待期间用户把悬浮窗关了，就别再挂着（他没有插话入口了）
+  const windowGone = () => expectWindow === true && windowAlive() !== true;
   // 从"开始读进度"到"结果返回"的耗时 —— 这就是本机延迟的实测值，用来做提前量标定
   const tStart = Date.now();
   tStartForNote = tStart;
@@ -459,7 +466,7 @@ export async function runWatchPass(args, deps) {
     // 用**共享**的那个：每次等待都新建的话，模型思考期间用户说的话
     // 会落在两次等待的缝隙里，谁都不报，永远丢掉。
     const chatPoll = chatWatcherShared();
-    while (Date.now() < deadline && !signal?.aborted) {
+    while (Date.now() < deadline && !signal?.aborted && !windowGone()) {
       const chatHit = chatPoll();
       if (chatHit) { d.chatNow = chatHit; break; }
       // 位置来源：浏览器（准）> 上次测得的 SMTC 快照（凑合能用来判断"到没到"）
@@ -499,6 +506,17 @@ export async function runWatchPass(args, deps) {
       if (said) { d.chatNow = said; break; }
       waitedSec = +((Date.now() - tWaitStart) / 1000).toFixed(1);   // 没有浏览器读数也按墙钟推进
     }
+  }
+
+  // 用户把悬浮窗关了（等待期间）：这是"我不看了"最直接的信号，立即收工。
+  if (!d.due && windowGone()) {
+    return pass({
+      stopped: true,
+      waitedSec,
+      text: `${head}
+[stopped] 悬浮窗被关掉了 —— 陪看结束，我不再挂着。`
+        + '要接着看就再调一次 watch_together，我会把窗口重新开起来。',
+    });
   }
 
   // 宿主把这一轮取消了（用户按了停止 / 会话被中断）：立刻收工，别继续挂着。
