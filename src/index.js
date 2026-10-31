@@ -14,6 +14,9 @@
  *    `{ type: 'image', attachment: ImageAttachmentRef }`，ref 必须由
  *    `ctx.attachments.saveImage()` 提交过后才能拿到（不能自己编）
  *  - saveImage 要的是**真正编码后的字节**（PNG/JPEG），不是裸 RGB —— 它会解码校验
+ *  - **attachments 不是硬依赖**：cordis 的 `inject` 是硬前缀，声明了但宿主没注册该服务时
+ *    apply 永远不会被调用，整个插件会卡在"加载中"。图片能力必须在运行期探测；
+ *    宿主没有该服务时仍注册工具，交付时降级为纯文本（见 handler.js / watch-run.js）。
  */
 
 import { attachSpeechToChat } from './chat.js';
@@ -21,7 +24,7 @@ import { watchTools } from './register.js';
 import { attachConfiguredVoice } from './voice.js';
 
 export const name = 'dsh-watch-together';
-export const inject = ['tools', 'attachments'];
+export const inject = ['tools'];
 
 /**
  * 解析宿主的 dsh-tools。正常安装时裸包名就能解析；本地开发/测试时

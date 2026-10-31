@@ -698,7 +698,24 @@ export async function runWatchPass(args, deps) {
   };
   await saveWatch(st);
 
-  const images = entry?.png ? [await saveImage({ data: entry.png, name: `watch-${segStart}.png` })] : [];
+  // 图片是可选能力：宿主没有 attachments 服务时不能让整次交付失败。
+  // handler 的运行期探测会返回 null；这里把空值过滤掉，并在正文里说明少了什么。
+  let images = [];
+  let imageNote = '';
+  if (entry?.png) {
+    try {
+      const image = typeof saveImage === 'function'
+        ? await saveImage({ data: entry.png, name: `watch-${segStart}.png` })
+        : null;
+      if (image) images = [image];
+      else {
+        imageNote = '\n[image unavailable] 这个宿主没有 `attachments` 服务，本段只有文本清单；'
+          + '不要声称看过画面，也不要等图片。';
+      }
+    } catch {
+      imageNote = '\n[image unavailable] 图片提交失败，本段只有文本清单；不要声称看过画面。';
+    }
+  }
 
   // ---- 素材账本：把"这次交出了哪一半"记下来
   //
@@ -816,7 +833,7 @@ export async function runWatchPass(args, deps) {
     complete: hasLines,
     status: note.includes('paused') ? 'paused' : 'playing',
     speech,
-    text: `${gate}${materialLine}${linesNote}${owedNote}${head}${waitNote}\n${recapText}${guidance}${await latencyNote()}${bufferHint}\n\n${entry.manifest}`,
+    text: `${gate}${materialLine}${imageNote}${linesNote}${owedNote}${head}${waitNote}\n${recapText}${guidance}${await latencyNote()}${bufferHint}\n\n${entry.manifest}`,
     images,
   });
 }

@@ -106,3 +106,10 @@ test('contract: watch_together schema 暴露文档里写了的 browserPort / loo
     assert.equal(spec.parameters[gone], undefined, `${gone} 应该已从 watch_together 移除`);
   }
 });
+
+test('contract: inject 不把 attachments 声明成硬依赖', async () => {
+  // cordis 的 inject 是硬前缀：声明了但宿主没注册该服务时，apply 永远不会被调用，
+  // 插件会停在"加载中"。attachments 必须在 handler 里运行期探测。
+  const { inject } = await import('../src/index.js');
+  assert.deepEqual(inject, ['tools']);
+});

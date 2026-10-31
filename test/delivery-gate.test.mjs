@@ -82,6 +82,24 @@ test('补上台词之后再交付 → 放行，且欠账清掉', async () => {
   }
 });
 
+test('没有 attachments 服务时：交付降级为文本，不抛错、不返回空图块', async () => {
+  const dir = await mkdtemp(join(tmpdir(), 'gate-noimg-'));
+  process.env.DSH_VIDEO_CACHE_DIR = dir;
+  delete process.env.DSH_WATCH_REQUIRE_LINES;
+  try {
+    const d = { ...deps(), saveImage: async () => null };
+    const r = await runWatchPass(
+      { input: 'no-image.mp4', cursor: 106, segment: 120, lead: 15 }, d,
+    );
+    assert.equal(r.ok, true);
+    assert.deepEqual(r.images, [], '不能把 null 当图片 attachment 交给宿主');
+    assert.match(r.text, /\[image unavailable\]/, '要明确告诉模型这一段没有图');
+    assert.match(r.text, /不要声称看过画面/, '不能让模型编造画面内容');
+  } finally {
+    await rm(dir, { recursive: true, force: true });
+  }
+});
+
 test('DSH_WATCH_REQUIRE_LINES=0 时门槛关掉（老用例用来验别的行为）', async () => {
   const dir = await mkdtemp(join(tmpdir(), 'gate3-'));
   process.env.DSH_VIDEO_CACHE_DIR = dir;

@@ -163,9 +163,13 @@ export async function execute(ctx, args, {
     prepareWait: prepareInputSurface,
     // 关窗即收工：只有这次真把窗口开起来了，才把"窗口没了"当作"不看了"
     expectWindow: surface?.windowOpen === true,
-    saveImage: async ({ data, name }) => ctx.attachments.saveImage({
-      data, mediaType: 'image/png', name,
-    }),
+    // 运行期探测：没有 attachments 的宿主也要能加载（见 index.js 的 inject 注释）。
+    // 返回 null 让 watch-run 降级成纯文本，而不是在这里 TypeError。
+    saveImage: async ({ data, name }) => {
+      const save = ctx?.attachments?.saveImage;
+      if (typeof save !== 'function') return null;
+      return save({ data, mediaType: 'image/png', name });
+    },
   });
 
   // 用户在等待期间按了停止：**钟也要停** —— 否则宿主那边已经收工，后台还在轮询浏览器

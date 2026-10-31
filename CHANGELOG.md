@@ -38,6 +38,14 @@ Promised in issue #4. `pos + reason` says *what* the clock thinks, not *where it
   `speech.queueError` instead of being swallowed (the first version of this swallowed a `ReferenceError`
   from a missing import and looked exactly like "there are no lines").
 
+### Fixed
+
+- **`inject` no longer declares `attachments`.** cordis treats `inject` as a hard dependency: if the host
+  has no `attachments` service, `apply` is never called and the whole plugin sits at "loading" (the same
+  failure mode fixed in `dsh-video-storyboard` 0.5.9). `attachments` is now probed at runtime; when it is
+  absent, the watch tool still registers and a delivery degrades to the text manifest with an explicit
+  `[image unavailable]` note instead of crashing on `ctx.attachments.saveImage`.
+
 ### The floating window, rebuilt
 
 "这个悬浮窗太丑了" — fair. The old one was a borderless frame with a `Text` widget that painted
