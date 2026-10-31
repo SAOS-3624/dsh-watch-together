@@ -175,16 +175,32 @@ test('waitForVideo: 一直没视频就超时返回，并说清等了多少秒', 
   }
 });
 
-test('没有 waitForVideo 时立刻返回，不挂住', async () => {
+test('没给 input 时**默认等一会儿**（用户要求：只查他的浏览器，别问他要链接）', async () => {
   const dir = await mkdtemp(join(tmpdir(), 'waitv2-'));
   process.env.DSH_VIDEO_CACHE_DIR = dir;
   try {
     const d = { ...deps(() => 0), probe: async () => ({ ok: true, sessions: [] }), readBrowser: async () => null };
     const t0 = Date.now();
-    const r = await runWatchPass({}, d);
+    const r = await runWatchPass({ maxWaitSec: 2 }, d);        // 缩短等待，验证的是"会等"
+    const sec = (Date.now() - t0) / 1000;
+    assert.equal(r.reason, 'no-video-timeout');
+    assert.ok(sec >= 1.5, `应该等过，实得 ${sec}s`);
+    assert.doesNotMatch(r.text, /pass input yourself/, '不许再让模型去要链接');
+    assert.match(r.text, /不要向用户要链接或路径/);
+  } finally {
+    await rm(dir, { recursive: true, force: true });
+  }
+});
+
+test('waitForVideo: false 才是"立刻返回、不挂住"', async () => {
+  const dir = await mkdtemp(join(tmpdir(), 'waitv3-'));
+  process.env.DSH_VIDEO_CACHE_DIR = dir;
+  try {
+    const d = { ...deps(() => 0), probe: async () => ({ ok: true, sessions: [] }), readBrowser: async () => null };
+    const t0 = Date.now();
+    const r = await runWatchPass({ waitForVideo: false }, d);
     assert.equal(r.reason, 'no-video');
-    assert.ok((Date.now() - t0) / 1000 < 3);
-    assert.match(r.text, /waitForVideo/, '要告诉模型可以改成等着');
+    assert.ok((Date.now() - t0) / 1000 < 3, '显式关掉才立刻返回');
   } finally {
     await rm(dir, { recursive: true, force: true });
   }

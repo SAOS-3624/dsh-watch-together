@@ -23,16 +23,20 @@ export function watchToolSpec() {
   return {
     name: WATCH_TOOL_NAME,
     description: [
-      'Watch a video together with the user, batch by batch, following their playback position. Each call',
+      'Watch a video together with the user, batch by batch, following their playback position.',
+      'Call it with NO arguments to attach to whatever is playing in their own browser - never ask them for a',
+      'link, a path or "which video". Each call',
       'returns ONE batch as a storyboard image plus transcript - exactly what they just watched - or one line',
       'of status if that batch is not due yet.',
       '',
       'Do not poll on a timer. Either block (see COLD START / step 4) or call once per delivered batch.',
       '',
-      'COLD START (you know nothing about the session yet):',
-      '  1. If you are not sure anything is playing, say so IN THE SAME MESSAGE ("I will wait for the video",',
-      '     the tool cannot speak while it blocks) and call:',
-      '       watch_together({ waitForVideo: true, maxWaitSec: 120 })',
+      'COLD START — one call, ZERO questions:',
+      '  1. NEVER ask the user for a link or a file path. The input IS whatever is playing in THEIR OWN',
+      '     browser; the position bridge hands it over automatically. A call with no `input` waits for it',
+      '     (60 s by default) and picks it up the moment they press play.',
+      '       watch_together({ waitForVideo: true })',
+      '     Asking "which video do you want to watch?" is the one response this tool must never produce.',
       '  2. Look at the batch the user is already in - do not wait for it to end:',
       '       watch_together({ speakNow: true })',
       '  3. Write the lines for that batch (see LINES), then:',
@@ -108,9 +112,11 @@ export function watchToolSpec() {
     parameters: {
       input: {
         type: 'string',
-        description: 'Local path or Bilibili URL being watched. Omit to auto-detect: the plugin reads the page '
-          + 'URL of the tab the user is watching (browser extension, or a browser with a debug port) and uses '
-          + 'that as the source - a video page URL is enough, a file:// URL becomes the local path. '
+        description: '**Do not ask the user for this.** Omit it and the tool auto-detects the video they are '
+          + 'already watching in their own browser (the normal path: it reads the page URL of that tab via the '
+          + 'browser extension, or a browser with a debug port; a video page URL is enough, a file:// URL '
+          + 'becomes the local path). Pass it only when they handed you a local file path, or told you the '
+          + 'exact link themselves. '
           + 'Only ask the user when neither channel is available.',
       },
       cursor: {

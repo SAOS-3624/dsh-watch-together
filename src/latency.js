@@ -21,7 +21,7 @@ const FILE = 'latency.json';
 const ALPHA = 0.4;          // 指数平滑系数：新样本占 40%
 const MAX_SAMPLES = 40;
 
-export function latencyPath(env = process.env) {
+function latencyPath(env = process.env) {
   return join(cacheDir(env), FILE);
 }
 

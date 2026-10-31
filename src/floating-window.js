@@ -40,7 +40,7 @@ function dshHome() {
   return process.env.DSH_HOME || join(homedir(), '.dsh');
 }
 
-export function windowConfigPath() {
+function windowConfigPath() {
   return join(dshHome(), 'watch-window.json');
 }
 
@@ -58,7 +58,7 @@ function readConfig() {
 }
 
 /** 这个脚本最终用哪个文件（不检查存在性，交给调用方报清楚） */
-export function resolveWindowScript(cfg = readConfig()) {
+function resolveWindowScript(cfg = readConfig()) {
   const explicit = process.env.DSH_FLOAT_WINDOW || cfg.script;
   if (explicit) return explicit;
   return PACKAGED;

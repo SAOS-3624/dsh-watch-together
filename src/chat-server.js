@@ -152,6 +152,9 @@ export async function startChatServer({
  */
 let chatSession = null;
 export function ensureChatSession(port = DEFAULT_CHAT_PORT) {
+  // 测试或"不想起服务"的场景：`DSH_WATCH_NO_CHAT=1` 直接不给。否则它会一直 listen，
+  // 进程（尤其实在 `node --test` 里）因为一个活着的 server 退不出去 —— 实测卡满 60 秒。
+  if (process.env.DSH_WATCH_NO_CHAT === '1') return Promise.resolve(null);
   if (!chatSession) {
     // **起不来不许把失败永久缓存**：以前一被赋成"失败的 promise"，这一整个进程里就再也不会
     // 尝试监听 —— 端口被别人占过一下，插话通道就永久废掉，而且完全没有提示。

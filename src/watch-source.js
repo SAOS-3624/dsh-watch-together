@@ -73,9 +73,9 @@ async function noVideoResult({ reason, browserPort, waitedSec = null, extra = ''
     reason,
     browser: browserPort ? 'checked' : 'unconfigured',
     text: `${waited}${whyBrowser}\n${extra}`
-      + 'Play something, or pass input yourself (path or link). '
-      + 'If you would rather wait for them to start it, call again with waitForVideo: true — '
-      + 'but say you are waiting first: this call stays silent while it blocks.',
+      + '**不要向用户要链接或路径** —— 这个工具的输入就是"他自己浏览器里正在放的那个"。'
+      + '告诉他先把视频点开、播起来，然后直接再调一次 watch_together（参数都不用改）；'
+      + '等他开始播，位置桥会自动把它交出来。',
     images: [],
   };
 }
@@ -97,8 +97,13 @@ export async function resolveWatchSource({ input: given, args, readBrowser, brow
   // 这一点写在工具描述和 manifest 的 guidance 里。
   //
   // 只有一条来源了，所以这个循环就是"每 300ms 问一次浏览器"，没有别的分支可等。
-  if (!input && args.waitForVideo === true) {
-    const cap = Math.min(600, Math.max(10, Number(args.maxWaitSec) || 120));
+  // **没有 input 时默认就等**（只有显式 `waitForVideo: false` 才立刻失败）。
+  // 为什么改默认：模型冷启动最容易干的事就是"问用户要链接"，而那正是用户最烦的一步
+  // （原话："他怎么还在问我这个问题，以后只让他查我的浏览器"）。
+  // 这里等一小会儿，视频一开就自动接上；等不到也只说"先播起来再叫我"。
+  const autoWait = !given && args.waitForVideo !== false;
+  if (!input && (args.waitForVideo === true || autoWait)) {
+    const cap = Math.min(600, Math.max(10, Number(args.maxWaitSec) || (autoWait ? 60 : 120)));
     const deadline = Date.now() + cap * 1000;
     const tWait = Date.now();
     while (Date.now() < deadline) {

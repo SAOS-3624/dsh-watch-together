@@ -42,7 +42,8 @@ function fakeLoop(input = 'w.mp4') {
 }
 
 test('同一场中途：窗口被关了 → 停钟、报告已中止，不再开窗', async () => {
-  process.env.DSH_WATCH_NO_WIDGET = '1';        // 让"窗口不存在"是必然而不是期望
+  process.env.DSH_WATCH_NO_WIDGET = '1';
+  process.env.DSH_WATCH_NO_CHAT = '1';        // 让"窗口不存在"是必然而不是期望
   try {
     fakeLoop('w2.mp4');
     const surface = createInputSurface();
@@ -56,12 +57,14 @@ test('同一场中途：窗口被关了 → 停钟、报告已中止，不再开
     assert.equal(loopStatus().reason, 'widget-closed');
   } finally {
     delete process.env.DSH_WATCH_NO_WIDGET;
+    delete process.env.DSH_WATCH_NO_CHAT;
     stopWatchLoop('cleanup');
   }
 });
 
 test('新开一场：即使窗口不在也不该判成"用户关窗"（会去尝试开窗）', async () => {
   process.env.DSH_WATCH_NO_WIDGET = '1';        // 开窗被禁 → 走"没开起来"那条分支
+  process.env.DSH_WATCH_NO_CHAT = '1';          // 别起聊天服务：它一 listen，进程就退不出去
   try {
     stopWatchLoop('init');
     const surface = createInputSurface();
@@ -72,5 +75,6 @@ test('新开一场：即使窗口不在也不该判成"用户关窗"（会去尝
     assert.match(r.note, /悬浮窗没开起来/);
   } finally {
     delete process.env.DSH_WATCH_NO_WIDGET;
+    delete process.env.DSH_WATCH_NO_CHAT;
   }
 });

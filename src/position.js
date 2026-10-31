@@ -71,11 +71,11 @@ export function makeAnchor(sample, now = Date.now()) {
 }
 
 /** 这个状态字符串是不是"在播" */
-export function isPlaying(status) {
+function isPlaying(status) {
   return status === 'playing';
 }
 
-export function isPaused(status) {
+function isPaused(status) {
   return status === 'paused';
 }
 
