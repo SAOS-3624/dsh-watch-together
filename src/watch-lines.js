@@ -176,7 +176,7 @@ export async function loadLine(input, from, { env = process.env } = {}) {
  * 为什么必须删：用户倒回去重看时，如果这句还留着，会被**一模一样地再说一遍** —— 太假了。
  * 删掉之后同一段再遇到，会退回"到点再看一眼图"，说出来的话至少是新的。
  */
-export async function consumeLine(input, from, { env = process.env } = {}) {
+export async function consumeLine(input, from, { env = process.env, notAfter = Infinity } = {}) {
   const st = await loadWatch(env);
   const sk = sessionKey(input);
   const lines = st[sk]?.lines;
@@ -184,8 +184,15 @@ export async function consumeLine(input, from, { env = process.env } = {}) {
   const key = Number(from);
   const items = slotItems(lines[key]);
   if (items.length === 0) return null;
-  const [hit, ...rest] = items;
-  writeSlot(lines, key, rest);
+  // `notAfter` = 只取已经到点的第一条。段末交付点比段内台词的 at 早时，
+  // 不传这个限制会把**未来**的那句提前消费掉，到点就再也没词了。
+  const limit = Number(notAfter);
+  const index = Number.isFinite(limit)
+    ? items.findIndex((it) => it.at === null || Number(it.at) <= limit)
+    : 0;
+  if (index < 0) return null;
+  const [hit] = items.splice(index, 1);
+  writeSlot(lines, key, items);
   st[sk] = { ...(st[sk] ?? {}), lines, at: Date.now() };
   await saveWatch(st, env);
   return hit.text;
