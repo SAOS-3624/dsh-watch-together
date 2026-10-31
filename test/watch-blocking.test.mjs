@@ -55,6 +55,26 @@ test('waitForRefill：库存不足立刻返回，并指出缺哪段', async () =
   }
 });
 
+test('waitForRefill：只列出真正缺词的段，不把已经有词的段也报缺', async () => {
+  const dir = await mkdtemp(join(tmpdir(), 'blk-partial-'));
+  process.env.DSH_VIDEO_CACHE_DIR = dir;
+  try {
+    const input = 'partial.mp4';
+    // 当前段是 00:00–01:00；下一段 01:00–02:00 有词，再下一段 02:00–03:00 没词。
+    await saveLines(input, [{ from: 60, text: '已经写好的下一段' }]);
+    const r = await runWatchPass(
+      { input, waitForRefill: true, refillBelow: 2, segment: 60, maxWaitSec: 10 },
+      depsWith(() => 0),
+    );
+    assert.equal(r.reason, 'refill-needed');
+    assert.match(r.text, /02:00–03:00/, '真正缺的那一段要报出来');
+    assert.doesNotMatch(r.text, /01:00–02:00/, '已经有词的段不该出现在缺词清单里');
+  } finally {
+    delete process.env.DSH_VIDEO_CACHE_DIR;
+    await rm(dir, { recursive: true, force: true });
+  }
+});
+
 test('waitForRefill：库存够就一直等，等到封顶才返回', async () => {
   const dir = await mkdtemp(join(tmpdir(), 'blk3-'));
   process.env.DSH_VIDEO_CACHE_DIR = dir;

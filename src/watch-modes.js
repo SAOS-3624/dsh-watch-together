@@ -41,14 +41,15 @@ export async function runWatchMode({ args, input, plan, browserPort, readBrowser
 
         if (args.waitForRefill === true && last !== null) {
           const idx = plan.indexAt(last);
-          let stocked = 0;
+          // 只报告**真的没词**的段。以前这里用 plan.from(idx+1, below) 重算一遍，
+          // 于是“两段里只缺第二段”也会把第一段列进缺词清单，模型会重复补写。
+          const missing = [];
           for (let i = idx + 1; i <= idx + below; i += 1) {
             const seg = plan.from(i, 1)[0];
             if (!seg) break;
-            if (await hasLine(input, seg.from).catch(() => false)) stocked += 1;
+            if (!(await hasLine(input, seg.from).catch(() => false))) missing.push(seg);
           }
-          if (stocked < below) {
-            const missing = plan.from(idx + 1, below).filter((x) => x);
+          if (missing.length > 0) {
             return {
               ok: true, reason: 'refill-needed', at: last,
               text: `库存不足（现在 ${mmss(last)}）：${missing.map((m) => `${mmss(m.from)}–${mmss(m.to)}`).join('、')}`
