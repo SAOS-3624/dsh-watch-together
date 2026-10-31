@@ -43,9 +43,12 @@ node bin/watch.mjs doctor
 3. `$DSH_HOME/tools/ffmpeg/bin`、`$DSH_HOME/bin`
 4. `PATH`
 
-```jsonc
-// ~/.dsh/video.json（可选，覆盖查找顺序）
-{ "ffmpeg": "D:/tools/ffmpeg/bin/ffmpeg.exe" }
+**没有配置文件这一档** —— 别在 `video.json` 里写 `ffmpeg`，那个键不存在。要么设环境变量，
+要么把 ffmpeg 放到 `~/.dsh/tools/ffmpeg/bin/`（免环境变量，桌面版也能认）。
+
+```bash
+# 临时（当前终端）
+export DSH_FFMPEG_PATH=/d/tools/ffmpeg/bin/ffmpeg.exe
 ```
 
 验证：

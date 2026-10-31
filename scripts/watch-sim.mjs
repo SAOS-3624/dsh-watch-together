@@ -41,6 +41,9 @@ async function run(name) {
     ctx: { sessionController: { prompt: async () => {} } },
     // 每个场景一个独立的源名：`startWatchLoop` 对"同源同类批次表"是接着跑不重开的
     sessionId: `sim-${name}`, input: `sim-${name}.mp4`, browserPort: 1, segments: segments(),
+    // **必须显式打开**：`wake` 默认关（段末不打扰用户），关了这里就永远收不到"该说话了"，
+    // 每个场景都会显示"说话 0 次"—— 这个脚本就这样静默失效过一轮。
+    wake: true,
     deps: sim.deps,
     log: (m) => log.push(m),
   });
@@ -58,7 +61,6 @@ async function run(name) {
   });
 
   console.log(`\n【${label}】`);
-  const order = ['fresh', 'extrapolated', 'unknown', 'paused', 'none'];
   const spoken = sim.wakes.filter((w) => !w.text.includes('读不到'));
   const asked = sim.wakes.filter((w) => w.text.includes('读不到'));
   console.log(`  说话 ${spoken.length} 次${spoken.length ? '：' + spoken.map((w) => fmt(w.at / 1000)).join(', ') : ''}`);

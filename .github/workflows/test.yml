@@ -1,0 +1,28 @@
+name: test
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+
+      # 没有 lock 文件（两个仓库并排开发，锁会把 storyboard 的本地路径钉死），所以用 npm i
+      - name: install
+        run: npm i --no-audit --no-fund
+
+      # 纯语法/导入检查：比跑测试快，先挡住"改了但没跑起来"这类问题
+      - name: syntax
+        run: npm run check
+
+      # 测试全部用假时钟/假播放头，不依赖 ffmpeg、浏览器或网络
+      - name: unit
+        run: node --test

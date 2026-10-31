@@ -4,6 +4,11 @@
 >
 > 名字全小写，带横杠 —— 和 `dsh-video-storyboard` 同一个风格。
 
+<sub>**English TL;DR** — a DSH plugin that watches a video *together* with a text-only agent: it follows
+the real playback position reported by a browser extension, hands the agent one storyboard + transcript
+per segment just before that segment ends, and speaks the scripted lines at the exact second. Code,
+identifiers and the tool schema are English; the docs below are Chinese.</sub>
+
 - **它是什么**：一个 DSH 插件，只注册一个工具 `watch_together`
 - **它不是什么**：不是全片概览，不是播放器，也不带 TTS 引擎（声音自己接，见 [§接声音](#接声音核心不发声声音你自己接)）
 - **依赖**：`node` + `ffmpeg` + 一个浏览器扩展（可选但强烈建议）
