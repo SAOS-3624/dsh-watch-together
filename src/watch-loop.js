@@ -797,7 +797,9 @@ export function startWatchLoop({
       loop.spoken.push(r.segment);
       // 有预设台词就直接给稿子：省掉"现场想"的那 2–4 秒，也省一次看图的 token
       // **念完就删**：取和删放一起，避免"取到了但没删"导致重看时同一句说两遍
-      const line = await consumeLine(loop.input, r.segment)
+      // 交付点（to - lead）通常早于这一段里最后几句的 at。只取已经到点的那句：
+      // 否则第一句未来的词会被提前塞进叫醒文案，到点后槽里已经没了。
+      const line = await consumeLine(loop.input, r.segment, { notAfter: r.pos })
         .catch(() => loadLine(loop.input, r.segment).catch(() => null));
       const head = `[一起看] ${mmss(seg.from)}–${mmss(seg.to)} 该说话了`
         + `（用户大约看到 ${mmss(r.pos)}${r.confidence === 'extrapolated' ? '，按墙钟推算' : ''}）。`;
