@@ -34,7 +34,7 @@ import { boardOptions, charsForDetail } from 'dsh-video-storyboard/board';
 import { mmss } from './time.js';
 import { saveLines } from './watch.js';
 import { pinTimes } from './watch-lines.js';
-import { recapFor } from './recap.js';
+import { recapFor, recapOptions } from './recap.js';
 import { cachedCues } from './lines-util.js';
 import { describeBrowser, readPositionOrNull } from './watch-browser.js';
 import { resolveWatchSource } from './watch-source.js';
@@ -782,9 +782,14 @@ export async function runWatchPass(args, deps) {
     ? `\n[欠台词] 还有这些段没有台词：${owed.map((s) => mmss(s)).join('、')} —— 有空就补上。`
     : '';
 
-  // 长视频的短前情：只读已经看过的上一两段，给模型一个可衔接的上下文。
+  // 长视频的短前情：默认关闭，显式开启后只读已经看过的上一两段字幕原句。
   // 只读缓存、只取少量句子；没有素材就是空串，不增加网络/ASR。
-  const recap = await recapFor(input, { plan, segStart }).catch(() => '');
+  const recapCfg = recapOptions({ args });
+  const recap = recapCfg.enabled
+    ? await recapFor(input, {
+      plan, segStart, maxSegments: recapCfg.maxSegments, maxChars: recapCfg.maxChars,
+    }).catch(() => '')
+    : '';
   const recapText = recap ? `${recap}\n` : '';
 
   const guidance = [

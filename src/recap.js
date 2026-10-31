@@ -3,18 +3,36 @@
  *
  * 为什么需要它：每段交付都是一张新图 + 新清单，模型很容易在几十分钟后丢掉
  * "刚才发生了什么/自己说过什么"。把整段历史重新塞回去会线性涨 token，所以这里
- * 只取最近 N 段的少量句子：
- *   1. 优先用还没念掉的台词槽（读盘，不联网）；
- *   2. 没有台词时，从本地字幕缓存里挑少量候选句（只读缓存，不跑 ASR、不出图）。
- *
- * 绝不包含当前段之后的内容 —— 前情只用于衔接，不是剧透。
+ * 只取最近 N 段的少量**字幕原句**（只读本地缓存，不跑 ASR、不出图）。
+ * 不使用模型写过的台词槽：那是二手总结，不能当前情证据；
+ * 也不包含当前段之后的内容 —— 前情只用于衔接，不是剧透。
  */
 import { cachedCues, pickCandidates } from './lines-util.js';
-import { readSlot } from './watch-lines.js';
 import { mmss } from './time.js';
 
 function clean(text) {
   return String(text ?? '').replace(/\s+/g, ' ').trim();
+}
+
+function clampInt(value, fallback, min, max) {
+  const n = Math.floor(Number(value));
+  if (!Number.isFinite(n) || n <= 0) return fallback;
+  return Math.min(max, Math.max(min, n));
+}
+
+/**
+ * 前情默认关闭：没有实测数据前，每段 200+ token 是纯成本。
+ * 显式 args.recap=true 或环境变量 DSH_WATCH_RECAP=1 才开启；
+ * args.recap=false 可以覆盖环境变量。
+ */
+export function recapOptions({ args = {}, env = process.env } = {}) {
+  const enabled = args.recap === true
+    || (args.recap === undefined && String(env.DSH_WATCH_RECAP ?? '') === '1');
+  return {
+    enabled,
+    maxSegments: clampInt(args.recapSegments ?? env.DSH_WATCH_RECAP_SEGMENTS, 2, 1, 3),
+    maxChars: clampInt(args.recapMaxChars ?? env.DSH_WATCH_RECAP_MAX_CHARS, 420, 80, 1200),
+  };
 }
 
 /**
@@ -36,22 +54,14 @@ export async function recapFor(input, {
     const seg = typeof plan.from === 'function' ? plan.from(i, 1)[0] : null;
     if (!seg) continue;
 
-    let texts = [];
-    try {
-      const slot = await readSlot(input, seg.from, { env });
-      texts = (Array.isArray(slot) ? slot : [])
-        .map((line) => clean(line?.text))
-        .filter(Boolean);
-    } catch { /* 读不到台词槽就退回字幕 */ }
-
-    if (texts.length === 0 && cues.length > 0) {
-      texts = pickCandidates(cues, { from: seg.from, to: seg.to, max: 2 })
+    const texts = cues.length > 0
+      ? pickCandidates(cues, { from: seg.from, to: seg.to, max: 2 })
         .map((s) => clean(s.text))
-        .filter(Boolean);
-    }
+        .filter(Boolean)
+      : [];
     if (texts.length === 0) continue;
 
-    // 同一句可能在字幕和台词里重复出现；只保留第一次。
+    // 同一句可能在字幕缓存里重复出现；只保留第一次。
     const uniq = [];
     for (const t of texts) {
       if (!uniq.some((x) => x === t)) uniq.push(t);

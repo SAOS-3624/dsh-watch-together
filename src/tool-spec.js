@@ -369,6 +369,20 @@ export function watchToolSpec() {
         description: 'auto (default) transcribes each segment; off skips speech entirely. '
           + 'This is about the PICTURE delivery. To fetch the sentences on their own, use `transcriptOnly`.',
       },
+      recap: {
+        type: 'boolean',
+        description: 'Optional (default false): prepend a short recap of already-watched segments, built only '
+          + 'from cached subtitle lines. It costs ~200 tokens per delivered segment; leave it off unless a long '
+          + 'session is actually losing continuity.',
+      },
+      recapSegments: {
+        type: 'number',
+        description: 'With recap=true: how many previous segments to include (default 2, clamped to 1-3).',
+      },
+      recapMaxChars: {
+        type: 'number',
+        description: 'With recap=true: character cap for the whole recap block (default 420, clamped to 80-1200).',
+      },
       transcriptOnly: {
         type: 'boolean',
         description: 'Return ONLY the sentences with their real `at` seconds for one window — no image, no '

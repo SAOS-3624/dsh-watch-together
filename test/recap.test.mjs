@@ -5,8 +5,8 @@ import { dirname, join } from 'node:path';
 import { tmpdir } from 'node:os';
 
 import { makePlan } from '../src/batches.js';
-import { sessionKey } from '../src/watch.js';
-import { recapFor } from '../src/recap.js';
+import { sessionKey, saveLines } from '../src/watch.js';
+import { recapFor, recapOptions } from '../src/recap.js';
 
 const INPUT = 'https://example.com/video/long';
 
@@ -57,5 +57,29 @@ test('maxChars 截断，不会把整段字幕塞回去', async () => {
     const out = await recapFor(INPUT, { plan, segStart: 300, env, maxSegments: 1, maxChars: 90 });
     assert.ok(out.length <= 90, `too long: ${out.length}`);
     assert.match(out, /…$/);
+  });
+});
+
+test('前情默认关闭；env/args 才开，且参数有上下限', () => {
+  assert.deepEqual(recapOptions({ args: {}, env: {} }), {
+    enabled: false, maxSegments: 2, maxChars: 420,
+  });
+  assert.equal(recapOptions({ args: {}, env: { DSH_WATCH_RECAP: '1' } }).enabled, true);
+  assert.equal(recapOptions({
+    args: { recap: false }, env: { DSH_WATCH_RECAP: '1' },
+  }).enabled, false, '显式 false 要能覆盖 env');
+  assert.deepEqual(recapOptions({
+    args: { recap: true, recapSegments: 9, recapMaxChars: 5 }, env: {},
+  }), { enabled: true, maxSegments: 3, maxChars: 80 });
+});
+
+test('前情只读字幕原句，不读模型写过的台词槽', async () => {
+  const cues = [{ from: 10, to: 12, text: '这是本地字幕里的一句原话，足够长' }];
+  await withCues(cues, async (env) => {
+    await saveLines(INPUT, [{ from: 0, text: '这是模型二手总结，不该当前情' }], { env });
+    const plan = makePlan({ segment: 300, ramp: [] });
+    const out = await recapFor(INPUT, { plan, segStart: 300, env, maxSegments: 1 });
+    assert.match(out, /本地字幕里的一句原话/);
+    assert.doesNotMatch(out, /模型二手总结/);
   });
 });
