@@ -60,6 +60,53 @@ export async function pruneSlot(input, from, keep, { env = process.env } = {}) {
   return dropped;
 }
 
+/**
+ * 把 `at` 落在一段区间里的台词**取走**（返回出来，槽位里删掉）。
+ *
+ * 谁用得到：模型刚回了一句插话，而脚本台词在同一段时间里也有一句 —— 两句挨着念出来
+ * 会连成一串（声音引擎串行，第二句要么排到后面、要么被适配器当作"追不上"直接丢掉）。
+ * 所以把这段时间里的词取出来交给调用方：**让模型按它刚说的那句重写**，而不是默默删掉。
+ *
+ * 为什么放在这个文件：槽位格式（`{queue:[{text,at}]}`）只有这里知道。
+ * 从外面按 `JSON.parse(...).queue` 去改，格式一改就静默失效。
+ *
+ * @param {number} lo 区间起点（播放秒，含）
+ * @param {number} hi 区间终点（播放秒，含）
+ * @returns {Promise<Array<{from:number, at:number, text:string}>>} 取走的那些
+ */
+export async function pullItemsBetween(input, lo, hi, { env = process.env } = {}) {
+  const from = Number(lo);
+  const to = Number(hi);
+  if (!Number.isFinite(from) || !Number.isFinite(to) || to < from) return [];
+  const st = await loadWatch(env);
+  const sk = sessionKey(input);
+  const lines = st[sk]?.lines;
+  if (!lines) return [];
+
+  const pulled = [];
+  let dirty = false;
+  for (const key of Object.keys(lines)) {
+    // 段起点在区间之后 = 这一段整个还在未来，连看都不用看
+    if (!(Number(key) <= to)) continue;
+    const items = slotItems(lines[key]);
+    const kept = [];
+    for (const it of items) {
+      const at = Number(it.at);
+      if (Number.isFinite(at) && at >= from && at <= to) pulled.push({ from: Number(key), at, text: it.text });
+      else kept.push(it);
+    }
+    if (kept.length !== items.length) {
+      writeSlot(lines, key, kept);
+      dirty = true;
+    }
+  }
+  if (dirty) {
+    st[sk] = { ...(st[sk] ?? {}), lines, at: Date.now() };
+    await saveWatch(st, env);
+  }
+  return pulled.sort((a, b) => a.at - b.at);
+}
+
 const writeSlot = (lines, from, items) => {
   if (items.length > 0) lines[from] = { queue: items, savedAt: Date.now() };
   else delete lines[from];

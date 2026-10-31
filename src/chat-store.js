@@ -24,6 +24,7 @@ import { join } from 'node:path';
 
 import { cacheDir } from 'dsh-video-storyboard/cache';
 import { emitSpeech, onSpeech, speechSubscribers } from './voice.js';
+import { noteReply } from './reply-guard.js';
 
 /** 聊天记录（jsonl，一行一条 {role, text, at}） */
 export function chatFile(env = process.env) {
@@ -232,7 +233,14 @@ export function appendSpoken(role, text, { t = null, env = process.env, speak = 
 
 /** 模型插话时说的那一句 —— 就是 `appendSpoken('assistant', …)` 的别名，保留旧名字 */
 export function appendAssistantSay(text, { t = null, env = process.env } = {}) {
-  return appendSpoken('assistant', text, { t, env });
+  const entry = appendSpoken('assistant', text, { t, env });
+  // **模型说了一句 = 声音引擎被这句占住了**，循环必须知道（见 reply-guard.js）：
+  // 否则回话刚开口两秒，循环又把脚本台词塞进来 —— 串行链一排队，
+  // 后一句要么拖到画面前面，要么被适配器当"追不上"直接丢掉。
+  //
+  // 只挂在 `say` 这一个人口上：悬浮窗开窗提示那类 `appendSpoken` 不算"回话"。
+  try { noteReply(entry?.text ?? text, { pos: t }); } catch { /* 记账失败不影响说话 */ }
+  return entry;
 }
 
 /**

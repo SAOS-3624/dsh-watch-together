@@ -18,6 +18,8 @@ import { formatManifest } from 'dsh-video-storyboard/format';
 import { runStoryboard } from 'dsh-video-storyboard/pipeline';
 import { createInputSurface } from './input-surface.js';
 import { appendAssistantSay } from './chat.js';
+import { replyReminder } from './interject.js';
+import { pullLinesNear, pulledLinesNote } from './reply-guard.js';
 import { validateWatchArgs } from './tool-spec.js';
 import { makeBuilder, runWatchPass } from './watch-run.js';
 import { runWatchAction } from './watch-actions.js';
@@ -43,19 +45,37 @@ export async function execute(ctx, args, {
   // 而且**允许和其他参数同时给**：以前 `say` 会被 `runWatchAction` 拦下来直接返回，
   // 于是"交付这一段 + 顺带说一句"得调两次工具（多一次模型往返）。
   // 现在：只有 `say` 就当场返回；带着别的活就写进流、继续跑主流程。
+  //
+  // 顺带两件事（2026-10-31 晚加）：
+  //   ① 记下"声音从这里开始忙"，循环才知道别在两秒后又塞一句脚本台词进来；
+  //   ② 把回话占住的这十几秒里挂着的脚本台词**取走**，交给模型按它刚说的重写 ——
+  //      两句挨着念会连成一串，后一句还会被声音适配器当"追不上"直接丢掉。
+  const saidNow = typeof args.say === 'string' && args.say.trim() !== '';
   let saidNote = '';
-  if (typeof args.say === 'string' && args.say.trim()) {
-    const entry = appendAssistantSay(args.say.trim());
+  let nearNote = '';
+  if (saidNow) {
+    // 说话时的播放位置：循环的估计值最接近"用户此刻看到哪儿"，读不到就不传（不猜）
+    const st0 = loopStatus();
+    // `Number(null) === 0`：不显式判空的话，"还没有位置"会被当成"在 0 秒"，
+    // 于是把第一段开头 12 秒里的词全取走了
+    const posRaw = st0.pos;
+    const posNow = (posRaw === null || posRaw === undefined || posRaw === '')
+      ? null : Number(posRaw);
+    const where = st0.input ?? (typeof args.input === 'string' ? args.input : null);
+    const entry = appendAssistantSay(args.say.trim(), { t: posNow });
+    const near = await pullLinesNear(where, { pos: posNow }).catch(() => ({ pulled: [], guardSec: 12 }));
+    nearNote = pulledLinesNote({ ...near, pos: posNow });
+
     const others = Object.keys(args)
       .filter((k) => k !== 'say' && k !== 'browserPort')
       .filter((k) => args[k] !== undefined && args[k] !== null && args[k] !== false && args[k] !== '');
     if (others.length === 0) {
       return {
-        text: JSON.stringify({ ok: true, said: entry?.text ?? '', inChat: true }),
+        text: JSON.stringify({ ok: true, said: entry?.text ?? '', inChat: true }) + nearNote,
         images: [],
       };
     }
-    saidNote = `\n[said] 这句已写进悬浮窗：「${entry?.text ?? ''}」`;
+    saidNote = `\n[said] 这句已写进悬浮窗：「${entry?.text ?? ''}」${nearNote}`;
     args = { ...args };
     delete args.say;
   }
@@ -72,7 +92,9 @@ export async function execute(ctx, args, {
   const quick = await runWatchAction(args, {
     ctx, sessionId, browserPort: args.browserPort ?? configuredPort(),
   });
-  if (quick) return quick;
+  // **待回执也跟着单发命令走**：模型很可能先 statusOnly 看一眼再回话，
+  // 那一步用户同样只会看到沉默 —— 提醒要挂在每一条返回上，不能只挂主流程。
+  if (quick) return { ...quick, text: `${quick.text}${replyReminder({ answered: saidNow })}` };
 
   if (problems.length > 0) throw new Error(`invalid arguments: ${problems.join('; ')}`);
 
@@ -170,6 +192,10 @@ export async function execute(ctx, args, {
     });
   }
   // 第一次真进入阻塞时，把输入框状态附在结果里 —— 模型才知道该告诉用户去哪说话
-  return { text: `${r.text}${widgetNote}${saidNote}`, images: r.images };
+  // `replyReminder` 在最后：这一轮如果还是没回插话，就把"你还没回她"顶出来
+  return {
+    text: `${r.text}${widgetNote}${saidNote}${replyReminder({ answered: saidNow })}`,
+    images: r.images,
+  };
 }
 

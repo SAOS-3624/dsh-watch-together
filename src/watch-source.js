@@ -21,6 +21,8 @@
 import { fileUrlToPath, hasDebugPort, looksLikeVideoUrl } from 'dsh-video-storyboard/browser-time';
 import { chatWatcherShared, enterChatWait, sleepWithChat } from './interrupt.js';
 import { readPositionOrNull } from './watch-browser.js';
+import { readBridge } from './position-bridge.js';
+import { interjectNote } from './interject.js';
 
 /**
  * "可以开始看了"的判据 —— **能读到播放位置**，而不是"能读到页面地址"。
@@ -34,15 +36,43 @@ import { readPositionOrNull } from './watch-browser.js';
 const positionReady = (b) => Boolean(b) && Number.isFinite(b?.pos)
   && (b.pos > 0.5 || b.paused === false);
 
-/** 从一次浏览器读数里取出"这是在放什么"，取不到就 null */
-function sourceOf(b) {
-  if (!positionReady(b)) return null;
+/**
+ * 过期读数还能认多久。
+ *
+ * 扩展**只在标签页可见时**上报（那两个标签页会互相打架），所以用户一切到别的窗口打字，
+ * 位置就在 5 秒后变成"过期"。而"一起看"这句话恰恰是在**别的窗口**里打的 ——
+ * 于是最常见的开场变成了"等了 60 秒才说你没开视频"。
+ *
+ * 两分钟之内，那支片子是谁仍然确定，用它；位置本身交给上层标成 stale 并让新读数纠正。
+ */
+const STALE_IDENTIFY_MS = 120_000;
+
+/** 从一次读数里认出"这是在放什么"（不看位置是否就绪） */
+function identityOf(b) {
+  if (!b) return null;
   if (looksLikeVideoUrl(b?.url) && /^https?:/i.test(b.url)) {
     return { input: b.url, matchedBy: 'browser-url' };
   }
   const local = fileUrlToPath(b?.url);
   if (local) return { input: local, matchedBy: 'browser-file' };
   return null;
+}
+
+/** 从一次浏览器读数里取出"这是在放什么"，取不到就 null */
+function sourceOf(b) {
+  if (!positionReady(b)) return null;
+  return identityOf(b);
+}
+
+/**
+ * 过期读数认片：位置桥上一次上报（哪怕已经过期）指向的是哪支片子。
+ * @returns {Promise<null | {input:string, matchedBy:string, stale:{pos:number, ageMs:number, at:number}}>}
+ */
+async function staleSource() {
+  const s = await readBridge({ maxAgeMs: STALE_IDENTIFY_MS }).catch(() => null);
+  const hit = identityOf(s);
+  if (!hit) return null;
+  return { ...hit, stale: { pos: s.pos, ageMs: s.ageMs ?? 0, at: s.at } };
 }
 
 /**
@@ -83,11 +113,20 @@ async function noVideoResult({ reason, browserPort, waitedSec = null, extra = ''
 export async function resolveWatchSource({ input: given, args, readBrowser, browserPort }) {
   let input = given;
   let resolved = null;
+  let stale = null;
 
   if (!input) {
     // 浏览器开过调试端口时，**页面地址就是源**（能直接拿到 BV 号）
     const hit = sourceOf(await readPositionOrNull(readBrowser, browserPort));
     if (hit) ({ input, resolved } = hit);
+    // 没有新鲜读数：看看过期的（用户很可能刚切到别的窗口去说"一起看"）。
+    // 认出来就直接用，位置标 stale —— 比在这里干等一分钟强得多。
+    if (!input) {
+      const old = await staleSource();
+      if (old) {
+        ({ input, resolved, stale } = old);
+      }
+    }
   }
 
   // ---- 等视频出现（waitForVideo）
@@ -101,9 +140,13 @@ export async function resolveWatchSource({ input: given, args, readBrowser, brow
   // 为什么改默认：模型冷启动最容易干的事就是"问用户要链接"，而那正是用户最烦的一步
   // （原话："他怎么还在问我这个问题，以后只让他查我的浏览器"）。
   // 这里等一小会儿，视频一开就自动接上；等不到也只说"先播起来再叫我"。
+  //
+  // **自动等只等 20 秒**（原来 60）：用户抱怨"开头检测视频特别慢"（2026-10-31），
+  // 而绝大多数情况下要么一秒内就认出来，要么是真的还没开视频 —— 干等一分钟只是让人干瞪眼。
+  // 显式 `waitForVideo: true` 仍然是 120 秒：那种情况是模型已经跟用户说过"我在等"。
   const autoWait = !given && args.waitForVideo !== false;
   if (!input && (args.waitForVideo === true || autoWait)) {
-    const cap = Math.min(600, Math.max(10, Number(args.maxWaitSec) || (autoWait ? 60 : 120)));
+    const cap = Math.min(600, Math.max(10, Number(args.maxWaitSec) || (autoWait ? 20 : 120)));
     const deadline = Date.now() + cap * 1000;
     const tWait = Date.now();
     // 等用户开视频这段时间，这条插话通道归等待者（见 interrupt.js 的 chatWaiters）
@@ -115,10 +158,24 @@ export async function resolveWatchSource({ input: given, args, readBrowser, brow
           ({ input, resolved } = hit);
           break;
         }
-        // 等用户开视频这段时间最长 2 分钟，**干等最没意义** —— 顺手看着聊天框，
+        // 等用户开视频这段时间最长两分钟，**干等最没意义** —— 顺手看着聊天框，
         // 用户随时可以插一句（比如"我找不到那个片"），立刻就能回他。
         const said = await sleepWithChat(300, { watcher: chatWatcherShared(), everyMs: 150 });
-        if (said) return { ok: false, reason: 'chat', chat: said, input: null, resolved: null };
+        // **这条返回以前没有 `text`**：调用方把它原样交给宿主，而 output.schema 里
+        // `text` 是必填 —— 于是"等视频时用户插话"会得到一个不合格的结果，
+        // 模型那边看到的是工具报错，用户看到的是"我说了话它没反应"。
+        if (said) {
+          return {
+            ok: false,
+            reason: 'chat',
+            chat: { text: said.text, at: said.at },
+            input: null,
+            resolved: null,
+            text: `${interjectNote(said.text, { at: said.at })}\n\n`
+              + '（还在等视频起来，这次等待先到这里 —— 回完再调一次 watch_together 接着等。）',
+            images: [],
+          };
+        }
       }
     } finally {
       leaveChatWait();
@@ -140,5 +197,5 @@ export async function resolveWatchSource({ input: given, args, readBrowser, brow
     });
   }
 
-  return { input, resolved };
+  return { input, resolved, stale };
 }

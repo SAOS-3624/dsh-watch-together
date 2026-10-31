@@ -38,6 +38,9 @@ import { cachedCues } from './lines-util.js';
 import { describeBrowser, readPositionOrNull } from './watch-browser.js';
 import { resolveWatchSource } from './watch-source.js';
 import { runWatchMode } from './watch-modes.js';
+import { readBridge } from './position-bridge.js';
+import { interjectNote } from './interject.js';
+import { sourceSwitched, stopWatchLoop } from './watch-loop.js';
 
 /**
  * 给循环用的建段函数：传一次参数，返回 `build(from) => Promise`。
@@ -246,9 +249,26 @@ export async function runWatchPass(args, deps) {
   //
   // 这里**不再自动拉起浏览器**（2026-10-31 删）：位置主通道是浏览器扩展，
   // 它每秒钟把 `currentTime` 报过来；插件自己再开一个 Edge 只会在用户眼前多一个窗口。
-  const browserState = browserPort
-    ? await probeBrowserState({ port: browserPort }).catch(() => ({ state: 'error', port: browserPort }))
-    : { state: 'unconfigured', port: null };
+  //
+  // **扩展有新鲜读数时就不探调试端口了**（2026-10-31 晚加）：探一次是
+  // `listTargets`（1.2 s 超时）+ 逐页 `evaluate`（每页 1.5 s，最多 8 页），
+  // 端口通着但没人应答时一次就是十几秒 —— 而这条读数只是用来写 `browser:` 那一行。
+  // 「浏览器在不在」扩展已经在回答了：它报的是什么，用户就在看什么。
+  const bridgeNow = await readBridge().catch(() => null);
+  const browserState = bridgeNow
+    ? {
+      state: 'extension',
+      port: browserPort ?? null,
+      url: bridgeNow.url,
+      title: bridgeNow.title,
+      pos: bridgeNow.pos,
+      dur: bridgeNow.dur,
+      paused: bridgeNow.paused,
+      playing: !bridgeNow.paused,
+    }
+    : (browserPort
+      ? await probeBrowserState({ port: browserPort }).catch(() => ({ state: 'error', port: browserPort }))
+      : { state: 'unconfigured', port: null });
   if (!Number.isFinite(cursor)) {
     // 位置仍然走**可注入**的 readBrowser（测试/仿真靠它喂位置，别改成直接调 CDP）
     const b = await readPositionOrNull(readBrowser, browserPort);
@@ -257,6 +277,18 @@ export async function runWatchPass(args, deps) {
       confidence = 'browser';
       note = ` (browser, ${b.paused ? 'paused' : 'playing'})`;
     }
+  }
+
+  // **扩展在标签页不可见时不上报**（用户切到 WorkBuddy 窗口打字就是这种情况）。
+  // 这时位置桥过期了，但"在看哪支片子"是确定的 —— 拿最后一次读数当锚点，明确标成 stale，
+  // 让循环/等待用之后的新读数纠正它。
+  //
+  // 以前这里直接回"读不到你的播放进度，告诉我你看到几分几秒"：
+  // 用户刚说完"一起看"就被要求报时间，而其实插件手上就有二十秒前的读数。
+  if (!Number.isFinite(cursor) && Number.isFinite(Number(src.stale?.pos))) {
+    cursor = Number(src.stale.pos);
+    confidence = 'stale';
+    note += ` (stale: last report ${Math.round(Number(src.stale.ageMs ?? 0) / 1000)}s ago)`;
   }
   const browserLine = describeBrowser(browserState);
   if (!Number.isFinite(cursor)) {
@@ -330,9 +362,9 @@ export async function runWatchPass(args, deps) {
         return pass({
           chat: { text: built.text, at: built.at },
           building: true,
-          text: `[一起看] 用户插话 @${measuredAt}：`
-            + `「${built.text}」\n`
-            + '先回这一句 —— 但如果还有段欠台词，**台词优先**，先写 lines 再回。'
+          // 措辞统一在 interject.js：**先说话，再干活**，而且 `say` 可以和这次要做的活
+          // 放在同一个调用里（handler 在跑主流程之前就写流，字先出、图后到）。
+          text: `${interjectNote(built.text, { at: built.at })}\n`
             + '这一段的图还在后台建（不用等它），回完**再调一次我就把图和清单给你** —— 已经在缓存里了，不会再重跑。',
         });
       }
@@ -396,9 +428,7 @@ export async function runWatchPass(args, deps) {
       return pass({
         chat: { text: race.text, at: race.at },
         building: true,
-        text: `[一起看] 用户插话 @${measuredAt}：`
-          + `「${race.text}」\n`
-          + '先回这一句 —— 但如果还有段欠台词，**台词优先**，先写 lines 再回。'
+        text: `${interjectNote(race.text, { at: race.at })}\n`
           + '余量还在后台补（不用等它），回完**再调一次我就接着陪** —— 已经建好的都在缓存里，不会重跑。',
       });
     }
@@ -446,6 +476,8 @@ export async function runWatchPass(args, deps) {
   // 代价：等待期间这个会话被占着，用户插话要等它返回。
   let waitedSec = 0;
   const tWaitStart = Date.now();
+  /** 等待期间发现"换片了"时的那一刻读数（见下面对换片检测的注释） */
+  let switchedTo = null;
   let alreadyDelivered = false;
   // **空闲自关**：位置两倍最长分段都没动过，就当用户已经不看了，主动收工。
   // 为什么是两倍：一段 5 分钟，正常播放最慢也会在一段内推进一次；两段都没动静，
@@ -473,12 +505,28 @@ export async function runWatchPass(args, deps) {
     // 这里就永远看不见了（见 interrupt.js 的 chatWaiters）。阻塞等待是唯一能让人
     // 从"等结果"里出来的一条路，所以它优先。
     const leaveChatWait = enterChatWait();
+    // **等待期间换片要当场发现**：循环那边虽然也会停表 + 叫醒，但那条叫醒是 `followup()`，
+    // 要等**这一轮工具调用结束**才送达 —— 而这个调用正卡在等待里。
+    // 不在这里自己看，用户切了片子就得等到旧片的交付点（最长一整段）才有反应。
+    // `Number(null) === 0`：显式判空，否则"还不知道时长"会被当成 0 秒的片子
+    const durOf = (v) => (v === null || v === undefined || v === '' ? NaN : Number(v));
+    let baseDur = Number.isFinite(durOf(browserState?.dur)) ? durOf(browserState.dur) : null;
+    let baseUrl = typeof browserState?.url === 'string' ? browserState.url : null;
     try {
       while (Date.now() < deadline && !signal?.aborted && !windowGone()) {
         const chatHit = chatPoll();
         if (chatHit) { d.chatNow = chatHit; break; }
         // 位置来源：读得到就用读到的；这一拍读不到才按墙钟往前推一个估计值
         const np = await readPositionOrNull(readBrowser, browserPort);
+        if (np) {
+          // 基线第一次拿到就定下来（冷启动时 browserState 可能还没有 dur/url）
+          if (!baseUrl && np.url) baseUrl = np.url;
+          if (!Number.isFinite(baseDur) && Number.isFinite(durOf(np.dur))) baseDur = durOf(np.dur);
+          if (sourceSwitched({ dur: baseDur, url: baseUrl }, np)) {
+            switchedTo = np;
+            break;
+          }
+        }
         const posNow = np ? np.pos : (Number.isFinite(cursor) ? cursor + waitedSec : null);
         if (posNow !== null) {
           cursor = posNow;
@@ -547,6 +595,24 @@ export async function runWatchPass(args, deps) {
   // 表现是这一段被推迟到**再下一次**调用才交出去（迟到一段，而不是重复一段）。
   // 记账必须发生在真正交付的那条分支里（见下方第 4 步）。
   const waitNote = waitedSec > 0 ? ` · waited ${Math.round(waitedSec)}s` : '';
+
+  // 等待期间换片了：立刻收工，并且**说清楚现在在放什么** —— 模型据此问一句"要不要接着陪这支"。
+  //
+  // 这一条是"换片能及时被发现"的**唯一可靠路径**：循环那边虽然也会停表 + 叫醒，
+  // 但那条叫醒是 `followup()`，要等**这一轮工具调用结束**才送达 ——
+  // 而这一轮正卡在等待里。不在自己这层看，用户切了片子就得等到旧片的交付点（最长一整段）。
+  if (switchedTo) {
+    stopWatchLoop('video-changed');
+    return pass({
+      ok: false,
+      reason: 'video-changed',
+      waitedSec,
+      text: `${head}${waitNote}\n[video-changed] 换片了：现在在放「${String(switchedTo.title ?? '').slice(0, 60) || '未知片子'}」`
+        + ` @ ${mmss(switchedTo.pos)}（刚才跟的是 ${mmss(segStart)}–${mmss(segStart + size)}）。\n`
+        + '**先跟用户说一句**（`say`），问要不要接着陪这支；要的话重新调一次 watch_together'
+        + '（不用带 input），我会按新片从头跟。',
+    });
+  }
 
   // 位置长时间没动：收工，并把"停在哪儿、多久"说清楚，别让会话悄无声息地占着
   if (!d.due && idleHit) {

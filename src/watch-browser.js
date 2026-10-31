@@ -77,6 +77,15 @@ export function describeBrowser(state = {}) {
       const title = state.title ? ` ${String(state.title).slice(0, 60)}` : '';
       return `browser: open :${port}${title} ${what}${at}`;
     }
+    // 扩展在报（`position.json` 是新鲜的）：这就是**最硬**的"浏览器开着"证据 ——
+    // 它来自页面里的 `<video>` 本身，和调试端口在不在毫无关系。
+    // 这种情况**不再去探调试端口**（探一次可能十几秒，见 watch-run 的注释）。
+    case 'extension': {
+      const what = state.paused ? 'paused' : 'playing';
+      const at = Number.isFinite(state.pos) ? ` ${mmss(state.pos)}` : '';
+      const title = state.title ? ` ${String(state.title).slice(0, 60)}` : '';
+      return `browser: extension reporting${title} ${what}${at} — read from the page itself, no debug port used`;
+    }
     default:
       return `browser: unknown (${state?.state ?? 'no state'})`;
   }

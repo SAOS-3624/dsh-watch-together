@@ -3,6 +3,68 @@
 All notable changes to **dsh-watch-together** are documented here.
 This package starts its own version line at `0.0.7` — it is not a continuation of `dsh-video-storyboard`.
 
+## [Unreleased]
+
+Four things the user hit while actually watching (2026-10-31 evening). All four are about the
+same gap: the plugin knew something, and the model (or the user) never found out.
+
+### Interjections: speak first, then look
+
+Reported as "它一声不吭先去 zoom，回来才说话". The root cause was not the model: a normal reply
+never reaches the floating window — only `say` does and only `say` is spoken. So "think, then look,
+then answer" was, from the user's side, complete silence for tens of seconds.
+
+- One wording, one place (`src/interject.js`) for all five entry points (during a build, during the
+  lookahead fill, during a blocking wait, `waitUntil`, `nextLine`). It now says exactly what to do:
+  `watch_together({ say: "我看一眼", speakNow: true })` — one call, words written before any frame
+  is built. `lines` and `say` can ride in the same call, so "台词优先" no longer means "stay silent".
+- Unanswered interjections are **tracked**: the next tool result ends with `[未回应] …你还没回`,
+  until a call actually carries `say` (expires after 3 min). Previously the reminder existed only
+  inside the message that woke the model, which it had already scrolled past.
+- `waitUntil` / `nextLine` called a function that **did not exist** (`chatResult`) — an interjection
+  during either wait threw `ReferenceError` and the tool failed. Defined, and it reuses the same wording.
+- Waiting for a video to appear returned a result **without `text`**, which the host's `output.schema`
+  requires. That path now returns a proper result.
+
+### Reply vs. scripted line: 12-second guard
+
+Reported as "说话和插话的回复离太近，把后面那句改一下". Two lines spoken back to back on a serial
+TTS chain means the second one either drifts or is dropped by the adapter (queue > 3.5 s → `skipped`).
+
+- `say` now marks the voice engine busy for its full spoken length (`src/reply-guard.js`), so the
+  loop stops feeding scripted lines while a reply is still playing. Previously only the loop's own
+  lines updated that clock — a reply was invisible to it.
+- Lines scheduled within 12 s of a reply are **withdrawn from the batch and handed back** to the
+  model (`[lines·太近]`) with instructions to rewrite them around what was just said, or drop them.
+  Withdrawn, not silently deleted: the user asked for "改一下", not "少一句".
+
+### Switching videos is noticed in ~2 s, not ~15 s
+
+- The per-tick bridge read (every 2 s) now does the switch / end-of-video / big-jump checks, and
+  keeps the `dur`/`url` baseline up to date. Before, all three lived in the 15-second CDP probe
+  branch only, so a switch could go unnoticed for a quarter of a minute — while the clock kept
+  computing segment boundaries against the old film.
+- The blocking wait in `watch-run` now compares each read against the film it started with and
+  returns `[video-changed]` immediately. **This was the only reliable path**: the loop's wake goes
+  through `followup()`, which is delivered *after* the current tool call returns — and that call was
+  busy waiting.
+- `sourceSwitched()` centralises the test, and `Number(null) === 0` is explicitly guarded: a
+  not-yet-known duration used to look like a "0-second film" and stop the watch instantly.
+
+### Cold start: don't wait a full minute for a video we can already identify
+
+- The extension only reports while the tab is **visible** — and "一起看" is usually typed in another
+  window. The position went stale after 5 s, the plugin concluded "no video", and sat in the 60 s
+  wait. It now falls back to a **stale** sample (up to 2 min) to identify the film, marks the
+  position `stale`, and lets the next fresh reading correct it.
+- Automatic waiting (no `waitForVideo`) dropped from 60 s to **20 s**; explicit `waitForVideo: true`
+  stays at 120 s.
+- `probeBrowser()` is skipped when the extension already reports: one probe is `listTargets`
+  (1.2 s) plus up to 8×1.5 s of CDP round-trips — pure overhead for a `browser:` line the extension
+  just answered. The line now reads `browser: extension reporting <title> playing 03:20`.
+
+Tests: 243 pass (`node --test`), 6 of them new in `test/interject-reply.test.mjs`.
+
 ## [0.0.7] — 2026-10-31 (first release)
 
 The first published version. One tool, `watch_together`: it follows the user's real playback

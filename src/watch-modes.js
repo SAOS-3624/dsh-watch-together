@@ -15,6 +15,29 @@ import { consumeLine, dueLine, hasLine, loadWatch, saveWatch, sessionKey } from 
 import { mmss } from './time.js';
 import { readPositionOrNull } from './watch-browser.js';
 import { chatWatcherShared, enterChatWait, sleepWithChat } from './interrupt.js';
+import { interjectNote } from './interject.js';
+
+/**
+ * 等待期间用户插话 → 交回去。
+ *
+ * **这个函数以前根本不存在**：`waitUntil` / `nextLine` 两条路一旦遇到插话就抛
+ * `ReferenceError: chatResult is not defined`，工具层看到的是 "tool failed"，
+ * 用户看到的是"我在窗口里说了话，它没反应"。现在它在这里，而且措辞和别的入口共用一份
+ * （`interject.js`）：先说话，再干活。
+ *
+ * @param {{text:string, at:number}} said
+ * @param {number|null} pos 当时的播放位置（报给模型对时）
+ */
+function chatResult(said, pos = null) {
+  return {
+    ok: true,
+    reason: 'chat',
+    chat: { text: said.text, at: said.at },
+    at: pos,
+    text: `${interjectNote(said.text)}\n\n（这次等待到此结束 —— 回完再调一次，接着等。）`,
+    images: [],
+  };
+}
 
 export async function runWatchMode({ args, input, plan, browserPort, readBrowser, signal = null }) {
   // ---- 0.4 两种"阻塞到条件成立"的等待（模型侧的节奏由它自己掌握）

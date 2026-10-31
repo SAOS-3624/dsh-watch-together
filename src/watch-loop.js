@@ -18,7 +18,7 @@ import {
 import { chatWatcherShared, chatWaiterCount } from './interrupt.js';
 import { startTicker, wakeSession } from './timer.js';
 import { DEFAULT_LOOKAHEAD, DEFAULT_SEGMENT, describePlan, makePlan, windowFor } from './batches.js';
-import { readBrowserPosition } from 'dsh-video-storyboard/browser-time';
+import { readBrowserPosition, looksLikeVideoUrl } from 'dsh-video-storyboard/browser-time';
 import { readBridge } from './position-bridge.js';
 import { floatingWindowAlive } from './floating-window.js';
 import { readPositionOrNull } from './watch-browser.js';
@@ -28,6 +28,8 @@ import { consumeLine, dueLine, hasLine, loadLine, WATCH_LEAD } from './watch.js'
 import { mmss } from './time.js';
 import { appendChat } from './chat-store.js';
 import { markHungUp } from './watch-state.js';
+import { interjectNote } from './interject.js';
+import { __resetReplyGuard, replyBusyUntil } from './reply-guard.js';
 
 /**
  * 叫醒失败要**看得见**。
@@ -84,6 +86,8 @@ const loop = {
   askedAt: 0,
   noSourceSince: 0,
   dur: null,
+  /** 正在跟的那支片子的页面地址（换片判据之一，见 `sourceSwitched`） */
+  sourceUrl: null,
   lastWake: null,
   wakeFails: 0,
   logs: [],
@@ -110,6 +114,34 @@ function recordWake(loop, w, { segment } = {}) {
     loop.wakeFails += 1;
     loop.lastReason = 'wake-failed';
   }
+}
+
+/**
+ * 这一次读数是不是"换片了"？
+ *
+ * 判据只有两条，都要两边都有值才比：
+ *   · 时长变了（差 1 秒以上）—— 最硬的信号，和地址无关；
+ *   · 地址变了，而且**两边都像视频页** —— 只有这种地址变化才说明换片。
+ *     不加这条限制的话，CDP 读到宿主自己的界面（WorkBuddy / VSCode）、
+ *     或者浏览器从一个 tab 跳到另一个 tab，都会被误判成换片，然后当场停表。
+ *
+ * @param {{dur?:number|null, url?:string|null}} prev 当前正在跟的那支
+ * @param {{dur?:number|null, url?:string|null}} next 刚读到的那支
+ * @returns {null | {durChanged:boolean, urlChanged:boolean}}
+ */
+export function sourceSwitched(prev, next) {
+  if (!next) return null;
+  // **`Number(null) === 0`**：拿它直接比，"还没有时长"（null）和"600 秒"就会被判成换了片。
+  // 这个坑仓里踩过好几次（台词 at、指纹缓存），这里显式判空。
+  const num = (v) => (v === null || v === undefined || v === '' ? NaN : Number(v));
+  const prevDur = num(prev?.dur);
+  const nextDur = num(next?.dur);
+  const durChanged = Number.isFinite(prevDur) && Number.isFinite(nextDur)
+    && Math.abs(prevDur - nextDur) > 1;
+  const urlChanged = Boolean(prev?.url && next?.url && prev.url !== next.url
+    && looksLikeVideoUrl(prev.url) && looksLikeVideoUrl(next.url));
+  if (!durChanged && !urlChanged) return null;
+  return { durChanged, urlChanged };
 }
 
 export function loopStatus() {
@@ -321,6 +353,40 @@ export function startWatchLoop({
 
   void readLatency().then((st) => { loop.aheadSec = aheadSeconds(st); });
 
+  // 换一场就把"上一场说过的话"清干净：`busyUntil` 和"刚回过的位置"留着的话，
+  // 新一场开头十几秒会被上一场的回话卡住（表现为"它不说话"，而且看不出原因）。
+  __resetReplyGuard();
+
+  /**
+   * 大跳（拖动/回看）要说一声 —— 阈值 60 秒 + 3 分钟冷却（拖一下就问一句会烦死人）。
+   *
+   * **改成每一拍都看**（位置桥每秒都有读数），不再等 15 秒一次的探针：
+   * 用户拖完进度条，模型还按旧进度准备台词，最多差出十几秒的沉默。
+   */
+  const noteBigJump = (b, tNow) => {
+    if (!loop.anchor || !Number.isFinite(Number(b?.pos)) || loop.status === 'paused') return false;
+    const elapsedSec = Math.max(0, (tNow - loop.anchor.updated) / 1000);
+    const expected = loop.anchor.pos + elapsedSec;
+    const jump = Number(b.pos) - expected;
+    if (Math.abs(jump) <= 60 || tNow - (loop.lastJumpWakeAt || 0) <= 180_000) return false;
+    loop.lastJumpWakeAt = tNow;
+    void wake(loop.ctx, {
+      sessionId: loop.sessionId,
+      text: `[一起看] 用户拖了进度条：${jump > 0 ? '跳到' : '回看到'} ${mmss(b.pos)}`
+        + `（原来到 ${mmss(expected)}）。`
+        + (jump < 0
+          ? '回看的部分不会再重说一遍（避免复读）；要不要简单补一句，你自己判断。'
+          : '跳过的部分不补；从新位置接着跟就行。'),
+    });
+    return true;
+  };
+
+  /** 换片/播完：停表 + 叫醒（循环停了之后就没人再轮询，必须叫这一下） */
+  const stopForSource = (reason, text) => {
+    stopWatchLoop(reason);
+    void wake(loop.ctx, { sessionId: loop.sessionId, text });
+  };
+
   loop.ticker = ticker({
     everyMs: TICK_MS,
     tick: async () => {
@@ -341,9 +407,10 @@ export function startWatchLoop({
           void wakeWithRetry({
             ctx: loop.ctx,
             sessionId: loop.sessionId,
-            text: `[一起看] 用户插话：「${chatText.slice(0, 200)}」
-`
-              + '先回这一句（如果还有段欠台词，台词优先）。回完再调 watch_together 接着陪。',
+            // 措辞和阻塞等待里的插话**必须是同一份**（interject.js）：
+            // 以前这里只写"先回这一句"，模型就以为"回"是指聊天框里的回复 ——
+            // 而那句话用户根本看不见，表现出来就是"一声不吭"。
+            text: `${interjectNote(chatText.slice(0, 200))}\n\n回完再调 watch_together 接着陪。`,
             wake: chatWake,
           });
         }
@@ -370,10 +437,29 @@ export function startWatchLoop({
       if (loop.positionSource === 'bridge' && loop.anchor) {
         const s = await readPosBridge({ now: tNow }).catch(() => null);
         if (s && Number.isFinite(s.pos)) {
+          // **换片/播完/大跳一律在这一拍判**。以前这三件事只写在 15 秒一次的探针里，
+          // 而位置桥**每秒**都在报 —— 用户切了片子，要等到下一次探针（最多 15 秒）
+          // 才被发现；那十几秒里钟还在按旧片的段边界算，模型也在按旧片准备台词。
+          const switched = sourceSwitched({ dur: loop.dur, url: loop.sourceUrl }, s);
+          if (switched) {
+            stopForSource('video-changed', `[一起看] 换片了（现在在放：${(s.title ?? '').slice(0, 60) || '未知片子'}`
+              + ` @ ${mmss(s.pos)}）。跟用户确认一下要不要接着陪这支：要的话重新调 watch_together 就会从头开始跟。`);
+            return;
+          }
+          if (s.ended) {
+            stopForSource('video-ended', '[一起看] 视频播完了。跟用户收个尾，或者问下一支看什么 —— '
+              + '用户开了新片之后重新调 watch_together 就会接着陪。');
+            return;
+          }
+          noteBigJump(s, tNow);
           loop.anchor = makeAnchor({
             pos: s.pos, dur: s.dur, status: s.paused ? 'paused' : 'playing',
             updated: tNow, title: s.title,
           }, tNow);
+          // **基线跟着更新**：不更新的话，下一次读数永远和"刚开始那支"比 ——
+          // 一支片子中途 dur 精确到小数变了都会被当成换片。
+          if (Number.isFinite(Number(s.dur))) loop.dur = Number(s.dur);
+          if (s.url) loop.sourceUrl = s.url;
           loop.status = s.paused ? 'paused' : 'playing';
         }
       }
@@ -384,39 +470,17 @@ export function startWatchLoop({
         // 不默认读 9222：这台机器上 WorkBuddy 自己就占着它，盲读会读到宿主的界面元素。
         const b = await readPositionOrNull(readBrowser, browserPort);
         if (b) {
-          // 换片：时长或地址变了就是另一支片子，立刻停 —— 继续跑会拿旧段的边界去套新片
-          const changed = (loop.dur && Number.isFinite(b.dur) && Math.abs(loop.dur - b.dur) > 1)
-            || (loop.sourceUrl && b.url && loop.sourceUrl !== b.url);
-          if (changed) {
-            // **停表之外还要叫醒一次**：不叫的话模型还阻塞在上一段的等待里，
-            // 它不知道片子换了，会一直沉默到用户来戳它。
-            stopWatchLoop('video-changed');
-            void wake(loop.ctx, {
-              sessionId: loop.sessionId,
-              text: `[一起看] 换片了（现在在放：${(b.title ?? '').slice(0, 60) || '未知片子'} @ ${mmss(b.pos)}）。`
-                + '跟用户确认一下要不要接着陪这支：要的话重新调 watch_together 就会从头开始跟。',
-            });
+          // 换片：判据和位置桥那条**同一份**（`sourceSwitched`）—— 两处各写一套，
+          // 就会出现"扩展通道能认出来、调试端口认不出来"这种只在某些机器上复现的怪事。
+          const switched = sourceSwitched({ dur: loop.dur, url: loop.sourceUrl }, b);
+          if (switched) {
+            stopForSource('video-changed', `[一起看] 换片了（现在在放：${(b.title ?? '').slice(0, 60) || '未知片子'}`
+              + ` @ ${mmss(b.pos)}）。跟用户确认一下要不要接着陪这支：要的话重新调 watch_together 就会从头开始跟。`);
             return;
           }
           // **大跳转（拖进度条，前进或后退）**：位置对不对由锚点自然纠正，
           // 但模型得知道用户跳了，否则它还在按旧进度准备台词。
-          // 阈值 60 秒 + 3 分钟冷却：拖一下就问一句会烦死人。
-          if (loop.anchor && Number.isFinite(b.pos) && loop.status !== 'paused') {
-            const elapsedSec = Math.max(0, (tNow - loop.anchor.updated) / 1000);
-            const expected = loop.anchor.pos + elapsedSec;
-            const jump = b.pos - expected;
-            if (Math.abs(jump) > 60 && tNow - (loop.lastJumpWakeAt || 0) > 180_000) {
-              loop.lastJumpWakeAt = tNow;
-              void wake(loop.ctx, {
-                sessionId: loop.sessionId,
-                text: `[一起看] 用户拖了进度条：${jump > 0 ? '跳到' : '回看到'} ${mmss(b.pos)}`
-                  + `（原来到 ${mmss(expected)}）。`
-                  + (jump < 0
-                    ? '回看的部分不会再重说一遍（避免复读）；要不要简单补一句，你自己判断。'
-                    : '跳过的部分不补；从新位置接着跟就行。'),
-              });
-            }
-          }
+          noteBigJump(b, tNow);
 
           loop.anchor = makeAnchor({
             pos: b.pos, dur: b.dur, status: b.paused ? 'paused' : 'playing',
@@ -578,7 +642,13 @@ export function startWatchLoop({
         // 所以：说的时候这一拍不发，等空下来再说（真拖过头的会被 `dueLine` 的迟到作废丢掉，
         // 也就是"追不上就少说一句"，而不是"越说越晚"）。
         // 只对"真有人念"生效 —— 没人接声音时台词只进流，不该被这个节流。
-        const voiceBusy = speechSubscribers() > 0 && tNow < (loop.voiceBusyUntil ?? 0);
+        //
+        // **两个来源都要算**：① 循环自己刚发过一句（`voiceBusyUntil`）；
+        // ② 模型刚用 `say` 回了一句（`replyBusyUntil`）。以前只算①，
+        // 于是回话刚开口两秒，脚本那句就塞进串行链 —— 排队太久会被适配器
+        // 当作"追不上画面"直接丢掉（连字都不出现）。
+        const voiceBusy = speechSubscribers() > 0
+          && (tNow < (loop.voiceBusyUntil ?? 0) || tNow < replyBusyUntil());
         const est = estimate(loop.anchor, tNow);
         if (!voiceBusy && est.why !== 'paused' && Number.isFinite(est.pos)) {
           const segNow = plan.segmentAt(est.pos);
