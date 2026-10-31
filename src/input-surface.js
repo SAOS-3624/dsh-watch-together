@@ -23,7 +23,8 @@
 import {
   DEFAULT_CHAT_PORT, appendSpoken, chatAlive, chatPageUrl, ensureChatSession,
 } from './chat.js';
-import { openFloatingWindow } from './floating-window.js';
+import { floatingWindowAlive, openFloatingWindow } from './floating-window.js';
+import { loopStatus, stopWatchLoop } from './watch-loop.js';
 import { attachConfiguredVoice, attachedAdapters, configuredVoiceAdapter } from './voice.js';
 
 /**
@@ -36,8 +37,16 @@ import { attachConfiguredVoice, attachedAdapters, configuredVoiceAdapter } from 
  */
 export function createInputSurface() {
   let prepared = null;
-  return () => {
-    prepared ??= open();
+  /**
+   * @param {{start?: boolean}} [o]
+   *   `start: true` = 这是一次**新的开始**（没有正在跑的陪看）→ 窗口没了就重开；
+   *   否则（同一场陪看中途再调）→ 窗口没了**不要**偷偷重开，而是判定"用户关了窗"并停止。
+   *
+   * 为什么要区分：用户的原话是"我刚才关了悬浮窗又自己弹出来了"。关窗是他表达
+   * "我不看了"的方式，下一次调用立刻又把窗口顶回来，等于把他的动作撤销了。
+   */
+  return ({ start = false } = {}) => {
+    prepared ??= open({ start });
     return prepared;
   };
 }
@@ -60,7 +69,7 @@ async function ensureVoice() {
 
 const tail = (p) => String(p).split(/[\\/]/).filter(Boolean).pop() || String(p);
 
-async function open() {
+async function open({ start = false } = {}) {
   // 0) 声音：每次开始陪看都确认一次 —— 不挂的话台词只会写进流、一句也不念
   const voice = await ensureVoice();
   const voiceNote = voice.ok
@@ -68,7 +77,21 @@ async function open() {
     : `声音：没挂（${voice.reason ?? '未知原因'}），台词只写不念`;
 
   // 1) 悬浮窗（Python tkinter，无边框/置顶；里面还有「麦」可以语音输入）
-  //    窗口被用户关掉之后 pid 就死了，这里会重新开一个 —— "每次开始陪看都保证有入口"
+  //
+  // **关窗 = 用户说不看了**。所以：
+  //   · 新开一场（start）→ 窗口不在就开
+  //   · 同一场中途调用 → 窗口不在就**判定被关**：停钟、返回"已中止"，绝不偷偷重开
+  const running = loopStatus();
+  if (!start && running.active && !floatingWindowAlive()) {
+    stopWatchLoop('widget-closed');
+    return {
+      windowOpen: false,
+      closedByUser: true,
+      note: '\n[widget] 悬浮窗已被关掉 —— 陪看按你关窗的意思停在这里，我不再挂着、也不重开。'
+        + '要接着看就再说一声，我会重新开窗。'
+        + `\n[voice] ${voiceNote}。`,
+    };
+  }
   const win = openFloatingWindow({ log: () => {} });
   // 2) 聊天服务（扩展上报位置走它，记录页也由它提供）
   const srv = await ensureChatSession().catch(() => null);

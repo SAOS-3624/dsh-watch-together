@@ -21,7 +21,8 @@ import { appendAssistantSay } from './chat.js';
 import { validateWatchArgs } from './tool-spec.js';
 import { makeBuilder, runWatchPass } from './watch-run.js';
 import { runWatchAction } from './watch-actions.js';
-import { DEFAULT_LOOKAHEAD, startWatchLoop, stopWatchLoop } from './watch-loop.js';
+import { DEFAULT_LOOKAHEAD, loopStatus, startWatchLoop, stopWatchLoop } from './watch-loop.js';
+import { sessionKey } from './watch.js';
 
 /**
  * @param {object} ctx   宿主上下文（存图用）
@@ -81,7 +82,14 @@ export async function execute(ctx, args, {
   let widgetNote = '';
   let surface = null;
   if (!signal?.aborted) {
-    surface = await prepareInputSurface();
+    // 这是"新开一场"还是"同一场中途再调"？
+    //   新开一场  → 窗口不在就开（用户要的那个自动开）
+    //   同一场中途 → 窗口不在就判定"用户关了窗"，停钟、不重开
+    // 用户投诉过："我刚才关了悬浮窗又自己弹出来了" —— 关窗是他的表达，不许撤销它。
+    const st0 = loopStatus();
+    const sameWatch = st0.active && Boolean(args.input)
+      && sessionKey(st0.input ?? '') === sessionKey(args.input);
+    surface = await prepareInputSurface({ start: !sameWatch });
     widgetNote = surface.note;
   }
 
