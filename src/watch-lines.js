@@ -31,6 +31,34 @@ function slotItems(slot) {
     .filter((x) => x.text);
 }
 
+/**
+ * 从某一段的稿子里挑掉几句（`keep(item) === false` 的删掉）。
+ *
+ * 为什么需要它：台词的时间窗**过去之后就不该再念** —— 交付时如果发现
+ * `at` 早于当前进度（模型写晚了），除了不当场念，还得把它们从稿子里摘掉，
+ * 否则钟在看到它们时已经没有意义（`dueLine` 虽然有迟到作废，但留着会让
+ * "还欠几句"的判断一直为真）。
+ *
+ * @returns {Promise<number>} 删掉了几句
+ */
+export async function pruneSlot(input, from, keep, { env = process.env } = {}) {
+  const st = await loadWatch(env);
+  const sk = sessionKey(input);
+  const lines = st[sk]?.lines;
+  if (!lines || !lines[from]) return 0;
+  const items = slotItems(lines[from]);
+  const kept = items.filter((x) => {
+    try { return keep(x) !== false; } catch { return true; }
+  });
+  const dropped = items.length - kept.length;
+  if (dropped > 0) {
+    writeSlot(lines, from, kept);
+    st[sk].at = Date.now();
+    await saveWatch(st, env);
+  }
+  return dropped;
+}
+
 const writeSlot = (lines, from, items) => {
   if (items.length > 0) lines[from] = { queue: items, savedAt: Date.now() };
   else delete lines[from];

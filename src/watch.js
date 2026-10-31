@@ -37,6 +37,7 @@ export {
   hasLine,
   linesOverview,
   loadLine,
+  pruneSlot,
   readSlot,
   saveLines,
 } from './watch-lines.js';

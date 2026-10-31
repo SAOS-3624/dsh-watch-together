@@ -26,13 +26,89 @@ export const WATCH_LEAD = 15;
 /** 路径归一成小写正斜杠 —— 同一个文件在不同写法下必须算同一个会话。 */
 export const norm = (p) => String(p ?? '').replace(/\\/g, '/').toLowerCase();
 
+/** 老键（= 整条 URL 归一）。只用来把旧状态迁到新键上，新代码不要再拿它当键。 */
+export const legacySessionKey = (input) => norm(input);
+
+/**
+ * **视频身份**：同一支片子的不同 URL 形态必须落到同一个键。
+ *
+ * 踩过的坑（实测）：浏览器扩展上报的是带追踪参数的完整地址
+ * （`…/BV1g3xN6hEuw/?trackid=…&spm_id_from=…&vd_source=…`），而模型手里是干净的
+ * `…/BV1g3xN6hEuw/`。以前键就是整条 URL，于是**同一支片子被拆成两个会话**：
+ * 台词写在 A 键下，交付时查 B 键 —— 于是明明写了台词，结果里还挂着
+ * 「[DELIVERY INCOMPLETE] 这一段还没有台词」。这个坑必须从根上堵。
+ *
+ * 规则：
+ *   B 站   `bili:<bv 号>`（BV 号就是身份，大小写无关）
+ *   其他 URL `host + pathname`（去掉 query / hash，去尾斜杠）
+ *   本地文件 只看文件名（同一目录换了写法也算同一支）
+ */
+export function sessionKey(input) {
+  const raw = String(input ?? '').trim();
+  if (!raw) return 'unknown';
+  if (/^https?:/i.test(raw) || /^file:/i.test(raw)) {
+    try {
+      const u = new URL(raw);
+      const bv = u.pathname.match(/\/video\/(bv[0-9a-z]+)/i);
+      if (bv) return `bili:${bv[1].toLowerCase()}`;
+      const p = decodeURIComponent(u.pathname).replace(/\/+$/, '');
+      const k = `${u.host.toLowerCase()}${p}`.toLowerCase();
+      if (k && k !== '') return k;
+    } catch { /* 不是合法 URL，当路径处理 */ }
+  }
+  const path = raw.replace(/^file:\/\//i, '');
+  return norm(path.split(/[\\/]/).filter(Boolean).pop()) || 'unknown';
+}
+
+/**
+ * 把旧键（整条 URL）并到新键上。
+ *
+ * 只在新键**不存在**时搬；两边的同名字段合并（旧的 wins 只在缺失时补），
+ * 免得迁移把新会话里刚写的东西盖掉。返回是否改动过。
+ */
+export function migrateKeys(state) {
+  let changed = false;
+  for (const key of Object.keys(state)) {
+    const node = state[key];
+    if (!node || typeof node !== 'object') continue;
+    // **只迁 URL 键**。不是 URL 的键（`example.com/v/1` 这种测试用的、或别的调用方自己造的键）
+    // 一律别碰：sessionKey 会把它们当路径取末段，迁一下就把数据搬到别的名字下面去了
+    // （实测：`example.com/v/1` 被迁成 `1`，于是 saveLines 写进去、readSlot 读不到）。
+    if (!/^https?:\/\//i.test(key) && !/^file:\/\//i.test(key)) continue;
+    const target = sessionKey(key);
+    if (target === key) continue;
+    const prev = state[target];
+    if (!prev || typeof prev !== 'object') {
+      delete state[key];
+      state[target] = node;
+      changed = true;
+      continue;
+    }
+    // 两个都在：合并（保留较新的 at），然后删掉旧键
+    const merged = { ...node, ...prev };
+    merged.at = Math.max(node.at ?? 0, prev.at ?? 0) || merged.at;
+    for (const field of ['lines', 'material', 'missingLines', 'spoken']) {
+      if (node[field] || prev[field]) {
+        merged[field] = { ...(node[field] ?? {}), ...(prev[field] ?? {}) };
+      }
+    }
+    state[target] = merged;
+    delete state[key];
+    changed = true;
+  }
+  return changed;
+}
+
 export function watchPath(env = process.env) {
   return join(cacheDir(env), 'watch.json');
 }
 
 export async function loadWatch(env = process.env) {
   try {
-    return JSON.parse(await readFile(watchPath(env), 'utf8'));
+    const state = JSON.parse(await readFile(watchPath(env), 'utf8'));
+    // 读进来时顺手把"整条 URL 当键"的老会话并到新键上（一次性、幂等）
+    if (migrateKeys(state)) await saveWatch(state, env);
+    return state;
   } catch {
     return {};
   }
@@ -49,9 +125,6 @@ export async function saveWatch(state, env = process.env) {
   } catch { /* 存不下就算了，最多重启后重算一段 */ }
 }
 
-export function sessionKey(input) {
-  return norm(input);
-}
 
 /**
  * 这一段该不该说话了。

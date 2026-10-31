@@ -18,7 +18,7 @@
  */
 
 import {
-  deliveryState, loadWatch, readSlot, saveWatch,
+  deliveryState, loadWatch, pruneSlot, readSlot, saveWatch,
   sessionKey, WATCH_LEAD,
 } from './watch.js';
 import { floatingWindowAlive } from './floating-window.js';
@@ -640,17 +640,30 @@ export async function runWatchPass(args, deps) {
 
   // **文字流那一半**：这一段的稿子连同 `at` 一起交出去，谁接了声音谁就能照着念。
   // 核心自己不发声，也不因此多加载任何东西（见 voice.js）。
+  // **台词什么时候念，只由 `at` 决定** —— 交付这一下**不许**把整段稿子一次性吐出去。
+  //
+  // 实测踩过（用户投诉："代码不是让你只有到达时间区域内的台词才输出吗，你一次性输出三条
+  // 干什么，还是过去那么久的"）：这里以前把这一段所有台词一次 `appendSpoken` 全写进流，
+  // 语音适配器就按顺序全念一遍 —— 三条一起冒出来，`at` 早已过去的也当场补念。
+  //
+  // 现在：过去（早于 cursor-6s）的**丢掉并清出稿子**；其余交给钟按位置逐句念
+  // （consumeLine + appendSpoken 才是"到点才说话"）；这里只报"还剩几句、最早几点念"。
+  const PAST_GRACE_SEC = 6;
   const speech = speechEvents(segLines, { fallbackAt: segStart, segment: segStart });
-  // **台词同时写进统一文本流，并且一定被念出来**：走 `appendSpoken`（写盘 + 发语音事件
-  // 是同一次调用的两个副作用）。以前这里用裸 `appendChat`，于是窗口里有字、却一点声都没有 ——
-  // 用户的反馈原话就是"为什么你写的台词没有语音播报"。
-  // 这里是"交付整段"的那条路；逐句模式（nextLine）由循环 consumeLine 时自己写，
-  // 两条路不会对同一条台词各写一次。
-  for (const line of speech) {
-    try {
-      const text = String(line?.text ?? '').trim();
-      if (text) appendSpoken('line', text, { t: Number.isFinite(line?.at) ? line.at : null });
-    } catch { /* 写盘失败不影响交付 */ }
+  const isPast = (at) => Number.isFinite(at) && at < cursor - PAST_GRACE_SEC;
+  const pastLines = speech.filter((l) => isPast(l.at));
+  const upcoming = speech.filter((l) => !isPast(l.at));
+  let linesNote = '';
+  if (pastLines.length > 0) {
+    await pruneSlot(input, segStart, (l) => !isPast(Number(l?.at))).catch(() => 0);
+    linesNote = `
+[lines] 丢弃 ${pastLines.length} 句：它们的 at 早于当前进度 ${mmss(cursor)}，`
+      + '再念就对不上画面。写台词要挑**还没播到**的时间点。';
+  }
+  if (upcoming.length > 0) {
+    linesNote += `
+[lines] 这一段已写好 ${upcoming.length} 句，最早 ${mmss(upcoming[0].at)} 念`
+      + '（钟按 at 逐句念，不会一次全吐出来）。';
   }
 
   // **交付门槛的提示**：没台词 = 交付未完成，这段话顶在最前面（优先级高于任何插话回复）
@@ -688,7 +701,7 @@ export async function runWatchPass(args, deps) {
     complete: hasLines,
     status: note.includes('paused') ? 'paused' : 'playing',
     speech,
-    text: `${gate}${materialLine}${owedNote}${head}${waitNote}\n${guidance}${await latencyNote()}${bufferHint}\n\n${entry.manifest}`,
+    text: `${gate}${materialLine}${linesNote}${owedNote}${head}${waitNote}\n${guidance}${await latencyNote()}${bufferHint}\n\n${entry.manifest}`,
     images,
   });
 }
