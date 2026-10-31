@@ -579,7 +579,9 @@ export async function runWatchPass(args, deps) {
   // 现在的口径：**没有台词的交付不算完成** —— 不推进 `lastDelivered`，
   // 下一次调用仍然会落到这一段，并且开头就把"缺台词"顶到最前面。
   const segLines = await readSlot(input, segStart).catch(() => []);
-  const hasLines = Array.isArray(segLines) && segLines.length > 0;
+  // 门槛可以关掉：`DSH_WATCH_REQUIRE_LINES=0`（写测别的行为的老用例时用；线上默认开）
+  const requireLines = process.env.DSH_WATCH_REQUIRE_LINES !== '0';
+  const hasLines = !requireLines || (Array.isArray(segLines) && segLines.length > 0);
   const missing = { ...(st[sk]?.missingLines ?? {}) };
   if (hasLines) delete missing[segStart];
   else missing[segStart] = Date.now();
@@ -646,6 +648,9 @@ export async function runWatchPass(args, deps) {
 
   return pass({
     speaking: true,
+    // 交付**发生了**（图已给），但"完成"要看有没有台词（门槛）；
+    // 两者分开报：handler 用 speaking 决定要不要把台词交给声音，用 complete 判断是否推进。
+    complete: hasLines,
     status: note.includes('paused') ? 'paused' : 'playing',
     speech,
     text: `${gate}${owedNote}${head}${waitNote}\n${guidance}${await latencyNote()}${bufferHint}\n\n${entry.manifest}`,

@@ -5,6 +5,9 @@
  * 像等 npm 上传结果那样 —— 到点了工具自己返回，对话根本没断。
  * 这条路径**不依赖 sessionController.prompt**，所以是唤醒机制不通时的兜底。
  */
+// 这些用例验的是别的行为（循环/场景/等待），台词门槛在这里关掉：见 delivery-gate.test.mjs
+process.env.DSH_WATCH_REQUIRE_LINES = '0';
+
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { mkdtemp, rm } from 'node:fs/promises';

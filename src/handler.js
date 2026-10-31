@@ -74,6 +74,15 @@ export async function execute(ctx, args, {
   if (quick) return quick;
 
   if (problems.length > 0) throw new Error(`invalid arguments: ${problems.join('; ')}`);
+
+  // 每次开始陪看都**先**备好输入面：悬浮窗关了要重新开、声音没挂要挂上。
+  // 以前只在"真要阻塞"或"到点交付"时才备 —— 用户中途把窗口关掉，下一次调用就再也不会开，
+  // 整场陪看没有插话入口（而且模型还以为入口在）。
+  let widgetNote = '';
+  if (!signal?.aborted) {
+    widgetNote = (await prepareInputSurface()).note;
+  }
+
   // 批次表的默认值在这里定一次，工具和循环共用同一份（否则两边段边界会各算各的）
   const segment = Number(args.segment) > 0 ? Number(args.segment) : DEFAULT_SEGMENT;
   const ramp = args.ramp === undefined ? [...DEFAULT_RAMP] : args.ramp;
@@ -98,13 +107,8 @@ export async function execute(ctx, args, {
   // 用户在等待期间按了停止：**钟也要停** —— 否则宿主那边已经收工，后台还在轮询浏览器
   if (signal?.aborted) stopWatchLoop('aborted');
 
-  // 这一趟**真的在看**（有位置、没被取消）：把输入面备好，并拿到那句话。
-  // 为什么要在这里再补一次：`watch-run` 只在"还没到交付点、真要阻塞"时回调，
-  // 于是"第一次调用时这一段恰好已经到交付点"就不会走 wait —— 整场陪看就没有插话入口了。
-  let widgetNote = '';
-  if ((args.wait === true || args.loop !== false) && Number.isFinite(r.cursor) && !signal?.aborted) {
-    widgetNote = (await prepareInputSurface()).note;
-  }
+  // 输入面已经在上面（参数校验之后）备好了，这里不再重复：
+  // `prepareInputSurface` 在同一个 execute 里是幂等的，`watch-run` 真要阻塞时复用同一个 Promise。
 
   // 起陪看循环：从这里往后每 120 秒一段，到点自己叫醒。
   // 没有会话 id 就不起（只是不会自动说话，工具本身照常可用）。

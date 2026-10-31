@@ -5,6 +5,9 @@
  * 正在等的段被新表重切、原时间点消失，用户等了五分钟没等到。
  * 根因：每次 startWatchLoop 都 stopWatchLoop('restart')，spoken 和 segments 全部重置。
  */
+// 这些用例验的是别的行为（循环/场景/等待），台词门槛在这里关掉：见 delivery-gate.test.mjs
+process.env.DSH_WATCH_REQUIRE_LINES = '0';
+
 import test from 'node:test';
 import assert from 'node:assert/strict';
 
@@ -60,7 +63,8 @@ test('叫不醒要能查出来：reason=wake-failed，且记下原因', async ()
   let tick = null;
   startWatchLoop({
     ...base, cursor: 50,
-    deps: { ...deps, ticker: ({ tick: t }) => { tick = t; return { dispose() {} }; } },
+    deps: { ...deps, ticker: ({ tick: t }) => { tick = t; return { dispose() {} } } },
+    wake: true,      // 叫醒模型现在是显式 opt-in（默认关，见 watch-loop.js）
   });
   await tick();
   const st = loopStatus();

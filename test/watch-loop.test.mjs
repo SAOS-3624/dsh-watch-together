@@ -4,6 +4,9 @@
  * 这里不测"到点说话"（那要真宿主），只测**边界**：
  * 没有会话 id 就绝不起循环、重复起会先停旧的、stop 是幂等的。
  */
+// 这些用例验的是别的行为（循环/场景/等待），台词门槛在这里关掉：见 delivery-gate.test.mjs
+process.env.DSH_WATCH_REQUIRE_LINES = '0';
+
 import test from 'node:test';
 import assert from 'node:assert/strict';
 
@@ -103,6 +106,7 @@ test('暂停且不动 → 空闲超时后自动停并叫醒（冻住的暂停态
     segments: segs,
     browserPort: 1,            // 让 readPositionOrNull 走注入的 readBrowser，不碰真 CDP
     deps: { now, ticker, readBrowser, wake, probeEveryMs: 0, loadLatency: async () => null },
+    wake: true,      // 叫醒模型现在是显式 opt-in（默认关，见 watch-loop.js）
   });
   assert.equal(r.ok, true);
 

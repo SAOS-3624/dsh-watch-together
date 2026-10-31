@@ -11,6 +11,9 @@
  * > 位置来源只有浏览器调试端口（SMTC 已于 2026-10-30 删除），所以这里的仿真只模拟
  * > "读一次 `video.currentTime` 会得到什么"，不再有"多久刷新一次"这个概念。
  */
+// 这些用例验的是别的行为（循环/场景/等待），台词门槛在这里关掉：见 delivery-gate.test.mjs
+process.env.DSH_WATCH_REQUIRE_LINES = '0';
+
 import test from 'node:test';
 import assert from 'node:assert/strict';
 
@@ -42,7 +45,9 @@ const INPUT = () => `case-${++seq}`;
 const boot = (sim, extra = {}) => {
   startWatchLoop({
     ctx: ctxStub, sessionId: `s-${seq}`, input: INPUT(), segments: SEGMENTS,
-    browserPort: PORT, deps: sim.deps, log: () => {}, ...extra,
+    browserPort: PORT, deps: sim.deps, log: () => {},
+    // 这些场景验的就是"到点叫醒模型"——而叫醒现在是**显式 opt-in**（默认关，见 watch-loop.js）
+    wake: true, ...extra,
   });
 };
 
@@ -118,7 +123,7 @@ test('⑥ 窗口自己往前滚：不靠外部再调一次工具', async () => {
   startWatchLoop({
     ctx: ctxStub, sessionId: 's1', input: INPUT(), browserPort: PORT,
     segments: [{ from: 0, to: 120 }, { from: 120, to: 240 }],
-    size: 120, lookahead: 300, deps: sim.deps, log: () => {},
+    size: 120, lookahead: 300, deps: sim.deps, log: () => {}, wake: true,
   });
   const first = loopStatus().segments;
   await sim.runTo(400);
@@ -200,6 +205,7 @@ test('⑪ 从头就读不到：5 分钟后停（别一直去连不存在的端�
     ctx: ctxStub, sessionId: 's1', input: INPUT(), browserPort: PORT,
     segments: [{ from: 0, to: 120 }], size: 120, depth: 2,
     deps: sim.deps, log: () => {},
+    wake: true,
   });
   await sim.runTo(200);
   assert.equal(loopStatus().active, true, '宽限期内还在等');
@@ -214,6 +220,7 @@ test('⑫ 变速启动：第一批 1 分钟，50 秒左右就说第一次，不�
     ctx: ctxStub, sessionId: 's1', input: INPUT(), browserPort: PORT,
     segment: 300, ramp: [60, 120, 180, 240], depth: 2,
     deps: sim.deps, log: () => {},
+    wake: true,
   });
   const plan = loopStatus().batchPlan;
   assert.match(plan, /1m → 2m → 3m → 4m → 5m/);
@@ -231,7 +238,7 @@ test('⑬ 段边界随阶梯走：第二批是 60–180 秒', async () => {
   startWatchLoop({
     ctx: ctxStub, sessionId: 's1', input: INPUT(), browserPort: PORT,
     segment: 300, ramp: [60, 120, 180, 240], depth: 2,
-    deps: { ...sim.deps, build: null }, log: () => {},
+    deps: { ...sim.deps, build: null }, log: () => {}, wake: true,
   });
   await sim.runTo(200);
   const texts = sim.wakes.map((w) => w.text);
@@ -246,7 +253,7 @@ test('⑭ 高频模式：每 10 秒叫一次，不受批次边界限制', async 
     ctx: ctxStub, sessionId: 's1', input: INPUT(), browserPort: PORT,
     segment: 300, ramp: [], depth: 2, speakEvery: 10,
     deps: { ...sim.deps, wake: async () => { wakes += 1; return { ok: true }; } },
-    log: () => {},
+    log: () => {}, wake: true,
   });
   await sim.runTo(55);
   // 10/20/30/40/50 秒各一次 → 大约 5 次（第一次从 0 起算，可能多一次）
@@ -280,7 +287,7 @@ test('⑯ 台词库存不足时叫醒模型补写（只有这一件事该叫它�
     ctx: ctxStub, sessionId: 's1', input: 'no-lines.mp4', browserPort: PORT,
     segment: 60, ramp: [], depth: 2, refillBelow: 2,
     deps: { ...sim.deps, wake: async (_c, o) => { wakes.push(o.text); return { ok: true }; } },
-    log: () => {},
+    log: () => {}, wake: true,
   });
   await sim.runTo(10);
   assert.equal(wakes.length, 1, '库存为空时应该叫一次');
@@ -336,6 +343,7 @@ test('⑲ 播完：同样要叫醒一次，让模型收尾', async () => {
     ctx: ctxStub, sessionId: 's-end', input: INPUT(), browserPort: PORT,
     segments: [{ from: 0, to: 120 }], size: 120, depth: 2,
     deps: sim.deps, log: () => {},
+    wake: true,
   });
   // 位置每 15 秒才读一次，所以要跑到片尾之后**再等一拍**才会读到 ended
   await sim.runTo(180);

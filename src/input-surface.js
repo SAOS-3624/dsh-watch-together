@@ -24,6 +24,7 @@ import {
   DEFAULT_CHAT_PORT, appendSpoken, chatAlive, chatPageUrl, ensureChatSession,
 } from './chat.js';
 import { openFloatingWindow } from './floating-window.js';
+import { attachConfiguredVoice, attachedAdapters, configuredVoiceAdapter } from './voice.js';
 
 /**
  * 造一个"准备输入面"的函数：**幂等**，同一个 execute 里调几次都只开一次窗。
@@ -44,8 +45,30 @@ export function createInputSurface() {
 /** 这个进程里"悬浮窗已开"这句话只说一次 —— 用户看到两条一模一样的系统提示会以为出错了 */
 let announced = false;
 
+/** 声音适配器：没挂就挂上（挂过就直接复用）。返回一句给人看的状态。 */
+async function ensureVoice() {
+  let spec = '';
+  try {
+    spec = String(configuredVoiceAdapter() ?? '').trim();
+  } catch { spec = ''; }
+  if (!spec) return { ok: false, reason: 'voice.json 没配 adapter' };
+  if (attachedAdapters().includes(spec)) return { ok: true, name: tail(spec), cached: true };
+  const r = await attachConfiguredVoice({ log: () => {} })
+    .catch((e) => ({ ok: false, reason: String(e?.message ?? e) }));
+  return { ok: r?.ok === true, name: r?.name ?? tail(spec), reason: r?.reason };
+}
+
+const tail = (p) => String(p).split(/[\\/]/).filter(Boolean).pop() || String(p);
+
 async function open() {
+  // 0) 声音：每次开始陪看都确认一次 —— 不挂的话台词只会写进流、一句也不念
+  const voice = await ensureVoice();
+  const voiceNote = voice.ok
+    ? `声音：${voice.name}${voice.cached ? ' 已在' : ' 已挂上'}`
+    : `声音：没挂（${voice.reason ?? '未知原因'}），台词只写不念`;
+
   // 1) 悬浮窗（Python tkinter，无边框/置顶；里面还有「麦」可以语音输入）
+  //    窗口被用户关掉之后 pid 就死了，这里会重新开一个 —— "每次开始陪看都保证有入口"
   const win = openFloatingWindow({ log: () => {} });
   // 2) 聊天服务（扩展上报位置走它，记录页也由它提供）
   const srv = await ensureChatSession().catch(() => null);
@@ -62,11 +85,15 @@ async function open() {
     }
     return {
       note: `\n[widget] 悬浮窗已打开（${win.python} ${win.script}）：`
-        + '在里面打字、或点「麦」说话，我等待时会立刻被唤醒。',
+        + '在里面打字、或点「麦」说话，我等待时会立刻被唤醒。'
+        + `\n[voice] ${voiceNote}。`,
     };
   }
   if (win.reason === 'already-opened') {
-    return { note: '\n[widget] 悬浮窗已经开着 —— 直接在里打字/说话即可。' };
+    return {
+      note: '\n[widget] 悬浮窗已经开着 —— 直接在里打字/说话即可。'
+        + `\n[voice] ${voiceNote}。`,
+    };
   }
   // 开不起来要说清楚原因，并给一条能走通的兜底：只有 Python 悬浮窗和（只读的）聊天记录页
   return {
@@ -74,6 +101,7 @@ async function open() {
       + (alive
         ? `兜底：浏览器打开 ${chatPageUrl(port)}（只读记录 + 可输入），`
           + '或双击 examples/floating-chat/launch.cmd。'
-        : ''),
+        : '')
+      + `\n[voice] ${voiceNote}。`,
   };
 }
