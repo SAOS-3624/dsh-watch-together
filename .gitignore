@@ -1,27 +1,27 @@
+# 依赖与锁文件
 node_modules/
-*.log
 package-lock.json
+*.log
 
-# CLI / 诊断产物：别把生成物提交进仓库
-*.png
-manifest*.json
-.evidence.json
-watch.json
-chat.jsonl
-quiet-until.json
-latency.json
-
-# 本地临时/调试产物
+# 运行产物。默认落在 ~/.dsh/watch/out 和系统缓存目录，**不在仓库里**；
+# 下面几条防的是有人把 WATCH_OUT / WATCH_WORK 指到仓库根目录。
+# 注意：**不要**写 `*.png` 或 `manifest*.json` —— 那会把 extension/icons/*.png
+# 和 extension/manifest.json 一起吞掉，别人 clone 下来扩展直接是废的。
 .tmp/
 _probe/
+/*.png
+/*.lines.json
+/*.meta.json
 
-# 凭证与本地配置：永远不要进仓库
+# 本地凭证与机器配置：永远不要进仓库
 .secrets/
 cookies.txt
-* cookies*.txt
+cookies-*.txt
 video.json
 voice.json
+tts.json
+asr.json
 
-# Python 缓存（悬浮窗/麦克风脚本跑过就会生成）
+# Python 缓存（悬浮窗 / 麦克风脚本跑过就会生成）
 __pycache__/
 *.pyc

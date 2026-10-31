@@ -19,7 +19,7 @@
  * 这个文件只管"流里有什么"。HTTP 服务和页面在 `chat-server.js` / `chat-view.js`。
  */
 
-import { appendFileSync, mkdirSync, readFileSync } from 'node:fs';
+import { appendFileSync, closeSync, mkdirSync, openSync, readFileSync, readSync, statSync } from 'node:fs';
 import { join } from 'node:path';
 
 import { cacheDir } from 'dsh-video-storyboard/cache';
@@ -39,6 +39,37 @@ export function readChat(env = process.env) {
 }
 
 /**
+ * 文件末尾那一条的墙钟时间（读不到 = NaN）。
+ *
+ * 为什么要单独一个函数：`appendChat` 的 `at` 必须严格递增，但**不能为了一个时间戳
+ * 把整份聊天记录 parse 一遍** —— 一场两小时几千条，每写一句都全量读，写盘会越来越慢。
+ * 只读末尾这一段就够（末尾可能是半行，往前退一条）。
+ *
+ * 窗口取 16 KB 而不是 4 KB：一条消息最长 2000 字，中文 UTF-8 一个字 3 字节，
+ * 一条就能到 6 KB —— 窗口太小会连"上一条"都读不全，退到更早的那条上去。
+ */
+function tailStamp(file) {
+  try {
+    const { size } = statSync(file);
+    if (!size) return NaN;
+    const len = Math.min(16_384, size);
+    const fd = openSync(file, 'r');
+    try {
+      const buf = Buffer.alloc(len);
+      readSync(fd, buf, 0, len, size - len);
+      const lines = buf.toString('utf8').split('\n').filter((l) => l.trim());
+      for (let i = lines.length - 1; i >= 0; i -= 1) {
+        try {
+          const n = Number(JSON.parse(lines[i])?.at);
+          if (Number.isFinite(n)) return n;
+        } catch { /* 末尾半行：再往前退一条 */ }
+      }
+      return NaN;
+    } finally { closeSync(fd); }
+  } catch { return NaN; }
+}
+
+/**
  * 追加一条到统一流。
  *
  * `at` 是**墙钟毫秒**（什么时候写进来的）；`t` 是**播放位置秒**（这句对应视频的哪一刻）——
@@ -54,12 +85,10 @@ export function appendChat(role, text, meta = {}, env = process.env) {
   // `at` 必须是**严格递增**的序号：同一毫秒里连写两条（用户手快/程序连发）时，
   // 两条会拿到相同的 `at`，而"新消息"的判据是 `at > 已读位置` —— 后一条就永远不算新，
   // 直接丢掉（实测：`test/chat.test.mjs` 里连说两句，第二句收不到）。
+  const file = chatFile(env);
   let at = Date.now();
-  try {
-    const rows = readChat(env);
-    const lastAt = Number(rows[rows.length - 1]?.at);
-    if (Number.isFinite(lastAt) && at <= lastAt) at = lastAt + 1;
-  } catch { /* 读不到就按当前时间 */ }
+  const prev = tailStamp(file);
+  if (Number.isFinite(prev) && at <= prev) at = prev + 1;
   const entry = {
     role,
     text: String(text).slice(0, 2000),
@@ -213,6 +242,14 @@ export function appendAssistantSay(text, { t = null, env = process.env } = {}) {
  * 同一批里如果有多条用户消息，**只消费到被报告的那条**：剩下的留在未读区，
  * 下次 poll（模型回完话再来）接着报。一口气把整批标成已读的话，
  * "回完话再来取剩下的"就变成"永远取不到" —— 那是丢用户的话。
+ *
+ * ## 为什么按**字节**增量读，而不是每次重读整个文件
+ *
+ * 这个 poll 在阻塞等待里是 **150 ms 一次**（见 interrupt.js 的 sleepWithChat）。
+ * 以前每次 `readChat()` 把整份聊天记录读出来再逐行 parse：两小时一场下来几千条，
+ * 相当于每秒把几百 KB 的文本反复解码 —— 纯浪费，而且随会话变长越来越慢。
+ * 现在只读**上次之后新追加的那段字节**（`chat.jsonl` 只会 append），
+ * 代价和文件大小无关。
  */
 export function makeChatWatcher(env = process.env) {
   // **不能按"条数"分页**：chat.jsonl 会被就地清理/重启窗口后重写，条数一缩，
@@ -222,33 +259,60 @@ export function makeChatWatcher(env = process.env) {
   //
   // 改成按**消息自带的墙钟时间**（`at`，毫秒）分页：时间戳单调递增，跟文件行数无关。
   // 基线在**创建那一刻**定下（不是第一次 poll）—— 建好之后写进来的才算新消息。
+  const file = chatFile(env);
   const stamp = (m) => {
     const n = Number(m?.at);
     return Number.isFinite(n) ? n : null;
   };
-  const baseAt = () => {
-    let base = 0;
-    for (const m of readChat(env)) {
-      const t = stamp(m);
-      if (m?.role === 'user' && t !== null && t > base) base = t;
-    }
-    return base;
-  };
-  let lastAt = baseAt();
+  let lastAt = 0;
+  for (const m of readChat(env)) {          // 一个进程只全量读这一次，之后都是增量
+    const t = stamp(m);
+    if (m?.role === 'user' && t !== null && t > lastAt) lastAt = t;
+  }
 
-  return function poll() {
-    const all = readChat(env);
-    const fresh = all.filter((m) => {
-      if (m?.role !== 'user') return false;
-      if (!String(m.text ?? '').trim()) return false;
+  let offset = 0;                           // 已经读到第几个字节
+  let carry = '';                           // 上次没读完的半行
+  try { offset = statSync(file).size; } catch { offset = 0; }
+  /** 还有哪些用户消息没被报出去（按 at 升序） */
+  const pending = [];
+
+  /** 把新追加的字节读进来，命中用户消息就压进 pending */
+  function drain() {
+    let size = 0;
+    try { size = statSync(file).size; } catch { return; }
+    // 文件被清空/重写（用户手动删、换缓存目录）：游标回零重新读
+    if (size < offset) { offset = 0; carry = ''; }
+    if (size === offset) return;
+    const len = size - offset;
+    const fd = openSync(file, 'r');
+    let text = '';
+    try {
+      const buf = Buffer.alloc(len);
+      readSync(fd, buf, 0, len, offset);
+      text = buf.toString('utf8');
+    } catch { return; } finally { closeSync(fd); }
+    offset = size;
+    const parts = (carry + text).split('\n');
+    carry = parts.pop() ?? '';              // 末尾可能是半行，留到下一拍
+    for (const l of parts) {
+      let m = null;
+      try { m = JSON.parse(l); } catch { continue; }
+      if (m?.role !== 'user') continue;
+      if (!String(m.text ?? '').trim()) continue;
       const t = stamp(m);
       // 没写 at 的老消息永远不报（否则会重放历史）
-      return t !== null && t > lastAt;
-    });
-    if (fresh.length === 0) return null;
-    fresh.sort((a, b) => stamp(a) - stamp(b));
-    const u = fresh[0];
-    lastAt = stamp(u);            // 只消费到这一条，后面的留着下次报
-    return { text: u.text, at: u.at };
+      if (t === null || t <= lastAt) continue;
+      pending.push({ text: m.text, at: t });
+    }
+    if (pending.length > 200) pending.splice(0, pending.length - 200);
+  }
+
+  return function poll() {
+    drain();
+    if (pending.length === 0) return null;
+    pending.sort((a, b) => a.at - b.at);
+    const hit = pending.shift();
+    lastAt = hit.at;                 // 只消费到这一条，后面的留着下次报
+    return hit;
   };
 }

@@ -477,7 +477,7 @@ export async function runWatchPass(args, deps) {
       while (Date.now() < deadline && !signal?.aborted && !windowGone()) {
         const chatHit = chatPoll();
         if (chatHit) { d.chatNow = chatHit; break; }
-        // 位置来源：浏览器（准）> 上次测得的 SMTC 快照（凑合能用来判断"到没到"）
+        // 位置来源：读得到就用读到的；这一拍读不到才按墙钟往前推一个估计值
         const np = await readPositionOrNull(readBrowser, browserPort);
         const posNow = np ? np.pos : (Number.isFinite(cursor) ? cursor + waitedSec : null);
         if (posNow !== null) {

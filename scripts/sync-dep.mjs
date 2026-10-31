@@ -28,12 +28,6 @@ const DEST = join(HERE, 'node_modules', DEP);
 // 和 install-dev 同一套跳过规则：调试产物、一次性 profile、宿主副本都不要
 const SKIP = new Set(['node_modules', '.git', 'test', '.tmp']);
 
-if (!existsSync(join(SRC, 'package.json'))) {
-  console.error(`找不到 ${DEP} 源码：${SRC}`);
-  console.error('把两个仓库并排放，或设 DSH_STORYBOARD_SRC=<它的路径>。');
-  process.exit(2);
-}
-
 const ver = async (dir) => {
   try {
     return JSON.parse(await readFile(join(dir, 'package.json'), 'utf8')).version;
@@ -41,6 +35,22 @@ const ver = async (dir) => {
     return null;
   }
 };
+
+// **两个仓库并排是"开发期"的便利，不是前提**。
+// 从 npm / GitHub 装下来的人没有那个同级目录，`npm test` 也得能跑 —— 所以：
+//   有同级源码  → 覆盖进 node_modules（保证测的是你刚改的那份）
+//   没有，但已经装好了依赖 → 什么都不做，直接测装好的那份
+//   都没有      → 才报错（缺依赖，测试跑不起来）
+if (!existsSync(join(SRC, 'package.json'))) {
+  const installed = await ver(DEST);
+  if (installed) {
+    console.log(`没有同级 ${DEP} 源码（${SRC}），用 node_modules 里已装的 ${installed} 跑测试`);
+    process.exit(0);
+  }
+  console.error(`找不到 ${DEP}：既没有同级源码 ${SRC}，node_modules 里也没有。`);
+  console.error('先 `npm i`，或把两个仓库并排放 / 设 DSH_STORYBOARD_SRC=<它的路径>。');
+  process.exit(2);
+}
 
 const srcVer = await ver(SRC);
 const destVer = await ver(DEST);

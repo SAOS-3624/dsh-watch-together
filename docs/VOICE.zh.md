@@ -3,7 +3,7 @@
 > 这一篇只讲一件事：**怎么让陪看把到点的台词念出声来**，以及怎么换成你喜欢的音色（比如微软晓萱）。
 > 看完这篇，你应该能做到：跑一次陪看，到点的台词用你选的音色念出来。
 >
-> 配套文档：整体玩法看 [`WATCH.zh.md`](./WATCH.zh.md)，浏览器接入看 [`BRIDGE.zh.md`](./BRIDGE.zh.md)。
+> 配套文档：服务怎么配看 [`CONFIG.zh.md`](./CONFIG.zh.md)，浏览器接入看 [`BRIDGE.zh.md`](./BRIDGE.zh.md)。
 
 ---
 
@@ -211,9 +211,36 @@ api.onSpeech((e) => {
 
 `api.onSpeech` 收到的事件关键字段：
 
-- `state`：`'due'` = 到点该念；其它状态（如已念过、被插话覆盖）忽略。
+- `state`：`'due'` = 到点该念（**只处理这个**）；`'scheduled'` = 只是清单；
+  `'spoken'` = 适配器上报的"开始出声了"；`'skipped'` = 放弃这句（见下）。
 - `text`：要念的台词。
-- `at`：墙钟毫秒时间戳（用来打时间码，不是播放位置）。
+- `at`：**这句对应的播放位置（秒）**，不是墙钟 —— 打时间码用它。
+- `input` / `segment`：哪一支片子的哪一段（多支片子交叉时用得上）。
+
+### 追不上就放弃：`state: 'skipped'`
+
+引擎是串行的（一句念完才轮到下一句）。台词一密，队列就会越来越长，声音离画面越来越远。
+核心已经按"上一句念完才发下一句"节流，但适配器自己最好也有一道兜底：
+
+```js
+const MAX_LAG_MS = 3500;
+let chain = Promise.resolve();
+api.onSpeech((e) => {
+  if (e.state !== 'due') return;
+  const queuedAt = Date.now();
+  chain = chain.then(async () => {
+    if (Date.now() - queuedAt > MAX_LAG_MS) {
+      // 排太久了：不念，并告诉展示层"这句没有声音"，别把字摆出来
+      api.emitSpeech?.({ at: e.at, text: e.text, state: 'skipped' });
+      return;
+    }
+    await speak(e.text);
+  });
+});
+```
+
+收到 `skipped` 之后，悬浮窗会撤掉那句的兜底定时器，**屏幕上不会出现一句没出声的台词**。
+
 
 ---
 

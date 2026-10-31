@@ -5,6 +5,56 @@ This package starts its own version line at `0.1.0` — it is not a continuation
 
 ## [Unreleased]
 
+### Repo hygiene — the extension's manifest and icons were never committed
+
+`.gitignore` carried `manifest*.json` and `*.png` (meant for CLI artifacts). Those two rules also
+swallowed `extension/manifest.json` and `extension/icons/*.png`, so a clone would have shipped an
+extension **with no manifest** — completely broken, and nothing would have failed until someone tried
+to load it. Both are now force-added, and the ignore rules are anchored (`/*.png`, `/*.meta.json`) so
+they can only ever catch files at the repo root. Also: `* cookies*.txt` (a pattern with a space, which
+never matched anything) is gone, `__pycache__` is out of the npm tarball via a new `.npmignore`, and
+`npm test` no longer requires the sibling `dsh-video-storyboard` checkout — it falls back to the
+installed copy, so a clone can run the suite.
+
+### Docs — one page per service, and the stale one is gone
+
+`docs/WATCH.zh.md` still explained how to configure things around the **OS media session (SMTC)**,
+which was deleted a while ago: wrong rationale, wrong `confidence` values, wrong defaults. Deleted.
+Replaced by [`docs/CONFIG.zh.md`](docs/CONFIG.zh.md): ffmpeg → yt-dlp + cookies → subtitles/ASR →
+browser extension (9377) → debug port (9333) → voice (`voice.json` + `tts.json`) → floating window →
+cache locations → a one-page troubleshooting table. Every entry says **what breaks if you skip it**.
+
+`README.md` got a 30-second start, a "what to configure" table, a corrected parameter table
+(`depth` is auto-by-time now, `lookahead` was missing), a CLI table that matches the 15 real
+subcommands, a privacy note for the extension, and a dev section. `docs/VOICE.zh.md` gained
+`state: 'skipped'` and a correction: `at` is a **playback second**, not a wall-clock timestamp.
+
+### `doctor` — three levels, because "not configured" is not "broken"
+
+`FAIL` used to be printed for things that are merely "not set up yet": a missing cookie file (only
+needed for Bilibili), a closed debug port (the extension is the recommended channel), an extension
+that is loaded but has no video playing. First-run users read that as "something is broken" and went
+to reinstall the extension. Now: **OK / WAIT / FAIL**, only `plugin` and `ffmpeg` are fatal, and when
+the extension has checked in but nothing is playing, `doctor` says `READY — 播个视频就能读到位置`
+instead of "both position channels are down".
+
+### Performance — the chat watcher no longer re-reads the whole log every 150 ms
+
+The blocking-wait loop polls `chat.jsonl` every 150 ms. Each poll re-read `readChat()` and parsed
+every line, so a two-hour session (thousands of entries) was decoding hundreds of KB several times a
+second, and getting slower the longer the session ran. `makeChatWatcher()` now keeps a byte offset
+and reads **only what was appended since last time** (falling back to a full re-read if the file
+shrank, i.e. it was cleared). Measured on a 5000-line log: **0.061 ms per poll, independent of file
+size**. `appendChat()` also stopped parsing the whole log to keep `at` monotonic — it reads the last
+4 KB instead.
+
+### Tool description — pacing is now a rule the model can follow
+
+`watch_together`'s description tells the model to keep lines **≥ 6 s apart** and why: speech is
+serialized, so a denser draft is thinned at runtime (engine busy → next line held; past the late
+grace → dropped). The three previous rounds of "台词太早 / 太密" all came from the model not knowing
+this budget.
+
 ### Fixed — speech piled up in the engine queue, and an interjection could no longer break a blocked wait
 
 Two reports in one message: "吐字太快，台词会挤到一起，只有上一句念完才到下一句，话太密会导致语音越来越

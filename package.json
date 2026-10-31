@@ -8,10 +8,12 @@
     "deepseek-harness",
     "video",
     "watch-together",
+    "watch-party",
     "companion",
     "playback",
     "subtitle",
-    "smtc"
+    "caption",
+    "tts"
   ],
   "homepage": "https://github.com/SAOS-3624/dsh-watch-together#readme",
   "bugs": {
@@ -60,8 +62,10 @@
     "test": "node --test",
     "pretest": "node scripts/sync-dep.mjs",
     "sync:dep": "node scripts/sync-dep.mjs",
-    "prepublishOnly": "npm test",
+    "prepublishOnly": "node scripts/check-syntax.mjs && node --test",
     "check": "node scripts/check-syntax.mjs",
+    "doctor": "node bin/watch.mjs doctor",
+    "install:extension": "node bin/watch.mjs install-extension",
     "sim": "node scripts/watch-sim.mjs",
     "e2e": "node scripts/watch-e2e.mjs"
   },

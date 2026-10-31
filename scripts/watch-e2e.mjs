@@ -7,7 +7,7 @@
  *   - **叫醒之后的事**：真的没有会话可推，所以这里"扮演"那个 agent ——
  *     收到叫醒就调 `runWatchPass` 真的出图，然后打印它本来会说的话头
  *
- * 真的部分：SMTC 之外的整条流水线（解码 → 切点 → 分镜 → 转写 → 清单 → PNG）。
+ * 真的部分：整条流水线（解码 → 切点 → 分镜 → 转写 → 清单 → PNG）。
  *
  * 用法：
  *   node scripts/watch-e2e.mjs --input "D:/Movie/xx.mp4" --from 0 --minutes 8 --speed 6

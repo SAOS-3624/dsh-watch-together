@@ -4,6 +4,27 @@
 >
 > 名字全小写，带横杠 —— 和 `dsh-video-storyboard` 同一个风格。
 
+- **它是什么**：一个 DSH 插件，只注册一个工具 `watch_together`
+- **它不是什么**：不是全片概览，不是播放器，也不带 TTS 引擎（声音自己接，见 [§接声音](#接声音核心不发声声音你自己接)）
+- **依赖**：`node` + `ffmpeg` + 一个浏览器扩展（可选但强烈建议）
+
+## 30 秒开始
+
+```bash
+npm i dsh-watch-together          # 会连带装 dsh-video-storyboard
+node bin/watch.mjs doctor         # 自检：ffmpeg / 扩展 / 字幕 / 声音，逐项 OK 才算就绪
+node bin/watch.mjs install-extension   # 装一次浏览器扩展（以后正常开浏览器就行）
+```
+
+然后在会话里：
+
+```js
+watch_together({ wait: true })    // 跟着你浏览器里正在放的那一支走
+```
+
+**配置在哪、缺什么怎么补**：全部集中在 [`docs/CONFIG.zh.md`](docs/CONFIG.zh.md) ——
+ffmpeg / yt-dlp / B 站 cookies / ASR / 浏览器扩展 / 调试端口 / 声音 / 悬浮窗，一节一个服务。
+
 ---
 
 ## 它和 `dsh-video-storyboard` 是什么关系
@@ -35,16 +56,8 @@
 那张表才是真正的契约，版本号只是它的代理 —— 少了导出，`ERR_PACKAGE_PATH_NOT_EXPORTED`
 还算好查；签名悄悄变了才难查，本包不会报错，只是行为不对。
 
-下限为什么不能再低：0.4.5 的 `package.json` 只有 11 条 `exports`，
-本包 `import 'dsh-video-storyboard/browser-time'` 会直接 `ERR_PACKAGE_PATH_NOT_EXPORTED`。
-
-顺序上仍然有先后 —— npm 上必须先有满足这个范围的 storyboard，本包才装得上：
-
-```
-1) npm publish dsh-video-storyboard@0.5.x   ← 先
-2) npm publish dsh-watch-together@0.1.x     ← 后
-```
-
+顺序上仍然有先后（npm 上必须先有满足这个范围的 storyboard，本包才装得上）：
+`npm publish dsh-video-storyboard@0.5.x` → `npm publish dsh-watch-together@0.1.x`。
 反过来会装不上：`npm i dsh-watch-together` 找不到满足 `^0.5.0` 的版本。
 
 ## 安装
@@ -67,17 +80,34 @@ node scripts/install-dev.mjs                            # 再装陪看（它会�
 一起复制进 profile —— 因为陪看是裸包名 import 后者的，profile 里缺了它就会
 `ERR_MODULE_NOT_FOUND`。`--check` 只读，`--remove` 只卸自己、不动 storyboard。
 
-前置条件（ffmpeg / yt-dlp / ASR）跟 `dsh-video-storyboard` 完全一样，
-见那个包的 [README](https://github.com/SAOS-3624/dsh-video-storyboard#readme) 与 `docs/INSTALL.zh.md`。
+前置条件（ffmpeg / yt-dlp / cookies / ASR / 声音）逐个服务的配法见
+[`docs/CONFIG.zh.md`](docs/CONFIG.zh.md)。一句话版本：
 
-陪看自己**没有额外依赖**：位置从浏览器调试端口读，不装 Python、不装播放器插件。
-唯一要准备的是一个带调试端口的浏览器窗口 —— 见下文「为什么要一个专用窗口」。
+| 要什么 | 最低配 | 配好之后 |
+|---|---|---|
+| 出图 | `ffmpeg` 在 PATH 上 | 能看、能写台词 |
+| 准位置 | 装一次浏览器扩展 | 跟着你**平时的浏览器**走，不用专用窗口 |
+| 有字幕 | `yt-dlp` + B 站 cookies | 台词锚点有真实秒数 |
+| 没字幕的片子 | `~/.dsh/asr.json` | 用 ASR 给句子时间码 |
+| 出声 | `~/.dsh/voice.json` + `~/.dsh/tts.json` | 到点用你选的音色念 |
+
+陪看自己**没有额外依赖**：位置从浏览器读，不装 Python、不装播放器插件。
+唯一要准备的是一个能上报位置的浏览器 —— 见下文「进度从哪来」。
 
 ## 怎么用
 
+一个回合就是一段，**不要按定时器轮询**：
+
 ```js
-watch_together({ input: "D:/Movie/xxx.mp4" })   // 每 20 秒左右调一次
+watch_together({ waitForVideo: true })   // 接上用户浏览器里正在放的那一支（不用问链接）
+watch_together({ speakNow: true })       // 先看用户已经看到的那一段
+watch_together({ lines: [                // 把这一段的台词写进去（at 给字幕原文最准）
+  { from: 180, at: "1/4螺口", text: "注意这个接口，它决定了你以后能换什么镜头。" },
+] })
+watch_together({ wait: true })           // 阻塞到这一段快放完；用户插话会提前返回
 ```
+
+`input` 可以省略 —— 省略时就从浏览器读。传了也只是"这一支"，不是每次都要贴。
 
 ### 它怎么工作
 
@@ -92,10 +122,11 @@ watch_together({ input: "D:/Movie/xxx.mp4" })   // 每 20 秒左右调一次
 |---|---|---|
 | `ramp` | `[60,120,180,240]` | **变速启动**：开头短、逐段加长，第一次说话不用等 5 分钟 |
 | `segment` | 300 秒 | 稳定后的批次长度（阶梯走完后固定在这一档） |
-| `depth` | 2 | 保留几个批次（当前 + 下一个）。前面的用完，后面的顶上，同时算再下一个 |
+| `lookahead` | 300 秒 | **余量按时间算**：保证当前位置之后已备好的时长不少于它（不是"留两段"） |
+| `depth` | 自动 | 只给 `depth` 时按**段数**算余量（旧口径，一般别用） |
 | `lead` | 15 秒 | **段末前多少秒交付**。不是段末——两格交界处插话最突兀 |
 | `cells` | 5 | 每段一张图 |
-| `cursor` | 自动 | 用户看到第几秒；不给就从系统读 |
+| `cursor` | 自动 | 用户看到第几秒；不给就自己读，读不到才问你 |
 
 ### 变速启动：先短后长
 
@@ -140,6 +171,9 @@ watch_together({ ramp: [] })              // 全程等长，不要阶梯
 > 一个文件、一次双击，装和验证都在里面。步骤与常见错误：[docs/BRIDGE.zh.md](docs/BRIDGE.zh.md)。
 
 装了之后：你正常打开 Edge 播 B 站，插件就能看到你在第几秒。**不用开专用窗口，不用配端口。**
+
+> **扩展上报什么**：只有当前可见标签页的 `currentTime / duration / title / url / paused`，
+> POST 到 `127.0.0.1:9377`。不读页面内容、不发外网。源码就 76 行：[`extension/content.js`](extension/content.js)。
 
 > 插件**不会自己开浏览器**（这条老路 2026-10-31 已删）：多开一个窗口并不能让用户正在看的
 > 那一页报出位置。读不到就问一句「你看到几分几秒了」。
@@ -253,6 +287,18 @@ const off = onSpeech(async ({ state, text }) => {
 > `state === 'spoken'`（开始播放那一瞬调 `api.emitSpoken(e)`）。不上报也能用，但字会先于声音
 > 出现（2.5 秒兜底），也就是这次修掉的那个不同步。
 
+### 节奏：宁可少说一句，不要越说越晚
+
+引擎是**串行**的（一句念完才轮到下一句），所以台词密度直接决定声音会不会越拖越远：
+
+- 钟会记"引擎到什么时候才空出来"（`字数/5` 秒），上一句还在说时**不会**再塞下一句；
+- 拖过迟到宽限（3 秒）的那句直接作废 —— 少说一句，而不是晚 20 秒说；
+- 适配器还能先放弃：排队超过 3.5 秒就跳过这一句，并发 `state: 'skipped'`；
+- 展示层收到 `skipped` 会撤掉兜底定时器，**没出声的字不会出现在悬浮窗里**。
+
+所以"台词准时"和"每句都念"是互斥的，这个包选前者。想少丢词就让模型每段少写两句 ——
+交付说明里会把每句的落点列出来，平均间隔小于 6 秒时会明确警告"太密"。
+
 ### 现成适配器：`examples/voice-edge-tts`
 
 带了一个可以直接用的适配器：edge-tts 合成 → `ffplay` 播放 → 失败退回系统声音。
@@ -287,7 +333,8 @@ export function attach({ onSpeech }) {
 }
 ```
 
-`attach(api)` 收到 `{ onSpeech, speechSubscribers, emitSpeech, lastSpeech }`，返回一个退订函数即可。
+`attach(api)` 收到 `{ onSpeech, speechSubscribers, emitSpeech, emitSpoken, lastSpeech }`，返回一个退订函数即可。
+想放弃某一句就发 `state: 'skipped'`（见 [docs/VOICE.zh.md](docs/VOICE.zh.md)）。
 
 ## 聊天框 / 悬浮窗：一条统一的文本流
 
@@ -328,18 +375,23 @@ pythonw examples/floating-chat/window.py     # 无控制台
 ## 命令行（没有 DSH 宿主时）
 
 `bin/watch.mjs` 是给**没有 `watch_together` 工具的会话**（比如普通的终端 AI）用的壳，
-import 的是同一份 `src/`：
+import 的是同一份 `src/`。完整用法就是 `node bin/watch.mjs help`：
 
-```bash
-node bin/watch.mjs doctor      # 自检：运行时、python、端口、缓存
-node bin/watch.mjs start       # 起陪看服务
-node bin/watch.mjs wait 180    # 等用户点开片子
-node bin/watch.mjs status      # 看当前进度与下一步该跑什么
-node bin/watch.mjs seg auto    # 出宫格 + 句子时间轴
-node bin/watch.mjs cue '[[字幕from,"台词"]]'
-```
-
-`node bin/watch.mjs help` 就是完整用法。
+| 命令 | 干什么 |
+|---|---|
+| `doctor` | 自检：插件 / ffmpeg / 端口 / 扩展心跳 / 登录，逐项 OK/FAIL |
+| `start [url]` | 起一个**带调试端口**的专用浏览器窗口（备选通道） |
+| `login` | 从浏览器直读 cookie 落盘 + 验 B 站登录 |
+| `wait [秒]` | 等用户真的放起了视频，返回地址 / 标题 / 时长 / 位置 |
+| `status` | 当前位置 + 当前段 + **余量 buffer** + 下一步该跑什么 |
+| `fill` | 一次把 5 分钟余量内的段全建好（别一段一段挤） |
+| `seg [auto\|from to]` | 出这一段的宫格 + 清单 + 句子时间轴 |
+| `subs [from to]` | 只拉字幕时间轴（不出图，1 秒） |
+| `cue '[[at,"词"]]'` | 到点念台词；`check` 只核对不念 |
+| `say "文本"` / `voices` | 立刻念一句 / 列出可用音色 |
+| `chat` / `reply` | 起聊天服务 / 替用户回一句 |
+| `bridge` | 前台盯着扩展上报（排查用） |
+| `install-extension` | 装浏览器扩展（三分钟，装完自己验证） |
 
 ## 素材：图和字幕是两半，缺一不可
 
@@ -411,33 +463,50 @@ src/
 
   watch-loop.js     后台循环：每段到点自己叫醒模型
   watch-run.js      一次陪看调用：读位置、建这一段、到点交付
-  watch-modes.js    各种等待模式
+  watch-modes.js    各种等待模式（waitUntil / nextLine / refill）
   watch-actions.js  单发命令（status / voices / speak / cookies / wake / stop）
 
   watch.js          门面：转发下面两个
   watch-state.js    看到哪儿了：watch.json 读写 ＋ 段长/交付点算术
   watch-lines.js    该说什么了：位置轴上的台词队列
+  lines-util.js     不读图也能写词：字幕 → 候选句 + 真实秒数
+  watch-material.js 素材账本：图 / 字幕 各交出去过没有
 
   watch-source.js   这次看的是哪个源（就是当前页面的地址）
   watch-browser.js  "浏览器在不在"＋从两条通道读一次位置（不负责开浏览器）
   position.js       位置可信度与推算
+  position-bridge.js 扩展上报的位置：落盘 + 5 秒新鲜度
   latency.js        交付延迟记录与补偿
   batches.js        变速启动与批次窗口
-  timer.js          到点提醒
+  timer.js          到点提醒 ＋ 叫醒会话
+  interrupt.js      边等边听插话（共享 watcher + 等待者优先级）
 
   voice.js          门面 ─┬ speech-bus.js    订阅总线（谁在听、谁真会出声）
   voice-adapter.js  ──────┘ 按路径挂外部引擎
-  speech.js         台词语速/后延的估算
+  speech.js         语速估算："何时可以插话" vs "引擎还要占用多久"
 
-  chat.js           门面 ─┬ chat-store.js    chat.jsonl 读写
+  chat.js           门面 ─┬ chat-store.js    chat.jsonl 读写（增量 tail）
   chat-view.js      ──────┤ 聊天记录页模板
   chat-server.js    ──────┘ localhost 五条路由
+  input-surface.js  把服务 + 悬浮窗支起来（幂等）
+  floating-window.js 拉起/判活 Python 悬浮窗
 
   time.js           mmss（秒 → "mm:ss"），只有一份实现
 ```
 
 依赖是**单向**的：这里的模块可以 `import 'dsh-video-storyboard/...'`，反过来永远不会发生
 （那个包里出现一个指向本包的 import 就是循环依赖，构建会直接红）。
+
+## 开发
+
+```bash
+node --test                    # 全量测试（不要传目录，node 自己会找 test/*.test.mjs）
+node scripts/check-syntax.mjs  # 只做语法/导入检查，比跑测试快
+node scripts/install-dev.mjs --check   # 看 dev 副本和 profile 里装的是不是同一份
+node scripts/install-dev.mjs           # 把本包同步进 DSH profile（副本，不是软链）
+```
+
+改完代码要重启 DSH Desktop 才生效（插件树在进程启动时组合）。
 
 ## 许可
 

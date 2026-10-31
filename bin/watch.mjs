@@ -668,10 +668,17 @@ async function cmdBridge(arg) {
 
 async function cmdDoctor() {
   const checks = [];
-  const add = (name, ok, detail = '') => checks.push({ name, ok, detail });
+  /**
+   * @param {'ok'|'wait'|'fail'} [level] 不给就按 ok 推。`wait` = 现在没就绪但不是故障
+   *   （扩展装好了只是还没播视频、没配 cookie 只是看不了 B 站）——
+   *   以前一律打 FAIL，用户第一次跑 doctor 看到一行红就去重装扩展。
+   */
+  const add = (name, ok, detail = '', level = null) => checks.push({ name, ok, detail, level: level ?? (ok ? 'ok' : 'fail') });
 
   add('plugin', Boolean(STORYBOARD), STORYBOARD ?? 'dsh-video-storyboard 没装（npm i dsh-watch-together 会带上它）');
-  add('cookie-file', existsSync(COOKIES), COOKIES);
+  // cookie 只有看 B 站才需要：本地文件、直链都不用它。缺了是"少一样能力"，不是"坏了"。
+  add('cookie-file', existsSync(COOKIES),
+    existsSync(COOKIES) ? COOKIES : `${COOKIES}（看 B 站才需要，跑 login 生成）`, existsSync(COOKIES) ? 'ok' : 'wait');
 
   let ff = '';
   try { ff = execFileSync('ffmpeg', ['-version'], { encoding: 'utf8', timeout: 8000 }).split('\n')[0]; } catch { /* 下面报 */ }
@@ -685,7 +692,7 @@ async function cmdDoctor() {
    * （scripts/start-edge-debug.cmd 就是为它准备的，双击即可）。
    */
   const port = await hasDebugPort({ port: PORT });
-  add('debug-port', port, `${PORT}${port ? '' : ' —— 没开（装了浏览器扩展就不用开）'}`);
+  add('debug-port', port, `${PORT}${port ? '' : ' —— 没开（备用通道；装了浏览器扩展就不用开）'}`, port ? 'ok' : 'wait');
 
   // 浏览器扩展那条通道：只要它在报，就不需要调试端口
   //
@@ -706,7 +713,9 @@ async function cmdDoctor() {
         ? `扩展已加载（v${hello.version ?? '?'}，${Math.round(hello.ageMs / 1000)} 秒前连上），但还没有视频在播`
         : (receiverUp
           ? '扩展没连上来 —— 没装 / 没启用，跑 install-extension --steps 看步骤'
-          : `没人接（${DEFAULT_CHAT_PORT} 上没有服务）。先让 DSH 开始陪看，或跑 bridge —— 不是扩展的问题`)));
+          : `没人接（${DEFAULT_CHAT_PORT} 上没有服务）。先让 DSH 开始陪看，或跑 bridge —— 不是扩展的问题`)),
+    // 只打过招呼 = 扩展是好的，只是还没播视频 —— 这是"等着"，不是"坏了"
+    bs?.fresh ? 'ok' : (hello ? 'wait' : 'fail'));
 
   let login = null;
   if (existsSync(COOKIES)) {
@@ -717,20 +726,26 @@ async function cmdDoctor() {
   const p = await pos();
   add('playing', Boolean(p),
     p ? `${p.title ?? '(没有标题)'} @${tc(p.pos)}`
-      : '读不到：调试端口没开，或者页面里没有 <video>');
+      : '读不到：调试端口没开，或者页面里没有 <video>（播个视频就好）', p ? 'ok' : 'wait');
 
-  const required = ['plugin', 'cookie-file', 'ffmpeg'];
+  const required = ['plugin', 'ffmpeg'];
   const hardOk = checks.filter((c) => required.includes(c.name)).every((c) => c.ok);
   // 位置只要有一条通就行：调试端口，或者浏览器扩展在报
   const canLocate = port || Boolean(bs?.fresh);
 
-  console.log(checks.map((c) => `${c.ok ? 'OK  ' : 'FAIL'} ${c.name.padEnd(12)} ${c.detail}`).join('\n'));
+  const mark = { ok: 'OK  ', wait: 'WAIT', fail: 'FAIL' };
+  console.log(checks.map((c) => `${mark[c.level]} ${c.name.padEnd(12)} ${c.detail}`).join('\n'));
 
   if (!hardOk) {
     console.log(`\nNOT READY — 先修 FAIL 项。${existsSync(COOKIES) ? '' : 'cookie 没有就跑: node watch.mjs login'}`);
     return 1;
   }
   if (!canLocate) {
+    // 扩展打过招呼 = 装好了、连得上，只是这一刻没有视频在播 —— 别把人往"重装扩展"上带
+    if (hello) {
+      console.log(`\nREADY — 扩展已连上（v${hello.version ?? '?'}）。播个视频就能读到位置。`);
+      return 0;
+    }
     console.log('\nNOT READY — 两条位置通道都不通：\n'
       + '  · 装浏览器扩展（docs/BRIDGE.zh.md，一次就好），或者\n'
       + `  · 双击 scripts/start-edge-debug.cmd 起一个带调试端口的窗口（端口 ${PORT}）`);

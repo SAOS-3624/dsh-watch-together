@@ -41,8 +41,6 @@
     const v = pickVideo();
     if (!v || !Number.isFinite(v.currentTime)) return;
 
-    const now = Date.now();
-    lastSent = now;
     const payload = {
       pos: v.currentTime,
       dur: Number.isFinite(v.duration) ? v.duration : null,
