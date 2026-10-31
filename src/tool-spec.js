@@ -258,9 +258,17 @@ export function watchToolSpec() {
       statusOnly: {
         type: 'boolean',
         description: 'Return the loop state only (position, confidence, why it did or did not speak) without '
-          + 'reading the video, plus a `browser` object (state: unconfigured | closed | no-video | watching | error). '
-          + 'Use this to answer "is their browser actually open / are they still watching?" without spending a '
-          + 'segment build - and use it instead of inferring the browser from a playback position.',
+          + 'reading the video, plus a `browser` object (state: unconfigured | closed | no-video | watching | '
+          + 'extension | error). Use this to answer "is their browser actually open / are they still watching?" '
+          + 'without spending a segment build - and use it instead of inferring the browser from a playback position.\n\n'
+          + 'It also carries three diagnostic blocks, meant for "why is it slow / why did it go quiet":\n'
+          + '  segment { index, from, to, delivered, total }   which batch they are in, how many were delivered,\n'
+          + '                                                  how many the film has (total is null if duration is unknown)\n'
+          + '  speech  { queued, lastLateSec, busyUntil }      lines still waiting, how late the last one was, when the\n'
+          + '                                                  serial voice engine frees up\n'
+          + '  build   { inflight, cached, lastMs }            which batch is being built / how many are cached / how\n'
+          + '                                                  long the last one took\n'
+          + 'Report what they say, do not guess: `null` means "not measured", not zero.',
       },
       lines: {
         type: 'array',

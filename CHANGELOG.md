@@ -8,6 +8,23 @@ This package starts its own version line at `0.0.7` — it is not a continuation
 Three rounds on 2026-10-31. The through-line: the plugin knew something, and the model (or the user)
 never found out — plus one window that needed to look like something people want to keep on screen.
 
+### Observability: `statusOnly` can now answer "why is it slow"
+
+Promised in issue #4. `pos + reason` says *what* the clock thinks, not *where it is stuck*.
+
+- `segment { index, from, to, delivered, total }` — which batch, its bounds, how many were delivered
+  this session, how many the film has (`total` is `null` when the duration is unknown). The last batch
+  index is taken at `dur - 1 ms`, because a duration that lands exactly on a boundary would otherwise
+  report one batch too many.
+- `speech { queued, lastLateSec, busyUntil }` — lines still waiting, how late the previous line was
+  (from `dueLine`'s new `meta: true`, which also keeps the plain-string return for old callers), and
+  when the serial voice engine frees up.
+- `build { inflight, cached, lastMs }` — which batch is being built, how many are cached, how long the
+  last build took. The cache is passed into the loop for reporting only; it never influences a decision.
+- `queued` needs a disk read, so it is filled in `statusOnly` only, and a failure there is reported as
+  `speech.queueError` instead of being swallowed (the first version of this swallowed a `ReferenceError`
+  from a missing import and looked exactly like "there are no lines").
+
 ### The floating window, rebuilt
 
 "这个悬浮窗太丑了" — fair. The old one was a borderless frame with a `Text` widget that painted

@@ -253,6 +253,17 @@ watch_together({ browserPort: 9333 })   // 或者单次传参
 `watch_together({ statusOnly: true })` 可以随时看钟的状态：读到第几秒、可不可信、为什么没说话。
 `node bin/watch.mjs doctor` 会分别列出两条通道各自通不通。
 
+它顺带报三块诊断信息 —— 用户说"后面越来越慢 / 它突然不说话了"时，靠这三块定位卡在哪一环：
+
+| 字段 | 含什么 |
+|---|---|
+| `segment { index, from, to, delivered, total }` | 在第几段、起止、这一场已交付几段、整片共几段（片长未知时 `total` 是 `null`） |
+| `speech { queued, lastLateSec, busyUntil }` | 还欠几句台词、上一句比画面晚了几秒、串行声音引擎忙到什么时候 |
+| `build { inflight, cached, lastMs }` | 正在建哪一段、缓存里已有几段、上一段建了多久 |
+
+`null` 一律表示"没测到"，不是 0。`queued` 要读 `watch.json`，所以只在 `statusOnly` 里算
+（循环每 2 秒付这个 IO 不值得）。
+
 ## 接声音（核心不发声，声音你自己接）
 
 这个包**不带任何 TTS 引擎**，也不读 `~/.dsh/tts.json`。它只做两件事：

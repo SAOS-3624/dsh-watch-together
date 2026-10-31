@@ -101,6 +101,13 @@ const loop = {
   dur: null,
   /** 正在跟的那支片子的页面地址（换片判据之一，见 `sourceSwitched`） */
   sourceUrl: null,
+  /** 建段耗时 / 正在建哪一段（`statusOnly` 的 build 那一段） */
+  lastBuildMs: 0,
+  buildingFrom: null,
+  /** 段缓存（外部传进来，只用来报"缓存里已有几段"，不参与决策） */
+  cache: null,
+  /** 上一句台词比画面晚了几秒（可观测性：用户说"后面越来越慢"时先看它） */
+  lastSpeechLateSec: null,
   lastWake: null,
   wakeFails: 0,
   logs: [],
@@ -161,16 +168,51 @@ export function sourceSwitched(prev, next) {
 
 export function loopStatus() {
   const est = loop.anchor ? estimate(loop.anchor) : null;
+  const plan = loop.plan ?? null;
+  const segNow = (plan && est && Number.isFinite(est.pos)) ? plan.segmentAt(est.pos) : null;
+  // 片长知道时才敢报"共几段"；不知道就是 null（不知道 ≠ 0）。
+  // **取片尾前 1 毫秒所在的那一段**：片长正好落在段边界时（600 = 5×120），
+  // `indexAt(dur)` 会指到下一段的开头，段数就多报一段。
+  const total = (plan && Number.isFinite(loop.dur))
+    ? plan.segmentAt(Math.max(0, loop.dur - 0.001)).index + 1
+    : null;
   return {
     active: loop.active,
     session: loop.sessionId,
     input: loop.input,
     segments: loop.segments.length,
-    batchPlan: loop.plan ? describePlan(loop.plan) : null,
+    batchPlan: plan ? describePlan(plan) : null,
     // 余量：depth 是"给了就按段数"，null 表示按 bufferSec 动态算
     depth: loop.depth ?? 'auto',
     bufferSec: loop.bufferSec ?? null,
     spoken: loop.spoken.length,
+    /*
+     * 下面三块是**诊断用**的：用户报"后面越来越慢 / 不说话了"时，
+     * 只看 pos 和 reason 是查不出来的，得知道"卡在哪一环"。
+     * 只报事实，不下结论。
+     */
+    // 当前段：第几段 / 起止 / 已经交付过几段 / 这条片子一共几段（片长未知时 total 为 null）
+    segment: segNow ? {
+      index: segNow.index,
+      from: segNow.from,
+      to: segNow.to,
+      delivered: loop.spoken.length,
+      total,
+    } : null,
+    // 台词：上一句比画面晚了几秒、引擎忙到什么时候（墙钟毫秒）
+    speech: {
+      lastLateSec: loop.lastSpeechLateSec ?? null,
+      busyUntil: loop.voiceBusyUntil || null,
+      lastAt: loop.lastSpeechAt ?? null,
+      // 队列深度要读盘（watch.json），只在 statusOnly 里补 —— 循环每 2 秒读一次不值得
+      queued: null,
+    },
+    // 建图：正在建哪一段（null = 没在建）、缓存里已有几段、上一段建了多久
+    build: {
+      inflight: loop.buildingFrom ?? null,
+      cached: loop.cache?.size ?? null,
+      lastMs: loop.lastBuildMs || null,
+    },
     // 声音：核心只发事件。listeners = 0 表示"没人接声音"，到点的词会改走叫醒模型。
     voice: {
       listeners: speechSubscribers(),
@@ -221,6 +263,8 @@ export function startWatchLoop({
   // 于是 `lead: 30` 只在 watch-run 那条路上生效，钟这边照样按 15 秒触发 ——
   // 同一个参数两套口径，是"说好的时间点对不上"这类现象的来源。
   lead = WATCH_LEAD,
+  // 段缓存（可选）：只用于 `statusOnly` 里报"缓存里已有几段"，不参与任何决策
+  cache = null,
   // 依赖可注入：进程内默认真实实现；测试/仿真用假的，于是"到点会不会说话"可以离线验证
   deps = {},
   // **到点是否往会话里投一条消息把人叫醒**。默认**关**。
@@ -325,6 +369,7 @@ export function startWatchLoop({
     // 于是第一场要不是这次开窗（比如窗口早就开着、或者上一次开窗失败），后面永远守卫不到 ——
     // 用户关了窗，钟照样跑（2026-10-31 实报："关了悬浮窗还在继续看"）。
     loop.windowGuard = Boolean(loop.windowGuard || windowGuard);
+    if (cache) loop.cache = cache;
     if (Number.isFinite(cursor)) {
       loop.anchor = makeAnchor({ pos: cursor, dur: loop.dur, status, updated: Date.now() }, Date.now());
     }
@@ -377,6 +422,10 @@ export function startWatchLoop({
     lastReason: 'started',
     // 窗口守卫（关窗即收工）：这次真的开过窗才为 true；resume 路径只能把它从 false 抬到 true
     windowGuard: Boolean(windowGuard),
+    cache: cache ?? null,
+    lastBuildMs: 0,
+    buildingFrom: null,
+    lastSpeechLateSec: null,
     log,
   });
 
@@ -616,16 +665,19 @@ export function startWatchLoop({
           .slice(idxNow, idxNow + winNow.length)
           .find((sg) => !loop.built.has(sg.from));
         if (next) {
+          loop.buildingFrom = next.from;
           loop.building = (async () => {
             const t = Date.now();
             try {
               await build(next.from);
               loop.built.add(next.from);
+              loop.lastBuildMs = Date.now() - t;
               note(`built ${Math.round(next.from)}s in ${((Date.now() - t) / 1000).toFixed(1)}s`);
             } catch (e) {
               note(`build ${Math.round(next.from)}s failed: ${String(e?.message ?? e).slice(0, 80)}`);
             } finally {
               loop.building = null;
+              loop.buildingFrom = null;
             }
           })();
         }
@@ -711,17 +763,21 @@ export function startWatchLoop({
           || (est.confidence === 'extrapolated' && est.staleMs <= SAFETY_AFTER_MS);
         if (!voiceBusy && est.why !== 'paused' && positionUsable && Number.isFinite(est.pos)) {
           const segNow = plan.segmentAt(est.pos);
-          const line = await dueLine(loop.input, est.pos, {
+          const due = await dueLine(loop.input, est.pos, {
             size: segNow.size,
             // 别的段的稿子要按**那一段自己的长度**铺（批次表是 1/2/3/4/5 分钟递进的）
             sizeOf: (f) => plan.segmentAt(f).size,
+            // meta: 顺带拿到"本该第几秒开口"，用来算这句迟到多久（statusOnly 里能看到）
+            meta: true,
           }).catch(() => null);
+          const line = due ? String(due.text ?? due) : null;
           if (line) {
             const delivered = emitSpeech({
               at: est.pos, text: line, input: loop.input, segment: segNow.from,
             });
             if (delivered > 0) {
               loop.lastSpeechAt = tNow;
+              if (due && Number.isFinite(due.late)) loop.lastSpeechLateSec = due.late;
               // 记下"引擎到什么时候才空出来"。**用完整时长**（不是 speechLag 的一半，
               // 那是"什么时候可以插话"，两件事）。
               if (speechSubscribers() > 0) loop.voiceBusyUntil = tNow + speechSeconds(line.length) * 1000;

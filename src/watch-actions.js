@@ -18,6 +18,7 @@
 import { configuredPort, probeBrowser } from 'dsh-video-storyboard/browser-time';
 import { checkBiliLogin, fetchRemoteSubtitles } from 'dsh-video-storyboard/subtitles';
 import { loadCues, sentencesBetween } from './lines-util.js';
+import { linesOverview } from './watch-lines.js';
 import { markMaterial, materialNote } from './watch-material.js';
 import { controllerOf, wakeSession } from './timer.js';
 import { loopStatus, stopWatchLoop } from './watch-loop.js';
@@ -84,7 +85,24 @@ export async function runWatchAction(args, { ctx = null, sessionId = null, brows
     const browser = bp
       ? await probeBrowser({ port: bp }).catch(() => ({ state: 'error', port: bp }))
       : { state: 'unconfigured', port: null };
-    return { text: JSON.stringify({ ...loopStatus(), browser }, null, 1), images: [] };
+    const st = loopStatus();
+    // **台词队列深度要读盘才准**（watch.json 里的 lines）。只在诊断入口付这个成本，
+    // 循环每 2 秒读一次不值得；`queued: null` 表示"没算"，不是 0。
+    if (st.input) {
+      try {
+        const ov = await linesOverview(st.input);
+        if (Array.isArray(ov)) {
+          st.speech.queued = ov.reduce((n, x) => n + (Number(x.count) || 0), 0);
+          st.speech.segmentsWithLines = ov.length;
+        }
+      } catch (e) {
+        // **别静默**：这个 catch 第一次就吞掉了一个 ReferenceError（漏 import），
+        // 结果只是"queued 一直是 null"，看起来像"没有台词"。错因要报出来。
+        st.speech.queued = null;
+        st.speech.queueError = String(e?.message ?? e).slice(0, 120);
+      }
+    }
+    return { text: JSON.stringify({ ...st, browser }, null, 1), images: [] };
   }
 
   // 检查 B 站登录态与字幕可用性：这一条能立刻回答"为什么还在用 ASR"

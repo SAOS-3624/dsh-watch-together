@@ -197,6 +197,8 @@ export async function execute(ctx, args, {
     startWatchLoop({
       ctx, sessionId, input: r.input,
       cursor: r.cursor, status: r.status,
+      // 段缓存只用来报"缓存里已有几段"（statusOnly），不参与决策
+      cache,
       // 段长 / 阶梯 / 余量 / 提前量交给循环：之后它自己往前滚、自己补建。
       // **lead 必须传**：钟和 watch-run 用的必须是同一个提前量，否则"说好的时间点"会差一截。
       segment, ramp, lookahead, depth, speakEvery, refillBelow, lead: args.lead,

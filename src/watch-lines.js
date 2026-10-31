@@ -330,11 +330,14 @@ export function pinTimes(items, from, size, cues = []) {
 
 /**
  * @param {number} pos 当前播放位置（秒）
- * @param {{ size?: number, sizeOf?: (from:number)=>number, lateSec?: number, lagSec?: number }} [o]
- *        `size` 当前段长；`sizeOf(from)` 给**别的段**取它自己的段长（见下面 pin 的那段注释）
+ * @param {{ size?: number, sizeOf?: (from:number)=>number, lateSec?: number,
+ *   lagSec?: number, meta?: boolean }} [o]
+ *        `size` 当前段长；`sizeOf(from)` 给**别的段**取它自己的段长（见下面 pin 的那段注释）；
+ *        `meta: true` 时返回 `{ text, at, lateSec }` 而不是纯字符串 ——
+ *        循环要靠它算"这句比画面晚了多少秒"（`statusOnly` 的可观测性用）。
  */
 export async function dueLine(input, pos, {
-  size = 0, sizeOf = null, lateSec = 3, lagSec = null, env = process.env,
+  size = 0, sizeOf = null, lateSec = 3, lagSec = null, env = process.env, meta = false,
 } = {}) {
   const now = Number(pos);
   if (!Number.isFinite(now)) return null;
@@ -415,6 +418,16 @@ export async function dueLine(input, pos, {
   writeSlot(lines, best.from, items.slice(0, best.index).concat(items.slice(best.index + 1)));
   st[sk] = { ...(st[sk] ?? {}), lines, at: Date.now() };
   await saveWatch(st, env);
+  if (meta) {
+    // 迟到多少秒：现在的播放位置 - 这句本该开口的时刻（正数 = 晚了）
+    const planned = dueAt(best.at, best.text);
+    return {
+      text: best.text,
+      at: Number.isFinite(Number(best.at)) ? Number(best.at) : null,
+      planned: Number.isFinite(planned) ? +Number(planned).toFixed(2) : null,
+      late: Number.isFinite(planned) ? +(now - planned).toFixed(1) : null,
+    };
+  }
   return best.text;
 }
 
