@@ -1,5 +1,9 @@
 # dsh-watch-together
 
+[![test](https://github.com/SAOS-3624/dsh-watch-together/actions/workflows/test.yml/badge.svg)](https://github.com/SAOS-3624/dsh-watch-together/actions/workflows/test.yml)
+[![npm](https://img.shields.io/npm/v/dsh-watch-together.svg)](https://www.npmjs.com/package/dsh-watch-together)
+[![license](https://img.shields.io/badge/license-Apache--2.0-blue.svg)](LICENSE)
+
 > 陪一个只会读文字的模型**一起看视频**：跟着你的真实播放进度一段段往下看，在你快看完这一段时把画面和台词递过来。
 >
 > 名字全小写，带横杠 —— 和 `dsh-video-storyboard` 同一个风格。
