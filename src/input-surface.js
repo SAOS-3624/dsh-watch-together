@@ -85,20 +85,21 @@ async function open({ start = false, input = null, reopen = false } = {}) {
   const running = loopStatus();
   // **用户关过窗就不要再顶回来** —— 哪怕这一轮看起来像"新开一场"。
   // 只有明确要求重开（`open: true`）才清掉这条记录。
-  if (input) {
-    const hung = await isHungUp(input).catch(() => false);
-    if (hung) {
-      if (reopen) {
-        await clearHungUp().catch(() => {});
-      } else if (!floatingWindowAlive()) {
-        return {
-          windowOpen: false,
-          closedByUser: true,
-          note: '\n[widget] 悬浮窗是你自己关掉的，我没有重开 —— 陪看就停在这儿。'
-            + '想接着看就说一声「重新打开悬浮窗」，我再开。'
-            + `\n[voice] ${voiceNote}。`,
-        };
-      }
+  //
+  // 判定只认 `input`：`start: true` 意味着"这是新的一场陪看"，那时候要允许开窗
+  // （插件重启之后 loop 里没有 input，用"最近挂断过"去挡它，会让刚重启的用户永远开不出窗）。
+  const hung = input ? await isHungUp(input).catch(() => false) : false;
+  if (hung) {
+    if (reopen) {
+      await clearHungUp().catch(() => {});
+    } else if (!floatingWindowAlive()) {
+      return {
+        windowOpen: false,
+        closedByUser: true,
+        note: '\n[widget] 悬浮窗已被关掉（是你自己关的），我没有重开 —— 陪看就停在这儿。'
+          + '想接着看就说一声「重新打开悬浮窗」，我再开。'
+          + `\n[voice] ${voiceNote}。`,
+      };
     }
   }
   if (!start && running.active && !floatingWindowAlive()) {

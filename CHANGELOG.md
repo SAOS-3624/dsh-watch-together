@@ -5,8 +5,40 @@ This package starts its own version line at `0.0.7` — it is not a continuation
 
 ## [Unreleased]
 
-Four things the user hit while actually watching (2026-10-31 evening). All four are about the
-same gap: the plugin knew something, and the model (or the user) never found out.
+Two rounds of real-watch reports (2026-10-31 evening). The common shape: the plugin knew something,
+and the model (or the user) never found out.
+
+Round two — "stop when the signal says stop". Round one — "speak before you look", "notice a new
+film", "don't stack two sentences", "don't wait a minute for a video we can already identify".
+
+### Stop when the signal says stop: hangup, dead source, switched video
+
+Reported as "换片或者我都关浏览器了还在念台词" and "关了悬浮窗 AI 还是会自动调出来，根本不会自动结束".
+Both were the same shape: the plugin knew the source was gone, and kept talking anyway.
+
+- **Speech now requires a believable position.** The line queue only fired when the position was
+  `fresh`, or `extrapolated` within `SAFETY_AFTER_MS` (20 s — the normal gap between probes).
+  Before, the only thing excluded was `paused`; `estimate()` happily extrapolates a dead source
+  forward and `pos` stays finite, so closing the browser kept reading lines out for minutes.
+  Nothing is spoken on an `unknown` position, and the position-unknown give-up dropped from
+  10 min to 5 min (the watch should not sit there pretending).
+- **Closing the floating window is a hangup, treated like an interjection.** The window is the only
+  way to talk mid-watch, so closing it means "I'm done":
+  - the clock stops and **really wakes the model** — `wake:false` (the default) used to silence this
+    too, because it shared the `wake` path with the segment-end reminder. User actions (hangup,
+    video changed, video ended, seek, unreadable position, high-frequency mode) now use a separate
+    always-real channel (`wakeSignal`), and the message says **do not call watch_together again and
+    do not read out any more lines**;
+  - the guard is stored on the loop and can be turned on later (`resumed` path used to freeze it,
+    so a window opened by an earlier call was never guarded);
+  - the next tool call **does nothing at all**: no frame, no clock, no window (`[hangup]` result).
+    `sameWatch` previously required `args.input`, which the model never sends — so every call looked
+    like "a new watch" and re-opened the window the user had just closed.
+- `wakeWithRetry` called an undefined `note()` in its failure branch (a `ReferenceError` swallowed by
+  the ticker). Real wakes can fail, so it was reachable; now it records into `loop.logs`.
+
+Tests: 247 pass, +4 in `test/hangup-guard.test.mjs` (dead source sends nothing, live source still
+speaks, hangup wakes with the right wording, post-hangup call is inert).
 
 ### Interjections: speak first, then look
 

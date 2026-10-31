@@ -108,16 +108,41 @@ export async function execute(ctx, args, {
     //   新开一场  → 窗口不在就开（用户要的那个自动开）
     //   同一场中途 → 窗口不在就判定"用户关了窗"，停钟、不重开
     // 用户投诉过："我刚才关了悬浮窗又自己弹出来了" —— 关窗是他的表达，不许撤销它。
+    //
+    // **`input` 不能只看这次参数**：模型几乎从不传 input（工具契约就是"别问链接，自己认"），
+    // 于是"同一场"永远判不出来 → 每次都当成新开一场 → 用户关掉的窗口每调一次就弹回来
+    // （2026-10-31 实报："关了悬浮窗 AI 还是会自动调出来"）。这里回落到循环记住的那个源。
     const st0 = loopStatus();
-    const sameWatch = st0.active && Boolean(args.input)
-      && sessionKey(st0.input ?? '') === sessionKey(args.input);
+    const known = (typeof args.input === 'string' && args.input.trim())
+      ? args.input
+      : (typeof st0.input === 'string' && st0.input ? st0.input : null);
+    const sameWatch = Boolean(st0.active && known && st0.input
+      && sessionKey(st0.input) === sessionKey(known));
     surface = await prepareInputSurface({
       start: !sameWatch,
-      input: typeof args.input === 'string' ? args.input : null,
+      input: known,
       // 用户明确要求重开才清掉"他自己关过窗"的记录（见 watch-state 的 hangup）
       reopen: args.open === true,
     });
     widgetNote = surface.note;
+  }
+
+  // **关窗 = 不看了**（2026-10-31 实报："关了悬浮窗他还在继续看，根本不会自己结束"）。
+  //
+  // 窗口是唯一的插话入口：关掉它就没有"边看边聊"这件事了，继续建段、继续等、继续念台词
+  // 都只是占着会话。所以这里直接结束这一轮 —— 不建图、不起钟、不重开窗 ——
+  // 并且像插话一样**明确告它别再跑**（`[hangup]`）。
+  if (surface?.closedByUser) {
+    stopWatchLoop('widget-closed');
+    return {
+      images: [],
+      text: '[hangup] 用户把悬浮窗关掉了 —— 那是"我不看了"最直接的意思。'
+        + '这一轮什么都没做：没有建图、没有起钟、没有重开窗。\n'
+        + '**不要再调 watch_together，也不要再念台词**（台词队列已经停了）。'
+        + '只回一句短的（用 `say`，否则他看不见）。\n'
+        + '他要是说「接着看」，那时候再调一次 `watch_together({ open: true })` 才会重新开窗。'
+        + widgetNote,
+    };
   }
 
   // 批次表的默认值在这里定一次，工具和循环共用同一份（否则两边段边界会各算各的）

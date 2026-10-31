@@ -13,7 +13,7 @@
 
 import { aheadSeconds, loadLatency } from './latency.js';
 import {
-  MAX_EXTRAPOLATE_MS, estimate, makeAnchor, shouldSpeak,
+  MAX_EXTRAPOLATE_MS, SAFETY_AFTER_MS, estimate, makeAnchor, shouldSpeak,
 } from './position.js';
 import { chatWatcherShared, chatWaiterCount } from './interrupt.js';
 import { startTicker, wakeSession } from './timer.js';
@@ -49,7 +49,14 @@ async function wakeWithRetry({ ctx, sessionId, text, wake, log = true }) {
         try {
           appendChat('meta', `[一起看] 叫醒失败：${String(r?.reason ?? 'unknown').slice(0, 120)}`, { say: false });
         } catch { /* 写不进悬浮窗也不能再抛 */ }
-        note(`wake failed: ${String(r?.reason ?? 'unknown').slice(0, 120)}`);
+        // **这里以前调 `note()`** —— 那是 `startWatchLoop` 里的闭包，模块作用域没有这个名字。
+        // 平时走不到（`wake` 默认是空实现，永远 ok），所以一直没暴露；
+        // 一旦真叫醒失败（比如没有 sessionController），这里抛 ReferenceError，
+        // 又被 ticker 的 catch 吞掉 —— 表现就是"叫醒丢了，日志里什么都没有"。
+        try {
+          loop.logs.push(`${new Date().toTimeString().slice(0, 8)} wake failed: ${String(r?.reason ?? 'unknown').slice(0, 120)}`);
+          if (loop.logs.length > 20) loop.logs.shift();
+        } catch { /* 记不下就算了 */ }
       }
       return r;
     }
@@ -63,8 +70,14 @@ const PROBE_EVERY_MS = 15_000;
 const ASK_AFTER_MS = 20_000;
 /** 两次主动问之间至少隔这么久 */
 const ASK_COOLDOWN_MS = 300_000;
-/** 连续多久读不到就停表，等人给 cursor（别在那儿空转 20 分钟） */
-const UNKNOWN_GIVE_UP_MS = 600_000;
+/**
+ * 连续多久读不到就停表，等人给 cursor（别在那儿空转）。
+ *
+ * 原来 10 分钟。改成 5 分钟的理由：读不到位置之后**台词在 20 秒后就不再发了**
+ * （见台词那段的 `positionUsable`），剩下的十几分钟只是把会话占着、让模型以为还在看 ——
+ * 2026-10-31 实报的"关了浏览器它还在继续"就是这种状态。
+ */
+const UNKNOWN_GIVE_UP_MS = 300_000;
 /** 连续这么久读不到浏览器就先停（视频关了 / 浏览器退出了 / 页签切走了） */
 const NO_SOURCE_GIVE_UP_MS = 300_000;
 /** 余量默认值在 batches.js（批次规划的策略），这里转出给老的调用方 */
@@ -93,6 +106,8 @@ const loop = {
   logs: [],
   lastProbeAt: 0,
   lastReason: '',
+  /** 关窗即收工：这次真的开过窗才为 true */
+  windowGuard: false,
   ticker: null,
   log: () => {},
 };
@@ -250,6 +265,19 @@ export function startWatchLoop({
   // 插话唤醒走**真**的 followup（不受 `wake: false` 影响）；可注入便于测试
   const chatWatcher = deps.chatWatcher ?? (() => chatWatcherShared());
   const chatWake = deps.wakeChat ?? ((c, o) => wakeSession(c, o));
+  /**
+   * **用户动作的信号**（关窗 / 换片 / 播完 / 拖进度 / 位置读不到）：一律真的叫醒。
+   *
+   * 和 `wake` 的区别必须分清：`wake:false`（默认）关掉的是"这一段该说话了"那种**打扰**，
+   * 因为阻塞式调用本来就会在段末自己返回，再投一条只会挡住用户要说的话。
+   * 但上面这几件事不是打扰 —— 是"情况变了，你得说一句，而且别再按旧的继续跑"。
+   * 以前它们和段末提醒共用 `wake`，于是默认配置下**一声不响**：
+   * 用户关了悬浮窗、换了片，模型那边还以为什么都没发生（2026-10-31 实报）。
+   *
+   * 注：仿真/测试只注入 `deps.wake`（没有 `wakeChat`），所以这里也认它 —— 那是"能真的叫醒"的桩，
+   * 不是 `wake:false` 那个空实现。
+   */
+  const wakeSignal = deps.wakeChat ?? deps.wake ?? ((c, o) => wakeSession(c, o));
   // 端口来源：显式参数 → ~/.dsh/video.json → 环境变量（桌面版读不到 setx 的 env，所以文件优先）
   // 端口只从调用方传进来（工具层读配置）；库层不隐式读机器配置，否则单测会被本机状态影响
   const browserPort = explicitPort ?? deps.browserPort ?? null;
@@ -293,6 +321,10 @@ export function startWatchLoop({
     loop.depth = fixedDepth;
     loop.bufferSec = bufferSec;
     loop.lead = leadSec;
+    // **窗口守卫只许从关到开，不许从开改回关**：以前它是闭包变量，只在"新起一场"时定一次，
+    // 于是第一场要不是这次开窗（比如窗口早就开着、或者上一次开窗失败），后面永远守卫不到 ——
+    // 用户关了窗，钟照样跑（2026-10-31 实报："关了悬浮窗还在继续看"）。
+    loop.windowGuard = Boolean(loop.windowGuard || windowGuard);
     if (Number.isFinite(cursor)) {
       loop.anchor = makeAnchor({ pos: cursor, dur: loop.dur, status, updated: Date.now() }, Date.now());
     }
@@ -343,6 +375,8 @@ export function startWatchLoop({
     askedAt: 0,
     lastProbeAt: 0,
     lastReason: 'started',
+    // 窗口守卫（关窗即收工）：这次真的开过窗才为 true；resume 路径只能把它从 false 抬到 true
+    windowGuard: Boolean(windowGuard),
     log,
   });
 
@@ -370,8 +404,10 @@ export function startWatchLoop({
     const jump = Number(b.pos) - expected;
     if (Math.abs(jump) <= 60 || tNow - (loop.lastJumpWakeAt || 0) <= 180_000) return false;
     loop.lastJumpWakeAt = tNow;
-    void wake(loop.ctx, {
+    void wakeWithRetry({
+      ctx: loop.ctx,
       sessionId: loop.sessionId,
+      wake: wakeSignal,
       text: `[一起看] 用户拖了进度条：${jump > 0 ? '跳到' : '回看到'} ${mmss(b.pos)}`
         + `（原来到 ${mmss(expected)}）。`
         + (jump < 0
@@ -381,10 +417,16 @@ export function startWatchLoop({
     return true;
   };
 
-  /** 换片/播完：停表 + 叫醒（循环停了之后就没人再轮询，必须叫这一下） */
+  /**
+   * 换片/播完：停表 + 叫醒（循环停了之后就没人再轮询，必须叫这一下）。
+   *
+   * **必须真的叫醒**：这条消息是"别再按旧片子跑了"的指令，不是提醒。
+   */
   const stopForSource = (reason, text) => {
     stopWatchLoop(reason);
-    void wake(loop.ctx, { sessionId: loop.sessionId, text });
+    void wakeWithRetry({
+      ctx: loop.ctx, sessionId: loop.sessionId, wake: wakeSignal, text,
+    });
   };
 
   loop.ticker = ticker({
@@ -418,13 +460,22 @@ export function startWatchLoop({
 
       // 每一拍先看窗口还在不在：关掉就别再跟了。
       // 放在读位置之前 —— 窗口没了就没有"插话入口"，继续跟只会占着会话。
-      if (windowGuard && !windowAlive()) {
-        void wake(loop.ctx, {
-          sessionId: loop.sessionId,
-          text: '[一起看] 悬浮窗被关掉了，陪看已自动停止。要看就再说一声，我会重新开窗接着跟。',
-        });
+      //
+      // **这一下必须真的叫醒**（`wakeSignal`，不走 `wake`）：`wake:false` 关的是"段末该说话了"
+      // 那种打扰，而"用户把窗口关了"是用户下的指令 —— 不叫他，模型那边只会看到时间停住，
+      // 表现就是"关了他还在看、还在念台词，根本不会自己结束"（2026-10-31 实报）。
+      if (loop.windowGuard && !windowAlive()) {
         try { await markHungUp(loop.input); } catch { /* 记不住也不影响停 */ }
         stopWatchLoop('widget-closed');
+        void wakeWithRetry({
+          ctx: loop.ctx,
+          sessionId: loop.sessionId,
+          wake: wakeSignal,
+          text: '[一起看·挂断] 悬浮窗被关掉了 —— 用户关它就是在说「不看了」，陪看已经停表。\n'
+            + '**不要再调 watch_together，也不要再念台词**（台词队列不再发出）。'
+            + '只回一句短的（用 `say`，否则他看不到），比如"好，先停在这儿"。'
+            + '他要接着看时会自己说一声，那时候再重新调 watch_together 开窗。',
+        });
         return;
       }
 
@@ -496,12 +547,8 @@ export function startWatchLoop({
           loop.noSourceSince = 0;
           if (b.ended) {
             // 片尾和换片一样：停表 + 叫醒。模型收个尾、问下一支看什么。
-            stopWatchLoop('video-ended');
-            void wake(loop.ctx, {
-              sessionId: loop.sessionId,
-              text: '[一起看] 视频播完了。跟用户收个尾，或者问下一支看什么 —— '
-                + '用户开了新片之后重新调 watch_together 就会接着陪。',
-            });
+            stopForSource('video-ended', '[一起看] 视频播完了。跟用户收个尾，或者问下一支看什么 —— '
+              + '用户开了新片之后重新调 watch_together 就会接着陪。');
             return;
           }
         } else {
@@ -545,8 +592,10 @@ export function startWatchLoop({
             // 停表之外必须叫醒：钟停了之后就没人再轮询聊天框了，
             // 用户之后说什么都收不到 —— 不叫的话这是一个死胡同。
             stopWatchLoop('idle');
-            void wake(loop.ctx, {
+            void wakeWithRetry({
+              ctx: loop.ctx,
               sessionId: loop.sessionId,
+              wake: wakeSignal,
               text: `[一起看] 看起来停了一会儿（${Math.round(estIdle.pos)} 秒的位置上，`
                 + `${Math.round(idleMs / 60_000)} 分钟没动），我先停了。`
                 + '想继续就说一声，重新调 watch_together 就接着陪。',
@@ -614,7 +663,7 @@ export function startWatchLoop({
         if (missing.length > 0) {
           loop.refillAskedAt = tNow;
           const list = missing.map((m) => `${mmss(m.from)}–${mmss(m.to)}`).join('、');
-          const w = await wake(loop.ctx, {
+          const w = await wakeSignal(loop.ctx, {
             sessionId: loop.sessionId,
             text: `[一起看·补词] 台词库存不够了：${list} 还没有词（现在 ${mmss(estR.pos)}）。`
               + '先用 watch_together({ speakNow: true }) 看画面，再用 lines: [...] 补上。',
@@ -650,7 +699,17 @@ export function startWatchLoop({
         const voiceBusy = speechSubscribers() > 0
           && (tNow < (loop.voiceBusyUntil ?? 0) || tNow < replyBusyUntil());
         const est = estimate(loop.anchor, tNow);
-        if (!voiceBusy && est.why !== 'paused' && Number.isFinite(est.pos)) {
+        // **位置不可信就不许念**（2026-10-31 实报："关了浏览器还在念台词"）。
+        //
+        // 以前这里只排除了 `paused`，剩下的全放行 —— 而 `estimate()` 在读数停住时
+        // 会**按时钟往前推**（`extrapolated`），推太久再降级成 `unknown`，但**两种情况的 `pos` 都是有限的**。
+        // 于是关掉浏览器/切走页签之后，钟还在一点点往前走，把后面的台词一句句念出来。
+        //
+        // 现在的口径：`fresh`（刚读过）照常；`extrapolated` 只在"没超过 SAFETY_AFTER_MS"时允许
+        // （那是正常的两拍间隙，不该为此晚 10 秒才说话）；`unknown` 一句都不发。
+        const positionUsable = est.confidence === 'fresh'
+          || (est.confidence === 'extrapolated' && est.staleMs <= SAFETY_AFTER_MS);
+        if (!voiceBusy && est.why !== 'paused' && positionUsable && Number.isFinite(est.pos)) {
           const segNow = plan.segmentAt(est.pos);
           const line = await dueLine(loop.input, est.pos, {
             size: segNow.size,
@@ -684,7 +743,9 @@ export function startWatchLoop({
         if (gap >= loop.speakEvery * 1000 && within && est.why !== 'paused') {
           loop.lastSpeakAt = tNow;
           const seg = plan.segmentAt(est.pos);
-          const w = await wake(loop.ctx, {
+          // 高频模式**本来就是"叫我"**（模型显式开着 speakEvery），所以走真叫醒，
+          // 不该被 `wake: false`（那是段末打扰的开关）连带关掉。
+          const w = await wakeSignal(loop.ctx, {
             sessionId: loop.sessionId,
             text: `[一起看·高频] 现在 ${mmss(est.pos)}（这一段 ${mmss(seg.from)}–${mmss(seg.to)}）。`
               + '调 watch_together({ speakNow: true }) 拿当前画面，然后说一句。',
@@ -713,7 +774,7 @@ export function startWatchLoop({
         if (unknownFor >= ASK_AFTER_MS && tNow - (loop.askedAt ?? 0) >= ASK_COOLDOWN_MS) {
           loop.askedAt = tNow;
           const stale = Math.round((r.staleMs ?? 0) / 1000);
-          const w = await wake(loop.ctx, {
+          const w = await wakeSignal(loop.ctx, {
             sessionId: loop.sessionId,
             text: `[一起看] 读不到你的播放进度了（浏览器最后一次读到位置是在 ${stale} 秒前）。`
               + '问一句"你看到几分几秒了"，拿到答复就带 cursor 再调 watch_together。',
