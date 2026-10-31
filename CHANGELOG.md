@@ -5,11 +5,29 @@ This package starts its own version line at `0.0.7` — it is not a continuation
 
 ## [Unreleased]
 
-Two rounds of real-watch reports (2026-10-31 evening). The common shape: the plugin knew something,
-and the model (or the user) never found out.
+Three rounds on 2026-10-31. The through-line: the plugin knew something, and the model (or the user)
+never found out — plus one window that needed to look like something people want to keep on screen.
 
-Round two — "stop when the signal says stop". Round one — "speak before you look", "notice a new
-film", "don't stack two sentences", "don't wait a minute for a video we can already identify".
+### The floating window, rebuilt
+
+"这个悬浮窗太丑了" — fair. The old one was a borderless frame with a `Text` widget that painted
+role-coloured **full-width stripes**, on a window Windows stretched from 96 dpi, reading the whole
+`chat.jsonl` every 200 ms.
+
+- **Real bubbles.** Each message is its own rounded card (Canvas background + wrapped Label), sized
+  to its content: script lines in amber with a left rule, the model in slate, the user's own words
+  right-aligned in blue. Above each one, a muted line saying who and when (`台词 04:12.3` for a
+  scripted line, `我 21:16` for chat).
+- **Per-monitor DPI awareness** before the window exists, and every size/font derived from the real
+  scale factor. Unaware Tk windows are bitmap-stretched at 125/150%, which reads as "blurry and wrong".
+- **Rounded window** via `-transparentcolor` (Windows only; falls back to square corners), a 1 px
+  border, and a hand-drawn 6 px scrollbar that only appears when the list actually scrolls.
+- **Does not steal focus.** `focus_force()` at startup meant pressing space to pause the video landed
+  in the chat box; now the entry only takes focus inside the window.
+- **Does not fight your scrolling.** New lines auto-scroll only if you were already at the bottom.
+- **Incremental read.** Only the bytes appended since the last tick are parsed, and the first paint
+  replays just the last 60 entries.
+- Resizable from the bottom-right grip; position and size persist in `~/.dsh/watch-window.json`.
 
 ### Stop when the signal says stop: hangup, dead source, switched video
 

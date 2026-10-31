@@ -398,12 +398,26 @@ watch_together({ say: "你看这条，鱼比人还紧张。" })
 
 ### 悬浮窗（不用浏览器）
 
-`examples/floating-chat/window.py` 是个**真·独立悬浮窗**：无边框、置顶、半透明、
-按住顶部拖动、回车发送、Esc 关闭。用标准库 tkinter，不装任何第三方包。
+`examples/floating-chat/window.py` 是个**真·独立悬浮窗**：无边框圆角、置顶、
+按住顶部拖动、右下角可拉伸、回车发送、Esc 关闭。用标准库 tkinter，不装任何第三方包。
 
 ```bash
 pythonw examples/floating-chat/window.py     # 无控制台
 ```
+
+它长这样：剧本台词是琥珀色气泡（左边一道竖线，表示"这句会被念出来"）、
+模型插话是浅灰气泡、你说的话是蓝色气泡靠右，每条上面一行小字写着谁、什么时候。
+
+几个有意为之的细节：
+
+| 行为 | 为什么 |
+|---|---|
+| 按真实 DPI 建窗（`SetProcessDpiAwareness`） | 不声明的话 Windows 会把窗口当 96dpi 位图拉伸，高分屏上整窗发虚 |
+| 只做内部焦点，不抢系统焦点 | 窗口一开就把焦点从浏览器抢走的话，敲空格想暂停会打进聊天框 |
+| 往上翻历史时新消息不把你拽回底部 | 只有本来就贴着底才自动滚 |
+| 关窗时记住位置和大小（`~/.dsh/watch-window.json` 的 `geometry`） | 下次不用重新摆 |
+| 增量读 `chat.jsonl`（开场只回放最后 60 条） | 以前每 200ms 全量解析，两小时一场几千条会越来越慢 |
+| 圆角外的像素用 `-transparentcolor` 抠掉 | tkinter 没有圆角窗口；取不到这个能力就老实退成直角 |
 
 > **一定要用带 tkinter 的 Python**：Windows 商店版自带；python.org 官方安装包勾上 tcl/tk 也有。
 > WorkBuddy 托管的那份**没有** tkinter。
