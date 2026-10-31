@@ -51,10 +51,19 @@ export function readChat(env = process.env) {
 export function appendChat(role, text, meta = {}, env = process.env) {
   const dir = cacheDir(env);
   try { mkdirSync(dir, { recursive: true }); } catch { /* 已存在 */ }
+  // `at` 必须是**严格递增**的序号：同一毫秒里连写两条（用户手快/程序连发）时，
+  // 两条会拿到相同的 `at`，而"新消息"的判据是 `at > 已读位置` —— 后一条就永远不算新，
+  // 直接丢掉（实测：`test/chat.test.mjs` 里连说两句，第二句收不到）。
+  let at = Date.now();
+  try {
+    const rows = readChat(env);
+    const lastAt = Number(rows[rows.length - 1]?.at);
+    if (Number.isFinite(lastAt) && at <= lastAt) at = lastAt + 1;
+  } catch { /* 读不到就按当前时间 */ }
   const entry = {
     role,
     text: String(text).slice(0, 2000),
-    at: Date.now(),
+    at,
     ...(Number.isFinite(meta?.t) ? { t: +Number(meta.t).toFixed(2) } : {}),
     ...(meta?.say === true ? { say: true } : {}),
   };
@@ -176,18 +185,40 @@ export function appendAssistantSay(text, { t = null, env = process.env } = {}) {
  * "回完话再来取剩下的"就变成"永远取不到" —— 那是丢用户的话。
  */
 export function makeChatWatcher(env = process.env) {
-  let seen = readChat(env).length;
+  // **不能按"条数"分页**：chat.jsonl 会被就地清理/重启窗口后重写，条数一缩，
+  // `seen` 就永远大于文件行数 —— watcher 从此聋掉，用户在窗口里说的话再也没人接。
+  // （2026-10-31 现场：用户 19:02:53 说了一句，19:03:00 和 19:03:16 台词还在正常念，
+  //  说明钟是活的，唯独这句插话没人管。）
+  //
+  // 改成按**消息自带的墙钟时间**（`at`，毫秒）分页：时间戳单调递增，跟文件行数无关。
+  // 基线在**创建那一刻**定下（不是第一次 poll）—— 建好之后写进来的才算新消息。
+  const stamp = (m) => {
+    const n = Number(m?.at);
+    return Number.isFinite(n) ? n : null;
+  };
+  const baseAt = () => {
+    let base = 0;
+    for (const m of readChat(env)) {
+      const t = stamp(m);
+      if (m?.role === 'user' && t !== null && t > base) base = t;
+    }
+    return base;
+  };
+  let lastAt = baseAt();
+
   return function poll() {
     const all = readChat(env);
-    if (all.length <= seen) return null;
-    const fresh = all.slice(seen);
-    const k = fresh.findIndex((m) => m.role === 'user' && String(m.text ?? '').trim());
-    if (k < 0) {
-      seen = all.length;          // 这批里没有用户消息（都是台词/插话）：全部读过
-      return null;
-    }
-    const u = fresh[k];
-    seen += k + 1;                // 只消费到这条为止；后面可能还有用户消息，留着下次
+    const fresh = all.filter((m) => {
+      if (m?.role !== 'user') return false;
+      if (!String(m.text ?? '').trim()) return false;
+      const t = stamp(m);
+      // 没写 at 的老消息永远不报（否则会重放历史）
+      return t !== null && t > lastAt;
+    });
+    if (fresh.length === 0) return null;
+    fresh.sort((a, b) => stamp(a) - stamp(b));
+    const u = fresh[0];
+    lastAt = stamp(u);            // 只消费到这一条，后面的留着下次报
     return { text: u.text, at: u.at };
   };
 }
