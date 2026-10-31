@@ -37,7 +37,8 @@
     "./voice-adapter": "./src/voice-adapter.js"
   },
   "bin": {
-    "dsh-watch": "./bin/watch.mjs"
+    "dsh-watch": "./bin/watch.mjs",
+    "dsh-watch-lines": "./bin/lines.mjs"
   },
   "files": [
     "src",

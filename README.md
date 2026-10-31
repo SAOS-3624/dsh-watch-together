@@ -337,6 +337,31 @@ node bin/watch.mjs cue '[[字幕from,"台词"]]'
 
 `node bin/watch.mjs help` 就是完整用法。
 
+## 写台词的两条路（省 token）
+
+写一段台词的代价，全在"看图"上：一张 storyboard 400~700 vision token。
+但台词真正需要的只有两件事 —— **这段在说什么**、**那句话在第几秒**，字幕里都有，而且是纯文本。
+
+```bash
+# 1) 纯文本候选：8~10 句 + 每句真实起始秒，一张图都不解码
+node bin/lines.mjs scan --input <url|路径> --from 180 --size 180
+
+# 2) 直接写进去（秒数可以写 195，也可以写 03:15）
+node bin/lines.mjs set --input <url> --from 180      --at 200 --text "…" --at 250 --text "…"
+
+# 3) 完全不经过模型：按打分选 3 句写进稿子（只是复述字幕，不会"评论"）
+node bin/lines.mjs auto --input <url> --from 180 --size 180 --count 3
+
+node bin/lines.mjs list --input <url>     # 哪些段已经写过、各几句
+node bin/lines.mjs cues --input <url> --from 180 --size 60   # 原始字幕，排查用
+```
+
+字幕会缓存在 `<cache>/subs-<sessionKey>.json`，同一支片子只抓一次；
+`--refresh` 强制重抓，`--quiet` 关掉头部那行说明。
+
+**代价对比（每段）**：看图写 ≈ 1,200~1,900 token，`scan` + `set` ≈ 300 token，
+`auto` ≈ 0（脚本自己挑）。剧情片别用 `auto` —— 它只会把字幕复述一遍。
+
 ## 它不是全片概览
 
 - 一次只看一段，看完再下一段
