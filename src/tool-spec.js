@@ -9,6 +9,8 @@
  * handler 读了也白读（今天一整天的 PR 都是这个病）。
  */
 
+import { DEFAULT_SEGMENT } from './batches.js';
+
 export const WATCH_TOOL_NAME = 'watch_together';
 
 /**
@@ -400,7 +402,9 @@ export function validateWatchArgs(args) {
   if (args?.cursor !== undefined && !(args.cursor >= 0)) problems.push('cursor must be >= 0');
   if (args?.segment !== undefined && !(args.segment >= 20)) problems.push('segment must be >= 20 seconds');
   if (args?.lead !== undefined && !(args.lead >= 0)) problems.push('lead must be >= 0');
-  const seg = args?.segment ?? 120;
+  // 这里必须和 handler / batches 的默认段长一致：默认是 300，不是 120。
+  // 写 120 会把合法的 lead:150（默认段长 300 时完全没问题）误判成非法。
+  const seg = args?.segment ?? DEFAULT_SEGMENT;
   const lead = args?.lead ?? 15;
   if (lead >= seg) problems.push('lead must be smaller than segment, otherwise every call delivers immediately');
   if (args?.cells !== undefined && (!Number.isInteger(args.cells) || args.cells < 1 || args.cells > 9)) {
@@ -436,7 +440,7 @@ export function validateWatchArgs(args) {
         problems.push(`lines[${i}].from must be >= 0`);
       } else if (typeof l?.at === 'string') {
         if (l.at.trim() === '') problems.push(`lines[${i}].at is an empty string`);
-      } else if (l?.at !== undefined && !(Number(l.at) >= Number(l.from))) {
+      } else if (l?.at !== undefined && l?.at !== null && !(Number(l.at) >= Number(l.from))) {
         problems.push(`lines[${i}].at (${l.at}) must be >= its from (${l.from})`);
       }
     });
