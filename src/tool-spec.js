@@ -234,7 +234,8 @@ export function watchToolSpec() {
       lines: {
         type: 'array',
         items: { type: 'json' },
-        description: 'Pre-written lines: [{ from: <segment start in seconds>, at: <second this line belongs to>, '
+        description: '**NO SPOILERS.** You are pretending to watch this live with the human, in real time. You have already seen the frames of the WHOLE segment, but the human has only reached the playback position reported in the result (`now at HH:MM`). Never describe, hint at or set up anything that has not happened yet on their screen: no "接下来", "下一分钟", "后面会", "正片才", "你注意看等下". A line whose `at` is ahead of that position must stay about the moment it plays, not about what it leads to. If you catch yourself narrating the future, you are spoiling the video - that is the one thing this tool must never do. ' +
+          'Pre-written lines: [{ from: <segment start in seconds>, at: <second this line belongs to>, '
           + 'text: "<one sentence>" }]. '
           + '"at" is the moment on the playback clock that this sentence describes — the script speaks the line '
           + 'when the playhead reaches it. Pin it to the moment the picture was actually taken: use the cell\'s '
@@ -283,6 +284,14 @@ export function watchToolSpec() {
         type: 'integer',
         description: 'Per-call CDP debug port for the browser holding the video (e.g. 9333). ' +
           'Overrides ~/.dsh/video.json and DSH_BROWSER_DEBUG_PORT for this call.',
+      },
+      open: {
+        type: 'boolean',
+        description: 'Re-open the floating window after the user closed it. The user closing that '
+          + 'window means "I am done watching": the plugin remembers it and will NOT re-open on the '
+          + 'next call. Pass `open: true` ONLY when the human explicitly asks to start again '
+          + '("重新打开悬浮窗" / "接着看"). Without it, a closed window stays closed and the watch is '
+          + 'over - do not keep calling this tool to bring it back.',
       },
       say: {
         type: 'string',

@@ -103,6 +103,39 @@ export function watchPath(env = process.env) {
   return join(cacheDir(env), 'watch.json');
 }
 
+/**
+ * "用户自己把悬浮窗关了" 这件事要**记住**。
+ *
+ * 关窗是他表达"我不看了"的方式。可下一轮工具调用又按"新开一场"处理，把窗口顶回来
+ * —— 等于把用户的动作撤销掉（2026-10-31 实报：「我每次关了悬浮窗…他又重新拉起来悬浮窗」）。
+ *
+ * 所以：关窗时落一条 `hangup`，之后**只有用户明确要求重开**（工具参数 `open: true`，
+ * 或换了一支片子）才清掉它。
+ */
+export async function markHungUp(input, env = process.env) {
+  const st = await loadWatch(env);
+  st.hangup = { key: sessionKey(input), at: Date.now() };
+  await saveWatch(st, env);
+  return st.hangup;
+}
+
+/** 这个 input 是不是"被用户挂断、且还没说要看"的状态 */
+export async function isHungUp(input, env = process.env) {
+  const st = await loadWatch(env);
+  const h = st.hangup;
+  if (!h?.key) return false;
+  return h.key === sessionKey(input);
+}
+
+/** 清掉挂断记录（用户明确要求重开时） */
+export async function clearHungUp(env = process.env) {
+  const st = await loadWatch(env);
+  if (!st.hangup) return false;
+  delete st.hangup;
+  await saveWatch(st, env);
+  return true;
+}
+
 export async function loadWatch(env = process.env) {
   try {
     const state = JSON.parse(await readFile(watchPath(env), 'utf8'));

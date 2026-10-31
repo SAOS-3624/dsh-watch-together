@@ -685,6 +685,9 @@ export async function runWatchPass(args, deps) {
       + '3) anything else. A delivery without lines is NOT finished.',
     `[together-watch] The user just watched ${mmss(segStart)}–${mmss(segStart + size)} (now at ${mmss(cursor)}).`,
     'They watched it themselves — do NOT retell the plot.',
+    `**NO SPOILERS**: they are only at ${mmss(cursor)} — anything after that is still in your hands. `
+      + 'Never say 接下来 / 下一分钟 / 后面会 / 正片才 / 等下注意看; write only about what is on their screen. '
+      + 'The sheet shows the whole segment because you need it to write lines, NOT as permission to narrate ahead.',
     'Default: one sentence about what changed or what is worth noticing, then stop.',
     'Say more only if they ask, or if something genuinely deserves one callout.',
     'If nothing is worth saying, say almost nothing — silence is a valid answer,',

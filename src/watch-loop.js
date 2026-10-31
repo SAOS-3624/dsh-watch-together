@@ -25,6 +25,7 @@ import { emitSpeech, speechSubscribers } from './voice.js';
 import { consumeLine, dueLine, hasLine, loadLine, WATCH_LEAD } from './watch.js';
 import { mmss } from './time.js';
 import { appendChat } from './chat-store.js';
+import { markHungUp } from './watch-state.js';
 
 /**
  * 叫醒失败要**看得见**。
@@ -346,6 +347,7 @@ export function startWatchLoop({
           sessionId: loop.sessionId,
           text: '[一起看] 悬浮窗被关掉了，陪看已自动停止。要看就再说一声，我会重新开窗接着跟。',
         });
+        try { await markHungUp(loop.input); } catch { /* 记不住也不影响停 */ }
         stopWatchLoop('widget-closed');
         return;
       }

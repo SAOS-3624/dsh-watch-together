@@ -89,7 +89,12 @@ export async function execute(ctx, args, {
     const st0 = loopStatus();
     const sameWatch = st0.active && Boolean(args.input)
       && sessionKey(st0.input ?? '') === sessionKey(args.input);
-    surface = await prepareInputSurface({ start: !sameWatch });
+    surface = await prepareInputSurface({
+      start: !sameWatch,
+      input: typeof args.input === 'string' ? args.input : null,
+      // 用户明确要求重开才清掉"他自己关过窗"的记录（见 watch-state 的 hangup）
+      reopen: args.open === true,
+    });
     widgetNote = surface.note;
   }
 

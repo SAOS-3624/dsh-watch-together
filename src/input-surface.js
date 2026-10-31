@@ -25,6 +25,7 @@ import {
 } from './chat.js';
 import { floatingWindowAlive, openFloatingWindow } from './floating-window.js';
 import { loopStatus, stopWatchLoop } from './watch-loop.js';
+import { clearHungUp, isHungUp, markHungUp } from './watch-state.js';
 import { attachConfiguredVoice, attachedAdapters, configuredVoiceAdapter } from './voice.js';
 
 /**
@@ -45,8 +46,8 @@ export function createInputSurface() {
    * 为什么要区分：用户的原话是"我刚才关了悬浮窗又自己弹出来了"。关窗是他表达
    * "我不看了"的方式，下一次调用立刻又把窗口顶回来，等于把他的动作撤销了。
    */
-  return ({ start = false } = {}) => {
-    prepared ??= open({ start });
+  return ({ start = false, input = null, reopen = false } = {}) => {
+    prepared ??= open({ start, input, reopen });
     return prepared;
   };
 }
@@ -69,7 +70,7 @@ async function ensureVoice() {
 
 const tail = (p) => String(p).split(/[\\/]/).filter(Boolean).pop() || String(p);
 
-async function open({ start = false } = {}) {
+async function open({ start = false, input = null, reopen = false } = {}) {
   // 0) 声音：每次开始陪看都确认一次 —— 不挂的话台词只会写进流、一句也不念
   const voice = await ensureVoice();
   const voiceNote = voice.ok
@@ -82,8 +83,27 @@ async function open({ start = false } = {}) {
   //   · 新开一场（start）→ 窗口不在就开
   //   · 同一场中途调用 → 窗口不在就**判定被关**：停钟、返回"已中止"，绝不偷偷重开
   const running = loopStatus();
+  // **用户关过窗就不要再顶回来** —— 哪怕这一轮看起来像"新开一场"。
+  // 只有明确要求重开（`open: true`）才清掉这条记录。
+  if (input) {
+    const hung = await isHungUp(input).catch(() => false);
+    if (hung) {
+      if (reopen) {
+        await clearHungUp().catch(() => {});
+      } else if (!floatingWindowAlive()) {
+        return {
+          windowOpen: false,
+          closedByUser: true,
+          note: '\n[widget] 悬浮窗是你自己关掉的，我没有重开 —— 陪看就停在这儿。'
+            + '想接着看就说一声「重新打开悬浮窗」，我再开。'
+            + `\n[voice] ${voiceNote}。`,
+        };
+      }
+    }
+  }
   if (!start && running.active && !floatingWindowAlive()) {
     stopWatchLoop('widget-closed');
+    if (input) await markHungUp(input).catch(() => {});
     return {
       windowOpen: false,
       closedByUser: true,
