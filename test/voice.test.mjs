@@ -9,7 +9,7 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 
 import {
-  __resetSpeech, emitSpeech, lastSpeech, onSpeech, speechEvents, speechSubscribers,
+  __resetSpeech, emitSpeech, lastSpeech, onSpeech, speechEvents, speechObservers, speechSubscribers,
 } from '../src/voice.js';
 
 test('没有订阅者：emitSpeech 是空操作（这是零依赖路径）', () => {
@@ -178,6 +178,59 @@ test('attach：适配器自己抛错也只是没声音，不算挂上', async ()
     assert.match(r.reason, /attach failed: no engine/);
     assert.deepEqual(attachedAdapters(), []);
   } finally {
+    await rm(dir, { recursive: true, force: true });
+  }
+});
+
+test('attach：先订阅再抛错时，订阅必须回滚（否则循环以为有人会念）', async () => {
+  __resetSpeech();
+  const dir = await mkdtemp(join(tmpdir(), 'voice-rollback-'));
+  const file = join(dir, 'half.mjs');
+  await writeFile(file, 'export function attach(api) { api.onSpeech(() => {}); throw new Error("engine died"); }\n', 'utf8');
+  try {
+    const r = await loadVoiceAdapter(file);
+    assert.equal(r.ok, false);
+    assert.match(r.reason, /attach failed: engine died/);
+    assert.equal(speechSubscribers(), 0, '失败挂载不能留下会出声的订阅');
+    assert.deepEqual(attachedAdapters(), []);
+  } finally {
+    await rm(dir, { recursive: true, force: true });
+  }
+});
+
+test('detachAdapters 只卸适配器，不误删展示层订阅', async () => {
+  __resetSpeech();
+  const display = onSpeech(() => {}, { voice: false });
+  const dir = await mkdtemp(join(tmpdir(), 'voice-detach-'));
+  const file = join(dir, 'adapter.mjs');
+  await writeFile(file, 'export function attach(api) { return api.onSpeech(() => {}); }\n', 'utf8');
+  try {
+    const r = await loadVoiceAdapter(file);
+    assert.equal(r.ok, true, JSON.stringify(r));
+    assert.equal(speechSubscribers(), 1);
+    assert.equal(speechObservers(), 2);
+    await detachAdapters();
+    assert.equal(speechSubscribers(), 0);
+    assert.equal(speechObservers(), 1, '聊天框/日志订阅者不能被适配器卸载连坐');
+  } finally {
+    display();
+    await rm(dir, { recursive: true, force: true });
+    __resetSpeech();
+  }
+});
+
+test('并发挂载同一个适配器只 attach 一次', async () => {
+  __resetSpeech();
+  const dir = await mkdtemp(join(tmpdir(), 'voice-race-'));
+  const file = join(dir, 'slow.mjs');
+  await writeFile(file, 'export async function attach(api) { await new Promise((r) => setTimeout(r, 15)); return api.onSpeech(() => {}); }\n', 'utf8');
+  try {
+    const [a, b] = await Promise.all([loadVoiceAdapter(file), loadVoiceAdapter(file)]);
+    assert.equal(a.ok, true, JSON.stringify(a));
+    assert.equal(b.ok, true, JSON.stringify(b));
+    assert.equal(speechSubscribers(), 1, '并发加载不能挂出两份订阅');
+  } finally {
+    await detachAdapters();
     await rm(dir, { recursive: true, force: true });
   }
 });
