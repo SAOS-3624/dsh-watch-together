@@ -15,6 +15,7 @@ import { aheadSeconds, loadLatency } from './latency.js';
 import {
   MAX_EXTRAPOLATE_MS, estimate, makeAnchor, shouldSpeak,
 } from './position.js';
+import { chatWatcherShared } from './interrupt.js';
 import { startTicker, wakeSession } from './timer.js';
 import { DEFAULT_LOOKAHEAD, DEFAULT_SEGMENT, describePlan, makePlan, windowFor } from './batches.js';
 import { readBrowserPosition } from 'dsh-video-storyboard/browser-time';
@@ -155,6 +156,12 @@ export function startWatchLoop({
   // 只有真的开过窗才生效（`windowGuard: true` 由 handler 在窗口就绪时传）；
   // 没开窗（环境变量关掉、Python 缺失、或压根不需要插话）时为 false，不会误停。
   windowGuard = false,
+  // **悬浮窗里的插话，永远叫得醒**（默认开）。
+  // 用户的原话："插话能随时插入任何一个箭头对吗" —— 阻塞等待里本来就会 polling，
+  // 但"我思考 / 钟在后台空转"的那段时间没人听。这一项就是补那段：
+  // 钟每一拍顺手看一眼聊天框，有新消息就真的 wake 一次（只针对**用户的插话**，
+  // 不是段末那种"该说话了"的打扰，所以和 `wake: false` 不冲突）。
+  wakeOnChat = true,
 }) {
   const wake = wakeOpt === true
     ? (deps.wake ?? ((c, o) => wakeSession(c, o)))
@@ -176,6 +183,9 @@ export function startWatchLoop({
   const readBrowser = deps.readBrowser ?? ((o) => readBrowserPosition(o));
   // 窗口"还开着吗"也可注入：真机用 pid 判活，测试里给个假的
   const windowAlive = deps.windowAlive ?? floatingWindowAlive;
+  // 插话唤醒走**真**的 followup（不受 `wake: false` 影响）；可注入便于测试
+  const chatWatcher = deps.chatWatcher ?? (() => chatWatcherShared());
+  const chatWake = deps.wakeChat ?? ((c, o) => wakeSession(c, o));
   // 端口来源：显式参数 → ~/.dsh/video.json → 环境变量（桌面版读不到 setx 的 env，所以文件优先）
   // 端口只从调用方传进来（工具层读配置）；库层不隐式读机器配置，否则单测会被本机状态影响
   const browserPort = explicitPort ?? deps.browserPort ?? null;
@@ -281,6 +291,24 @@ export function startWatchLoop({
     everyMs: TICK_MS,
     tick: async () => {
       const tNow = now();
+
+      // 用户插话：模型可能正闲着（不在阻塞等待里），这时候也得把它叫起来回一句。
+      // 用共享 watcher 消费一条就够 —— 它本来就只报"增量"，我这边消费了，
+      // 下一次阻塞等待就不会重复报同一句。
+      if (wakeOnChat && loop.sessionId) {
+        let said = null;
+        try { said = chatWatcher()?.() ?? null; } catch { said = null; }
+        const chatText = String(said?.text ?? '').trim();
+        if (chatText) {
+          note('user said → wake');
+          void chatWake(loop.ctx, {
+            sessionId: loop.sessionId,
+            text: `[一起看] 用户插话：「${chatText.slice(0, 200)}」
+`
+              + '先回这一句（如果还有段欠台词，台词优先）。回完再调 watch_together 接着陪。',
+          });
+        }
+      }
 
       // 每一拍先看窗口还在不在：关掉就别再跟了。
       // 放在读位置之前 —— 窗口没了就没有"插话入口"，继续跟只会占着会话。
