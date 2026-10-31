@@ -82,3 +82,19 @@ test('windowFor: lookahead 为 0 就只要当前段', () => {
   const plan = makePlan({ segment: 300, ramp: [] });
   assert.equal(windowFor(plan, 100, 0).length, 1);
 });
+
+test('超过旧的 512 段上限：10 小时、1 分钟一段仍然定位正确', () => {
+  const plan = makePlan({ segment: 60, ramp: null });
+  const pos = 600 * 60;                       // 第 600 段起点 = 10:00:00
+  const seg = plan.segmentAt(pos);
+  assert.equal(seg.index, 600);
+  assert.equal(seg.from, pos);
+  assert.equal(seg.to, pos + 60);
+  assert.equal(plan.indexAt(pos + 59.9), 600, '段内位置仍落在这一段');
+
+  const next = plan.from(600, 2);
+  assert.deepEqual(next.map((s) => [s.from, s.to]), [[pos, pos + 60], [pos + 60, pos + 120]]);
+
+  const win = windowFor(plan, pos, 120);
+  assert.equal(win[0].from, pos, '余量窗口必须从当前位置开始，不能回到第 512 段');
+});
