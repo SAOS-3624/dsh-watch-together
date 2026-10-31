@@ -38,7 +38,7 @@ ffmpeg / yt-dlp / B 站 cookies / ASR / 浏览器扩展 / 调试端口 / 声音 
 
 | | `dsh-video-storyboard` | **`dsh-watch-together`（本包）** |
 |---|---|---|
-| 版本 | **0.5.x** | **0.1.0** |
+| 版本 | **0.5.x** | **0.0.7** |
 | 工具 | `video_storyboard` / `video_zoom` / `video_probe` / `video_locate` | `watch_together` |
 | 干什么 | 把一段视频变成**一张可引用的宫格**（一次性、全片或指定窗口） | 跟着播放进度**一段一段看下去** |
 | 依赖方向 | 不依赖陪看（`storyboard → watch` = 0 处） | **依赖视频识别**，单向 |
@@ -54,7 +54,7 @@ ffmpeg / yt-dlp / B 站 cookies / ASR / 浏览器扩展 / 调试端口 / 声音 
 
 本包依赖 `dsh-video-storyboard@^0.5.0`。**这是范围，不是等号**：semver 对 0.x 的规定是
 `^0.5.0` = `>=0.5.0 <0.6.0`，所以 storyboard 发 0.5.5、0.5.9 都不必动本包。
-两个包的版本号本来就不同（本包 `0.1.0`，storyboard `0.5.4`），**没有"对齐"这回事**。
+两个包的版本号本来就不同（本包 `0.0.7`，storyboard `0.5.4`），**没有"对齐"这回事**。
 
 范围定在哪，取决于本包到底从它身上拿了什么：**7 个子路径、15 个导出**，
 全部列在 [`test/dep-contract.test.mjs`](test/dep-contract.test.mjs) 里。
@@ -516,4 +516,4 @@ node scripts/install-dev.mjs           # 把本包同步进 DSH profile（副本
 
 ## 许可
 
-MIT。见 [LICENSE](LICENSE)。
+Apache License 2.0 —— 见 [LICENSE](LICENSE)（全文）与 [NOTICE](NOTICE)（这个项目**不做什么**：不托管视频、不上传位置、不绕过 DRM、不内置 TTS 引擎）。

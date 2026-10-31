@@ -1,9 +1,18 @@
 # Changelog
 
 All notable changes to **dsh-watch-together** are documented here.
-This package starts its own version line at `0.1.0` — it is not a continuation of `dsh-video-storyboard`.
+This package starts its own version line at `0.0.7` — it is not a continuation of `dsh-video-storyboard`.
 
-## [Unreleased]
+## [0.0.7] — 2026-10-31 (first release)
+
+The first published version. One tool, `watch_together`: it follows the user's real playback
+position, hands the model one storyboard + transcript per segment just before that segment ends,
+and speaks the scripted lines at the second they belong to.
+
+**Licence: Apache-2.0** (the package was developed under MIT and switched before the first
+public release, to match `dsh-video-storyboard`). `LICENSE` is the full text, `NOTICE` states
+what the project deliberately does **not** do — no hosted video, no uploaded position, no DRM or
+paywall bypass, no bundled TTS engine.
 
 ### Repo hygiene — the extension's manifest and icons were never committed
 
@@ -551,9 +560,10 @@ would have dragged that choice into everyone's install. It now falls back to the
 (e.g. `"voice": "zh-CN-XiaoxuanNeural"`). Nothing about the voice ships in the package — you mount
 the adapter via `~/.dsh/voice.json` (or `DSH_VOICE_ADAPTER`) and pick the voice yourself.
 
-## [0.1.0] — 2026-10-30
+## Earlier — 0.1.0 draft, never published (2026-10-30)
 
-First release as a standalone plugin. The feature existed inside `dsh-video-storyboard` 0.4.x as
+The first cut as a standalone plugin. It was not published under this number; the version line now
+starts at 0.0.7, so this section is kept purely as a record of how the feature set got here. The feature existed inside `dsh-video-storyboard` 0.4.x as
 `src/watch/`; it is now its own package with its own entry point, its own version, and a one-way
 dependency on `dsh-video-storyboard`.
 

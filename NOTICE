@@ -1,0 +1,52 @@
+# NOTICE
+
+Copyright 2026 SAOS-3624
+
+Licensed under the Apache License, Version 2.0 (the "License");
+you may not use this file except in compliance with the License.
+You may obtain a copy of the License at
+
+    http://www.apache.org/licenses/LICENSE-2.0
+
+Unless required by applicable law or agreed to in writing, software
+distributed under the License is distributed on an "AS IS" BASIS,
+WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+See the License for the specific language governing permissions and
+limitations under the License.
+
+## What this project does NOT do
+
+The Apache-2.0 grant above covers **the source code of this project**, and nothing else.
+On top of that, the project deliberately stays out of several areas:
+
+- **It does not host, mirror, proxy or distribute any video.** Nothing is uploaded to a server.
+  The only thing it learns about your playback is the number `<video>.currentTime` reports,
+  and it stays in a local file (`position.json`) that expires in five seconds.
+- **The browser extension does not read page content.** It sends `pos / dur / title / url /
+  paused / ended` for the **visible tab only**, to `http://127.0.0.1:9377`. No analytics, no
+  remote endpoint, no page text, no cookies.
+- **No DRM circumvention, no paywall or region-lock bypass.** It never fetches the video stream
+  itself to watch it — it watches whatever your own browser is already playing.
+- **No TTS engine is bundled.** The example adapter shells out to whatever `edge-tts` /
+  `ffplay` / system speech engine you installed. Voice names, availability and the terms of use
+  of those services belong to their providers (e.g. Microsoft Edge's online voices).
+- **You are responsible for what you point it at.** Downloading subtitles or a video for
+  storyboarding goes through your own `yt-dlp` and your own credentials.
+
+## Third-party components
+
+Nothing third-party is vendored into this repository. At runtime the package *uses*, but does
+not redistribute:
+
+| Component | How it is used | Licence |
+|---|---|---|
+| `dsh-video-storyboard` | npm dependency (decode, storyboard, transcript) | Apache-2.0 |
+| `ffmpeg` / `ffplay` | external binaries on your `PATH` | LGPL/GPL (your build) |
+| `yt-dlp` | external binary, only for fetching subtitles/media | Unlicense |
+| `edge-tts` | external binary, only by the example voice adapter | GPL-3.0 |
+| Python + tkinter | only for the optional floating window | PSF |
+
+## Documentation media
+
+The extension icons under `extension/icons/` were generated for this project. No third-party
+footage, model weights or binaries are redistributed in this repository.

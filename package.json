@@ -1,6 +1,6 @@
 {
   "name": "dsh-watch-together",
-  "version": "0.1.0",
+  "version": "0.0.7",
   "description": "Watch a video together with a text-only agent: follow the user's real playback position, hand over one segment at a time just before it ends, and keep a single text stream of scripted lines, interjections and the user's replies.",
   "keywords": [
     "dsh",
@@ -24,7 +24,7 @@
     "url": "git+https://github.com/SAOS-3624/dsh-watch-together.git"
   },
   "author": "SAOS-3624",
-  "license": "MIT",
+  "license": "Apache-2.0",
   "type": "module",
   "main": "./src/index.js",
   "exports": {
@@ -53,7 +53,8 @@
     "dsh.plugin.json",
     "README.md",
     "CHANGELOG.md",
-    "LICENSE"
+    "LICENSE",
+    "NOTICE"
   ],
   "engines": {
     "node": ">=20"

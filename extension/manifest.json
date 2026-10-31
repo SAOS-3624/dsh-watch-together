@@ -1,7 +1,7 @@
 {
   "manifest_version": 3,
   "name": "陪看位置桥 (Watch Together)",
-  "version": "0.1.0",
+  "version": "0.0.7",
   "description": "把自己浏览器里正在播的视频进度，报给本机的陪看插件。装一次，之后正常开浏览器就行。",
   "author": "SAOS-3624",
   "homepage_url": "https://github.com/SAOS-3624/dsh-watch-together",
