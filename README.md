@@ -178,7 +178,8 @@ watch_together({ ramp: [] })              // 全程等长，不要阶梯
 装了之后：你正常打开 Edge 播 B 站，插件就能看到你在第几秒。**不用开专用窗口，不用配端口。**
 
 > **扩展上报什么**：只有当前可见标签页的 `currentTime / duration / title / url / paused`，
-> POST 到 `127.0.0.1:9377`。不读页面内容、不发外网。源码就 76 行：[`extension/content.js`](extension/content.js)。
+> POST 到 `127.0.0.1:9377`。不读页面内容、不发外网。源码一共 170 行：
+> [`extension/content.js`](extension/content.js)（读）+ [`extension/background.js`](extension/background.js)（发）。
 
 > 插件**不会自己开浏览器**（这条老路 2026-10-31 已删）：多开一个窗口并不能让用户正在看的
 > 那一页报出位置。读不到就问一句「你看到几分几秒了」。
@@ -319,7 +320,7 @@ const off = onSpeech(async ({ state, text }) => {
 
 ```json
 // ~/.dsh/voice.json
-{ "adapter": "D:/deepseek/3-Life/dsh-watch-together/examples/voice-edge-tts/index.mjs" }
+{ "adapter": "<你的路径>/dsh-watch-together/examples/voice-edge-tts/index.mjs" }
 ```
 
 或者环境变量 `DSH_VOICE_ADAPTER=<同样的路径>`。插件启动时 `import()` 它，挂不上只写一行 warn，

@@ -38,7 +38,7 @@ test('别的站：去掉 query/hash，保留 host + 路径', () => {
 
 test('本地文件只看文件名：不同写法算同一支', () => {
   assert.equal(sessionKey('D:\\deepseek\\3-Life\\movie.mp4'), 'movie.mp4');
-  assert.equal(sessionKey('D:/deepseek/3-Life/movie.mp4'), 'movie.mp4');
+  assert.equal(sessionKey('D:/films/movie.mp4'), 'movie.mp4');
   assert.equal(sessionKey('movie.mp4'), 'movie.mp4');
 });
 

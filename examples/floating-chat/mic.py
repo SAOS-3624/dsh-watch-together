@@ -76,9 +76,22 @@ def cache_dir():
 
 CHAT_FILE = os.path.join(cache_dir(), "chat.jsonl")
 
+def watch_out_dir():
+    """和 `bin/watch.mjs` 用**同一套默认值**。
+
+    `WATCH_OUT` 优先，否则 `$DSH_HOME/watch/out`（`DSH_HOME` 默认 `~/.dsh`）。
+    以前这里写死了作者的工作区路径：别人装上永远找不到那个文件，
+    于是"静音窗口"形同不存在 —— 麦克风会把 TTS 自己的声音当用户说话（无限自激）。
+    """
+    explicit = os.environ.get("WATCH_OUT") or os.environ.get("DSH_WATCH_OUT")
+    if explicit:
+        return explicit
+    home = os.environ.get("DSH_HOME") or os.path.join(os.path.expanduser("~"), ".dsh")
+    return os.path.join(home, "watch", "out")
+
+
 # TTS 占用窗口：say / cue 念台词前会写这个文件，窗口内的音频一律丢弃
-QUIET_FILE = os.environ.get("DSH_QUIET_FILE") or os.path.join(
-    os.environ.get("DSH_WATCH_OUT") or "D:/deepseek/3-Life/.tmp/watch", "quiet-until.json")
+QUIET_FILE = os.environ.get("DSH_QUIET_FILE") or os.path.join(watch_out_dir(), "quiet-until.json")
 
 
 def append_user(text):

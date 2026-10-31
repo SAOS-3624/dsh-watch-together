@@ -21,7 +21,7 @@
  *   - 评论"某句话/信息点" → at 用那句字幕的 `from`（seg 输出的 TIMELINE 里就是）
  *   - 宁可晚 2 秒，不能早 2 秒。早了就是剧透，用户会当场抓。
  *
- * 环境：端口 9333（9222 被别的应用占着）；cookie 文件见 COOKIES；产物落 .tmp/watch。
+ * 环境：端口 9333（9222 被别的应用占着）；cookie 见 ~/.dsh/video.json；产物落 ~/.dsh/watch/out（WATCH_OUT 可覆盖）。
  */
 import { execFile, execFileSync, spawn } from 'node:child_process';
 import { createHash } from 'node:crypto';
@@ -71,16 +71,25 @@ const STORYBOARD = (() => {
 
 // 下面这三个默认值**只有这个 CLI 用得到**，插件本体（watch_together）完全不依赖它们。
 //
-// 规矩：`WATCH_*` 环境变量最优先；没设就看作者本机那套布局在不在（在就沿用，别人机器上不存在，
-// 自然落到 `~/.dsh/watch`）；最后才是 `~/.dsh/watch`。
-// 以前这里写死 `D:/deepseek/3-Life`，别人装上会去一个不存在的目录里找 cookie、往那儿写图。
-const LEGACY_WORK = 'D:/deepseek/3-Life';
-const WORK = process.env.WATCH_WORK
-  || (existsSync(LEGACY_WORK) ? LEGACY_WORK : join(homedir(), '.dsh', 'watch'));
-const COOKIES = process.env.WATCH_COOKIES
-  || (WORK === LEGACY_WORK ? `${LEGACY_WORK}/.secrets/bili-cookies.txt` : join(WORK, 'bili-cookies.txt'));
-const OUT = process.env.WATCH_OUT
-  || (WORK === LEGACY_WORK ? `${LEGACY_WORK}/.tmp/watch` : join(WORK, 'out'));
+// 规矩：`WATCH_*` 环境变量最优先，其次 `~/.dsh/watch`。
+// **不许写死任何人的本机路径** —— 以前这里硬编码了作者的工作区，别人装上会去一个
+// 不存在的目录里找 cookie、往那儿写图。cookie 改成优先读 `~/.dsh/video.json` 里那份
+// （和分镜/字幕共用同一个配置，用户配一次到处都认）。
+const WORK = process.env.WATCH_WORK || join(homedir(), '.dsh', 'watch');
+
+/** `~/.dsh/video.json` 里配的 cookie 文件（存在才用） */
+function configuredCookieFile() {
+  const home = process.env.DSH_HOME || join(homedir(), '.dsh');
+  try {
+    const cfg = JSON.parse(readFileSync(join(home, 'video.json'), 'utf8'));
+    const p = String(cfg?.cookies ?? '').trim();
+    if (p && existsSync(p)) return p;
+  } catch { /* 没配就算了 */ }
+  return null;
+}
+
+const COOKIES = process.env.WATCH_COOKIES || configuredCookieFile() || join(WORK, 'bili-cookies.txt');
+const OUT = process.env.WATCH_OUT || join(WORK, 'out');
 const PORT = Number(process.env.WATCH_PORT) || configuredPort() || 9333;
 
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
@@ -886,7 +895,7 @@ const WB_PROJECTS = `${process.env.USERPROFILE ?? ''}/.workbuddy/projects`;
 
 /**
  * cwd 对应的 WorkBuddy 项目目录名。
- * 命名规则（从实际目录反推的）：`D:/deepseek/3-Life` → `d-deepseek-3-Life`
+ * 命名规则（从实际目录反推的）：`D:/work/my-app` → `d-work-my-app`
  * —— 盘符转小写，路径分隔符换成 `-`，其余原样。
  */
 function wbProjectDirName() {

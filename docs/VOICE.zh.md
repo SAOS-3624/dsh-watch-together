@@ -42,8 +42,7 @@
 
 适配器文件是 `examples/voice-edge-tts/index.mjs`。它随包一起装在：
 
-- **开发模式（你自己 clone 的源码）**：`<仓库>/dsh-watch-together/examples/voice-edge-tts/index.mjs`
-  - 你现在的路径就是 `D:/deepseek/3-Life/dsh-watch-together/examples/voice-edge-tts/index.mjs`
+- **开发模式（你自己 clone 的源码）**：`<你 clone 的目录>/dsh-watch-together/examples/voice-edge-tts/index.mjs`
 - **装成 npm 包后**：`<项目>/node_modules/dsh-watch-together/examples/voice-edge-tts/index.mjs`
 
 下面两步都用这个**绝对路径**。
@@ -54,7 +53,7 @@
 
 ```json
 {
-  "adapter": "D:/deepseek/3-Life/dsh-watch-together/examples/voice-edge-tts/index.mjs"
+  "adapter": "<你 clone 的目录>/dsh-watch-together/examples/voice-edge-tts/index.mjs"
 }
 ```
 
