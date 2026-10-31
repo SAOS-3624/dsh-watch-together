@@ -42,6 +42,13 @@ test('validateWatchArgs: input 可省略（自动探测），给了就必须非�
   assert.ok(validateWatchArgs({ input: 'a', cursor: -1 }).some((p) => /cursor/.test(p)));
   assert.ok(validateWatchArgs({ input: 'a', segment: 5 }).some((p) => /segment/.test(p)));
   assert.ok(validateWatchArgs({ input: 'a', cells: 12 }).some((p) => /cells/.test(p)));
+  // 默认段长是 300（batches.DEFAULT_SEGMENT），不是旧代码里的 120：
+  // lead=150 在默认段长下合法，不能被误拦。
+  assert.deepEqual(validateWatchArgs({ lead: 150 }), []);
+  assert.ok(validateWatchArgs({ lead: 300 }).length > 0, 'lead 必须小于默认段长 300');
+  // at 省略或显式 null 都表示“到段首再说”，不能因为 Number(null)===0 被拒。
+  assert.deepEqual(validateWatchArgs({ lines: [{ from: 180, at: null, text: 'x' }] }), []);
+  assert.deepEqual(validateWatchArgs({ lines: [{ from: 180, text: 'x' }] }), []);
 });
 
 test('watchToolSpec: 告诉模型"别复述剧情"和"读不到就问，不要猜"', () => {
