@@ -24,6 +24,33 @@ import { readPositionOrNull } from './watch-browser.js';
 import { emitSpeech, speechSubscribers } from './voice.js';
 import { consumeLine, dueLine, hasLine, loadLine, WATCH_LEAD } from './watch.js';
 import { mmss } from './time.js';
+import { appendChat } from './chat-store.js';
+
+/**
+ * 叫醒失败要**看得见**。
+ *
+ * 以前这里是 `void chatWake(...)`：`wakeSession` 回 `{ok:false, reason}` 也不会有人看，
+ * 用户在悬浮窗里说的话就这么被吞掉了 —— 表现就是"突然不理我了"（2026-10-31 实报）。
+ * 现在：失败重试一次；还失败就写一条看得见的话进悬浮窗，并留下日志。
+ */
+async function wakeWithRetry({ ctx, sessionId, text, wake, log = true }) {
+  for (let attempt = 0; attempt < 2; attempt++) {
+    let r = null;
+    try { r = await wake(ctx, { sessionId, text }); } catch (e) { r = { ok: false, reason: String(e?.message ?? e) }; }
+    if (r?.ok) return r;
+    if (attempt === 0) await new Promise((res) => setTimeout(res, 800));
+    else {
+      if (log) {
+        try {
+          appendChat('meta', `[一起看] 叫醒失败：${String(r?.reason ?? 'unknown').slice(0, 120)}`, { say: false });
+        } catch { /* 写不进悬浮窗也不能再抛 */ }
+        note(`wake failed: ${String(r?.reason ?? 'unknown').slice(0, 120)}`);
+      }
+      return r;
+    }
+  }
+  return { ok: false, reason: 'unreachable' };
+}
 
 const TICK_MS = 2000;
 const PROBE_EVERY_MS = 15_000;
@@ -301,11 +328,13 @@ export function startWatchLoop({
         const chatText = String(said?.text ?? '').trim();
         if (chatText) {
           note('user said → wake');
-          void chatWake(loop.ctx, {
+          void wakeWithRetry({
+            ctx: loop.ctx,
             sessionId: loop.sessionId,
             text: `[一起看] 用户插话：「${chatText.slice(0, 200)}」
 `
               + '先回这一句（如果还有段欠台词，台词优先）。回完再调 watch_together 接着陪。',
+            wake: chatWake,
           });
         }
       }

@@ -12,6 +12,7 @@
 
 import { recallSegments } from 'dsh-video-storyboard/locate';
 import { makeLagFn, speechLag } from './speech.js';
+import { cachedCues } from './lines-util.js';
 import { loadWatch, saveWatch, sessionKey } from './watch-state.js';
 
 /**
@@ -180,10 +181,14 @@ export async function dueLine(input, pos, { size = 0, lateSec = 3, lagSec = null
   if (!lines) return null;
 
   // 台词要往后挪多久：`at` 对齐的是"这句字幕**出现**的时刻"，TTS 一开口就和原声抢话。
-  // 优先用 locate 记忆层里那份字幕（`speechLag(原文长度)`）；**拿不到就按台词自己的长度算**
-  // —— 这是 2026-10-31 用户实报"台词快了一点"的根因：locate 的 in-memory 记忆在新进程里
-  // 常常是空的（跑分镜的和念台词的未必同一个进程），于是 lag 恒为 0，一句不差地卡在 `at` 上。
-  const lagOf = makeLagFn(recallSegments(input) ?? []);
+  // 延迟按 **这句字幕本身有多少字** 算（说得越久的句子，越要往后等）。
+  //
+  // 取字幕的三条路，按可靠性排：
+  //   1. `cachedCues(input)` —— 我们自己的 `subs-<key>.json` 缓存（**跨进程可靠**）
+  //   2. `recallSegments(input)` —— 分镜包 locate 的 in-memory 记忆（新进程里常常是空的）
+  //   3. 都没有 → 退化成按台词自己的字数估（见下面的 `lagFor`）
+  const subs = cachedCues(input, { env });
+  const lagOf = makeLagFn(subs.length > 0 ? subs : (recallSegments(input) ?? []));
   const lagFor = (at, text) => {
     // 测试要确定性：显式给 `lagSec`（通常 0）就直接用它，不查字幕也不按长度估
     if (Number.isFinite(lagSec)) return Number(lagSec);

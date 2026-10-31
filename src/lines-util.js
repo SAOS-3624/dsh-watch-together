@@ -221,6 +221,21 @@ export async function loadCues(input, {
   return { ok: true, cues, lang: r.lang, source: 'remote' };
 }
 
+/**
+ * **只读缓存**的字幕（不联网、不跑 ASR）。
+ *
+ * 台词延迟要按"这句字幕本身有多少字"算 —— 那个字数就在字幕里。但延迟是每秒算好几次的，
+ * 不能每次都去抓字幕/跑 ASR，所以这里只读 `subs-<key>.json`，没有就返回空数组。
+ */
+export function cachedCues(input, { env = process.env } = {}) {
+  try {
+    const j = JSON.parse(readFileSync(subsFile(input, env), 'utf8'));
+    return Array.isArray(j?.cues) ? j.cues : [];
+  } catch {
+    return [];
+  }
+}
+
 /** 这些句子只是语气/过渡，不该被选中当台词 */
 const FILLER = /^(那么|所以|但是|而且|然后|其实|就是|对吧|你看|也就是说|换句话说|当然|不过)[，,]?/;
 /** 结尾收得住：句号/问号/感叹号/省略号 */

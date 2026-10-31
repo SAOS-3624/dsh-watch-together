@@ -27,6 +27,7 @@
  */
 
 import { spawn } from 'node:child_process';
+import { closeSync, openSync } from 'node:fs';
 import { existsSync, readFileSync, writeFileSync } from 'node:fs';
 import { homedir } from 'node:os';
 import { dirname, join } from 'node:path';
@@ -42,6 +43,11 @@ function dshHome() {
 
 function windowConfigPath() {
   return join(dshHome(), 'watch-window.json');
+}
+
+/** 悬浮窗进程的 stdout/stderr 落在这个文件里（崩了才有东西可查） */
+function logPath() {
+  return join(dshHome(), 'watch-window.log');
 }
 
 function pidPath() {
@@ -127,12 +133,21 @@ export function openFloatingWindow({ log = null, force = false } = {}) {
   let lastErr = null;
   for (const python of pythonCandidates(cfg)) {
     try {
+      // **stderr 必须留下来**：以前是 `stdio:'ignore'`，窗口一崩（Python traceback）
+      // 就什么都没有，只能看到"进程没了"。现在追加进 `<DSH_HOME>/watch-window.log`。
+      let errFd = 'ignore';
+      try {
+        errFd = openSync(logPath(), 'a');
+      } catch { /* 打不开日志就还是丢掉 */ }
       const child = spawn(python, [script], {
-        stdio: 'ignore',
+        stdio: ['ignore', errFd, errFd],
         detached: true,
         // 别弹控制台窗口；不 detach 的话关掉宿主会把窗口一起带走（我们要它独立活着）
         windowsHide: true,
       });
+      if (typeof errFd === 'number') {
+        child.on('exit', () => { try { closeSync(errFd); } catch { /* 已关 */ } });
+      }
       child.on('error', (e) => { lastErr = e; log?.(`[widget] ${python} failed: ${e?.message ?? e}`); });
       child.unref?.();
       try {
