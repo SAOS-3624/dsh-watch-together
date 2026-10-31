@@ -10,7 +10,7 @@
  *   3. 没写 at 的老台词要在**有段长时钉死**并存回去，不能每次读都现算。
  */
 
-import { recallSegments } from 'dsh-video-storyboard/locate';
+import { matchSegments, recallSegments } from 'dsh-video-storyboard/locate';
 import { makeLagFn, speechLag } from './speech.js';
 import { cachedCues } from './lines-util.js';
 import { loadWatch, saveWatch, sessionKey } from './watch-state.js';
@@ -65,6 +65,37 @@ const writeSlot = (lines, from, items) => {
   else delete lines[from];
 };
 
+/** 归一化：去空白和标点，只留字。查锚点时"有没有标点"不该影响命中。 */
+const bare = (s) => String(s ?? '').toLowerCase()
+  .replace(/[\s\u3000]+/g, '')
+  .replace(/[，。！？、；：""''（）《》…—,.!?;:"'()<>[\]{}~`]/g, '');
+
+/**
+ * 把 `at` 传的"字幕原文片段"查成秒数。
+ *
+ * 两条查找，按可靠性排：
+ *   1. **本段及之后**的句子里做原文包含（同一句话在片子里会重复，取最早那次会落到上一段）
+ *   2. 拼句/记错一两个字 —— 用 locate 的模糊匹配兜一下（≥60% 的字对得上）
+ *
+ * 查不到就返回 null，由调用方当"没写 at"处理（交给 pinTimes 铺开），并打日志。
+ *
+ * @param {Array<{from:number,text:string}>} cues
+ * @param {string} q 字幕原文片段
+ * @param {number} from 这句所属段的起点
+ */
+function anchorAt(cues, q, from) {
+  const list = (Array.isArray(cues) ? cues : []).filter((c) => Number.isFinite(Number(c?.from)));
+  if (list.length === 0) return null;
+  const nq = bare(q);
+  if (!nq) return null;
+  const later = list.filter((c) => Number(c.from) >= Number(from) - 0.5);
+  const pool = later.length > 0 ? later : list;
+  const exact = pool.find((c) => bare(c.text).includes(nq));
+  if (exact) return Number(exact.from);
+  const [best] = matchSegments(pool, q, { max: 1, minScore: 0.6 });
+  return best ? Number(best.from) : null;
+}
+
 /**
  * 预设台词：agent 提前写好，到点直接念，不用现场想。
  *
@@ -90,11 +121,15 @@ export async function saveLines(input, lines, { env = process.env } = {}) {
     // 而字幕里它在 247 秒，提前了 58 秒，用户当场发现"台词对不上视频"。
     let at = Number(l?.at);
     if (typeof l?.at === 'string' && l.at.trim()) {
-      const segs = recallSegments(input) ?? [];
       const q = l.at.trim();
-      const hit = segs.find((x) => String(x.text ?? '').includes(q));
-      at = hit ? Number(hit.from) : NaN;
-      if (!hit) {
+      // **先查落盘的 `subs-<key>.json`，再查 locate 的进程内记忆**。
+      // 后者只有 4 条、重启就空，而台词恰恰经常在另一个进程/另一轮里写 ——
+      // 查不到就会被当成"没写 at"，落到段首：用户看到的就是"台词比画面早一大截"。
+      const subs = cachedCues(input, { env });
+      let hit = anchorAt(subs, q, from);
+      if (hit === null) hit = anchorAt(recallSegments(input) ?? [], q, from);
+      at = hit === null ? NaN : hit;
+      if (!Number.isFinite(at)) {
         // 查不到就明确说出来，别悄悄当成"没写 at"（那会让它落在段首，更错）
         console.warn(`[watch] line anchor not found in transcript: ${q}`);
       }
@@ -176,12 +211,19 @@ export async function consumeLine(input, from, { env = process.env } = {}) {
 /**
  * 给"没写 `at`"的台词补上时刻。
  *
- * 以前是**均匀铺开**（`from + i*size/n`）：三段词就是 0/40/80 秒。
- * 问题是画面里的句子不会按这个节奏出现 —— 那几句往往比对应画面早十几二十秒，
- * 用户看到的就是"台词比画面早"（2026-10-31 实报，截图里标签 01:51 / 02:39 都在画面前面）。
+ * 两版都踩过坑，改之前先看清楚：
  *
- * 现在优先**贴着真实句子起点**：字幕（CC 或 ASR 的时间码）里这一段的句子起点，
- * 按顺序分给各句；分完还有剩，才退回均匀铺开。
+ *   ① 最早是**均匀铺开**（`from + i*size/n`）：三段词就是 0/40/80 秒。画面不按这个
+ *      节奏走，那几句往往比对应画面早十几二十秒 —— "台词比画面早"（2026-10-31 实报）。
+ *
+ *   ② 后来改成"贴着真实句子起点"，但**取的是这一段里最前面的 N 个起点**。于是 16 句
+ *      台词全被钉进段首 60 秒里，平均 2~3 秒一条：钟每 2 秒打一拍、一拍发一句，
+ *      用户听到的就是"机关枪突突突"，而且后 14 句比画面早一到两分钟
+ *      （2026-10-31 19:5x 实报，用当时挂着的 16 条实测：181.6→244.2，本来该铺满 180 秒）。
+ *
+ * 所以现在：**先算每句在这一段里的理想位置（均分），再去字幕里挑离它最近的句子起点**。
+ * 既贴着真实说话的时刻，又铺满整段。挑不到（离理想位置超过半个槽位 / 起点用完了）
+ * 就用理想位置本身 —— 绝不允许比上一句更早（旧实现会退成 150 < 152.8 这种乱序）。
  *
  * @param {Array<{at:number|null,text:string}>} items
  * @param {number} from 段起点（秒）
@@ -190,37 +232,56 @@ export async function consumeLine(input, from, { env = process.env } = {}) {
  */
 export function pinTimes(items, from, size, cues = []) {
   const end = from + size;
-  const starts = (Array.isArray(cues) ? cues : [])
+  // 起点去重（同一条字幕重复出现很常见），保留两位小数避免浮点抖动
+  const starts = [...new Set((Array.isArray(cues) ? cues : [])
     .map((c) => Number(c?.from))
     .filter((t) => Number.isFinite(t) && t >= from - 0.5 && t < end)
+    .map((t) => +t.toFixed(2)))]
     .sort((a, b) => a - b);
 
   const n = items.length;
+  const slot = size / n;
+  // 容差：半个槽位。字幕起点密的时候贴句子，稀的时候就老实按均分走 ——
+  // 否则"最近起点"可能离理想位置几十秒，等于把第 5 句又拽回段首。
+  const tol = Math.min(30, Math.max(2, slot / 2));
+
   const out = [];
   let cursor = from;
   let pi = 0;
   for (let i = 0; i < n; i++) {
     const it = items[i];
-    if (it?.at !== null && Number.isFinite(Number(it?.at))) {
+    if (it?.at !== null && it?.at !== undefined && Number.isFinite(Number(it?.at))) {
       out.push(it);
       cursor = Math.max(cursor, Number(it.at) + 1);
       continue;
     }
-    // 找下一个还没用过的句子起点
-    while (pi < starts.length && starts[pi] <= cursor) pi += 1;
-    if (pi < starts.length) {
-      out.push({ ...it, at: starts[pi] });
-      cursor = starts[pi] + 1;
-      pi += 1;
-    } else {
-      // 没有字幕可用：退回均匀铺开（至少不会全部挤在段首）
-      out.push({ ...it, at: from + (i * size) / n });
+    // 这一句在这一段里的理想位置：按顺序均分
+    const ideal = from + (i * size) / n;
+    let pick = -1;
+    let bestD = Infinity;
+    for (let k = pi; k < starts.length; k += 1) {
+      if (starts[k] < cursor) { pi = k + 1; continue; }
+      const d = Math.abs(starts[k] - ideal);
+      if (d < bestD && d <= tol) { bestD = d; pick = k; }
+      // 已经越过理想位置，再往后只会更远
+      if (starts[k] >= ideal) break;
     }
+    const at = pick >= 0 ? Math.max(starts[pick], cursor) : Math.max(ideal, cursor);
+    if (pick >= 0) pi = pick + 1;
+    out.push({ ...it, at });
+    cursor = at + 1;
   }
   return out;
 }
 
-export async function dueLine(input, pos, { size = 0, lateSec = 3, lagSec = null, env = process.env } = {}) {
+/**
+ * @param {number} pos 当前播放位置（秒）
+ * @param {{ size?: number, sizeOf?: (from:number)=>number, lateSec?: number, lagSec?: number }} [o]
+ *        `size` 当前段长；`sizeOf(from)` 给**别的段**取它自己的段长（见下面 pin 的那段注释）
+ */
+export async function dueLine(input, pos, {
+  size = 0, sizeOf = null, lateSec = 3, lagSec = null, env = process.env,
+} = {}) {
   const now = Number(pos);
   if (!Number.isFinite(now)) return null;
   const st = await loadWatch(env);
@@ -257,17 +318,27 @@ export async function dueLine(input, pos, { size = 0, lateSec = 3, lagSec = null
     // 未来段落的词不参与：写 360s 的词不该在 150s 就被念出来
     if (!(from <= now)) continue;
     let items = slotItems(slot);
-    // **把"没写 at"的台词当场钉死**：一旦有了段长，就把它们均匀铺进这一段并存回去。
+    // **把"没写 at"的台词当场钉死**：一旦有了段长，就把它们铺进这一段并存回去。
     // 不能每次读都现算：念掉一条之后队列长度变了，后面几条的时刻会跟着往前跳
     // （实测：四句 60 秒的稿子，念掉第一句后第二句的时刻从 135 变成 120，于是连珠炮）。
-    if (size > 0 && items.some((x) => x.at === null)) {
-      items = pinTimes(items, from, size, subs);
+    //
+    // **段长要按这一句自己所属的段算**：批次表是 1/2/3/4/5 分钟递进的，
+    // 拿当前段（可能是 5 分钟）去铺开头那段 60 秒的稿子，后几句会被铺到段外，
+    // 结果整段听着都错位。`sizeOf` 由调用方按批次表给。
+    const ownSize = (() => {
+      const v = typeof sizeOf === 'function' ? Number(sizeOf(from)) : NaN;
+      return Number.isFinite(v) && v > 0 ? v : size;
+    })();
+    if (ownSize > 0 && items.some((x) => x.at === null)) {
+      items = pinTimes(items, from, ownSize, subs);
       dirty = true;
     }
     // **迟到就作废**：位置跳过去了（拖进度条 / 快进），那句描述的画面已经不在银幕上，
     // 补念出来只会和画面对不上。停顿几秒内的正常延迟仍然会念。
     // 判断用"该开口的时刻"（at + 后延），否则加了延以后正常的一句也会被当成迟到删掉。
-    const kept = items.filter((x) => !(dueAt(x.at, x.text) < now - lateSec));
+    // **没写 at 的不参与作废**：它们的时刻还没算出来（见上面 pin 的那段），
+    // 拿 -Infinity 去比就是"永远迟到" —— 那会把整批好词静默删掉。
+    const kept = items.filter((x) => x.at === null || !(dueAt(x.at, x.text) < now - lateSec));
     if (kept.length !== items.length) {
       items = kept;
       dirty = true;

@@ -87,6 +87,42 @@ test('dueLine: 没写 at 的老台词，按段首算，并在段内均匀铺开'
   }
 });
 
+test('dueLine: 铺"没写 at"的台词时，用那句自己所属的段长（不是当前段）', async () => {
+  const dir = await mkdtemp(join(tmpdir(), 'due6-'));
+  process.env.DSH_VIDEO_CACHE_DIR = dir;
+  try {
+    await saveLines('h.mp4', [
+      { from: 120, text: '一' },
+      { from: 120, text: '二' },
+      { from: 120, text: '三' },
+      { from: 120, text: '四' },
+    ]);
+    // 用户已经跑到 5 分钟那一档了，但这段稿子属于开头那个 60 秒的段。
+    // 拿 300 秒去铺它，后三句会被铺到段外（195/270/345），整段听着都错位。
+    assert.equal(await dueLine('h.mp4', 122, { size: 300, sizeOf: () => 60, lagSec: 0 }), '一');
+    assert.deepEqual((await linesOverview('h.mp4'))[0].ats, [135, 150, 165], '剩下的要落在 120–180 里');
+  } finally {
+    await rm(dir, { recursive: true, force: true });
+  }
+});
+
+test('at 传字幕原文片段：查的是**落盘的字幕缓存**（不靠进程内记忆）', async () => {
+  const dir = await mkdtemp(join(tmpdir(), 'due7-'));
+  process.env.DSH_VIDEO_CACHE_DIR = dir;
+  try {
+    // 台词常常在另一个进程/另一轮里写，locate 的进程内记忆那时是空的。
+    // 以前查不到就当成"没写 at"，落回段首 —— 表现是"台词比画面早一大截"。
+    const { writeFileSync } = await import('node:fs');
+    writeFileSync(join(dir, 'subs-i.mp4.json'), JSON.stringify({
+      lang: 'zh', cues: [{ from: 247, to: 250, text: '这个是一点四分之一螺口' }],
+    }), 'utf8');
+    await saveLines('i.mp4', [{ from: 180, at: '螺口', text: '这句要落在 247 秒' }]);
+    assert.deepEqual((await linesOverview('i.mp4'))[0].ats, [247]);
+  } finally {
+    await rm(dir, { recursive: true, force: true });
+  }
+});
+
 test('dueLine: 迟到几秒照念，迟到太多直接作废（拖进度条之后不追着说旧画面）', async () => {
   const dir = await mkdtemp(join(tmpdir(), 'due5-'));
   process.env.DSH_VIDEO_CACHE_DIR = dir;

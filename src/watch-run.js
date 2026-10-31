@@ -33,6 +33,8 @@ import { boardOptions, charsForDetail } from 'dsh-video-storyboard/board';
 
 import { mmss } from './time.js';
 import { saveLines } from './watch.js';
+import { pinTimes } from './watch-lines.js';
+import { cachedCues } from './lines-util.js';
 import { describeBrowser, readPositionOrNull } from './watch-browser.js';
 import { resolveWatchSource } from './watch-source.js';
 import { runWatchMode } from './watch-modes.js';
@@ -649,21 +651,46 @@ export async function runWatchPass(args, deps) {
   // 现在：过去（早于 cursor-6s）的**丢掉并清出稿子**；其余交给钟按位置逐句念
   // （consumeLine + appendSpoken 才是"到点才说话"）；这里只报"还剩几句、最早几点念"。
   const PAST_GRACE_SEC = 6;
-  const speech = speechEvents(segLines, { fallbackAt: segStart, segment: segStart });
+  // 没写 `at` 的句子，先**预演**钟会把它钉到哪（和 `dueLine` 同一套算法）。
+  //
+  // 为什么必须预演：不预演时它们只能拿段首当替身（`speechEvents` 的 fallbackAt），于是
+  //   ① 报给模型的"最早 mm:ss 念"是假的；
+  //   ② 下面那个过期判断会拿 `Number(null) === 0` 去比，"没写 at" 一律算作 0 秒、
+  //      永远算过去 —— **整批好词在交付这一刻被删掉**（写的时候就丢了，钟再没机会念）。
+  const hasBare = segLines.some((l) => l?.at === null || l?.at === undefined);
+  const planned = hasBare
+    ? pinTimes(segLines, segStart, size, cachedCues(input))
+    : segLines;
+  const speech = speechEvents(planned, { fallbackAt: segStart, segment: segStart });
   const isPast = (at) => Number.isFinite(at) && at < cursor - PAST_GRACE_SEC;
   const pastLines = speech.filter((l) => isPast(l.at));
   const upcoming = speech.filter((l) => !isPast(l.at));
   let linesNote = '';
   if (pastLines.length > 0) {
-    await pruneSlot(input, segStart, (l) => !isPast(Number(l?.at))).catch(() => 0);
+    // 按**正文**挑掉过期的那些（预演后的时刻没存盘，库里还是不带 at 的原样）。
+    // 不带 at 的句子不在 pastLines 里 —— 它们的时刻是刚算的，不能因为"没写"就被删。
+    const drop = new Set(pastLines.map((l) => String(l.text ?? '')));
+    await pruneSlot(input, segStart, (l) => !drop.has(String(l?.text ?? ''))).catch(() => 0);
     linesNote = `
-[lines] 丢弃 ${pastLines.length} 句：它们的 at 早于当前进度 ${mmss(cursor)}，`
+[lines] 丢弃 ${pastLines.length} 句：它们对应的时间点早于当前进度 ${mmss(cursor)}，`
       + '再念就对不上画面。写台词要挑**还没播到**的时间点。';
   }
   if (upcoming.length > 0) {
+    const ats = upcoming.map((l) => Number(l.at)).filter((x) => Number.isFinite(x));
+    const gap = ats.length > 1 ? (ats[ats.length - 1] - ats[0]) / (ats.length - 1) : 0;
     linesNote += `
 [lines] 这一段已写好 ${upcoming.length} 句，最早 ${mmss(upcoming[0].at)} 念`
       + '（钟按 at 逐句念，不会一次全吐出来）。';
+    // **把真实落点摊给模型看**：它看不见时刻就不知道自己在写连珠炮。
+    if (ats.length > 1) {
+      const list = ats.slice(0, 10).map((t) => mmss(t)).join(' / ')
+        + (ats.length > 10 ? ` … 共 ${ats.length} 句` : '');
+      linesNote += `\n[lines] 落点：${list}`;
+      if (gap < 6) {
+        linesNote += `\n[lines·太密] 平均每 ${gap.toFixed(1)} 秒一句，会跑在画面前面 —— `
+          + '删掉几句，或者把 at 明确写到你真的要说的那一秒。';
+      }
+    }
   }
 
   // **交付门槛的提示**：没台词 = 交付未完成，这段话顶在最前面（优先级高于任何插话回复）

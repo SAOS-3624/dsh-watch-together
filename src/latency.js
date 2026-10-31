@@ -55,8 +55,11 @@ export async function recordLatency(ms, { env = process.env, now = Date.now() } 
 
 /** 提前量（秒）。样本 < 2 时返回 0 —— 一个样本定不了常数。 */
 export function aheadSeconds(state) {
-  if (!state || state.samples < 2) return 0;
-  return Math.min(30, state.ms / 1000);
+  const ms = Number(state?.ms);
+  // **不许返回 NaN**：NaN 会让 `pos` 变成 NaN，而 NaN 参与的所有比较都是 false ——
+  // 于是 `shouldSpeak` 会把"位置还没到"判成"到了"，一开播就把每一段都算成该说话。
+  if (!Number.isFinite(ms) || !(state?.samples >= 2)) return 0;
+  return Math.min(30, ms / 1000);
 }
 
 /** 给工具结果用的一行说明：让模型知道现在是否已标定。 */

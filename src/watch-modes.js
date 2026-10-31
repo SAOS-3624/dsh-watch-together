@@ -117,7 +117,12 @@ export async function runWatchMode({ args, input, plan, browserPort, readBrowser
     // **这里不做迟到作废**（lateSec: Infinity）：逐句模式下是模型主动来要下一句，
     // 位置停着不动也该把欠着的那句给它，而不是因为"晚了 30 秒"就丢掉。
     const line = (Number.isFinite(pos)
-      ? await dueLine(input, pos, { size: seg.size ?? 0, lateSec: Infinity }).catch(() => null)
+      ? await dueLine(input, pos, {
+        size: seg.size ?? 0,
+        // 铺"没写 at"的稿子时，用那句自己所属段的长度（见 watch-lines.js 的 dueLine）
+        sizeOf: (f) => plan2.segmentAt(f).size,
+        lateSec: Infinity,
+      }).catch(() => null)
       : null)
       ?? await consumeLine(input, seg.from).catch(() => null);
 

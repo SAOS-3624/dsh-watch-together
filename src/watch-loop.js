@@ -19,6 +19,7 @@ import { chatWatcherShared } from './interrupt.js';
 import { startTicker, wakeSession } from './timer.js';
 import { DEFAULT_LOOKAHEAD, DEFAULT_SEGMENT, describePlan, makePlan, windowFor } from './batches.js';
 import { readBrowserPosition } from 'dsh-video-storyboard/browser-time';
+import { readBridge } from './position-bridge.js';
 import { floatingWindowAlive } from './floating-window.js';
 import { readPositionOrNull } from './watch-browser.js';
 import { emitSpeech, speechSubscribers } from './voice.js';
@@ -209,6 +210,8 @@ export function startWatchLoop({
   // `video.currentTime` 是**毫秒级真值**。拿不到就当作"这次没读到"，
   // 由上层决定是问用户还是停表 —— 不猜、不外推到很远。
   const readBrowser = deps.readBrowser ?? ((o) => readBrowserPosition(o));
+  // 扩展上报的位置（本地一个小 JSON）。可注入：测试里不该读到这台机器上真实的播放位置。
+  const readPosBridge = deps.readBridge ?? ((o) => readBridge(o));
   // 窗口"还开着吗"也可注入：真机用 pid 判活，测试里给个假的
   const windowAlive = deps.windowAlive ?? floatingWindowAlive;
   // 插话唤醒走**真**的 followup（不受 `wake: false` 影响）；可注入便于测试
@@ -350,6 +353,23 @@ export function startWatchLoop({
         try { await markHungUp(loop.input); } catch { /* 记不住也不影响停 */ }
         stopWatchLoop('widget-closed');
         return;
+      }
+
+      // ---- 每一拍校一次**扩展上报的位置**（读一个小 JSON，不是 CDP）。
+      //
+      // 为什么不能只靠 15 秒一次的探针：中间那段位置是按时钟外推的。用户一按暂停，
+      // 钟还会继续走最多 15 秒 —— 这段时间里"到点"的台词会**提前**吐出来，
+      // 用户看到的就是"时间点比视频早"（2026-10-31 实报）。
+      // 只在"位置本来就来自扩展"时走这条，别的来源（CDP / 用户给的 cursor）不掺和。
+      if (loop.positionSource === 'bridge' && loop.anchor) {
+        const s = await readPosBridge({ now: tNow }).catch(() => null);
+        if (s && Number.isFinite(s.pos)) {
+          loop.anchor = makeAnchor({
+            pos: s.pos, dur: s.dur, status: s.paused ? 'paused' : 'playing',
+            updated: tNow, title: s.title,
+          }, tNow);
+          loop.status = s.paused ? 'paused' : 'playing';
+        }
       }
 
       if (tNow - loop.lastProbeAt >= probeEveryMs) {
@@ -549,7 +569,11 @@ export function startWatchLoop({
         const est = estimate(loop.anchor, tNow);
         if (est.why !== 'paused' && Number.isFinite(est.pos)) {
           const segNow = plan.segmentAt(est.pos);
-          const line = await dueLine(loop.input, est.pos, { size: segNow.size }).catch(() => null);
+          const line = await dueLine(loop.input, est.pos, {
+            size: segNow.size,
+            // 别的段的稿子要按**那一段自己的长度**铺（批次表是 1/2/3/4/5 分钟递进的）
+            sizeOf: (f) => plan.segmentAt(f).size,
+          }).catch(() => null);
           if (line) {
             const delivered = emitSpeech({
               at: est.pos, text: line, input: loop.input, segment: segNow.from,

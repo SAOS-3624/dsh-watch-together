@@ -5,6 +5,49 @@ This package starts its own version line at `0.1.0` — it is not a continuation
 
 ## [Unreleased]
 
+### Fixed — scripted lines came out like a machine gun, and minutes before the picture
+
+Reported as: "台词出现时间早了很多，而且和机关枪一样突突突一下出来一大堆，时间点都比视频早了".
+
+The line queue is ordered by `at` (the second of the video this line is *for*) and fired by playback
+position, so the pacing is only as good as the `at` values. When a line was written **without** `at`
+(the model wrote prose only), `pinTimes()` decided when it would be said — and it took *the first N
+subtitle sentence starts of the segment*. Sixteen lines written for a 3-minute segment were therefore
+all packed into its first 62 seconds (181.6 → 244.2, measured on the live queue), i.e. one every
+2–3 seconds: the clock ticks every 2 s and hands out at most one line per tick, which is exactly the
+"machine gun". The last 14 of them ran one to two minutes ahead of the picture they describe.
+
+- `src/watch-lines.js` `pinTimes()` — each line now aims at its **even share of the segment**
+  (`from + i*size/n`) and snaps to the nearest subtitle start within half a slot, so the queue is
+  spread over the whole segment instead of stacked at its head. Falls back to the even share when no
+  start is close enough, and **never goes backwards** (the old tail fallback could emit 152.8 → 150).
+- `src/watch-lines.js` `dueLine()` — pinning uses **the segment that line belongs to** (`sizeOf`),
+  not the segment the user happens to be in. With the 1/2/3/4/5-minute ramp, a 60-second slot pinned
+  with a 300-second size put its last lines outside the segment entirely.
+- `src/watch-lines.js` `saveLines()` — `at` given as **subtitle text** was resolved only against
+  `recallSegments()`, which is a 4-entry in-process cache (empty in a fresh process, and lines are
+  usually written in a different turn). A miss silently became "no `at`", i.e. the head of the
+  segment — the other half of "the line is way too early". Now it reads the on-disk
+  `subs-<key>.json` cache first, then falls back to memory, then to a fuzzy match (≥60 % of the
+  characters), and only then warns.
+- `src/watch-run.js` — the delivery note pruned "past" lines with `Number(l.at)`, and
+  `Number(null) === 0`: **every line without `at` was judged as second 0 and deleted** at delivery.
+  The note now previews the same pinning the clock will use, so the reported "earliest …" time is the
+  real one, and only lines whose *actual* time has passed are dropped (by text).
+- `src/watch-run.js` — the note now lists the landing times it will use (`[lines] 落点：…`) and warns
+  when the average gap is under 6 s, instead of leaving the model to guess its own pacing.
+- `src/watch-loop.js` — with the extension as the position source, the anchor is now re-read **every
+  tick** (a small local JSON, not CDP). Between the 15-second probes the clock extrapolated blindly,
+  so after a pause the lines up to 15 s ahead were spoken **early** — extrapolation is bounded for
+  lateness but nothing guarded earliness.
+- `src/latency.js` `aheadSeconds()` — returns 0 instead of `NaN` when `ms` is missing. `NaN` made
+  `pos` `NaN`, every comparison false, and `shouldSpeak()` reported "due" for the first unspoken
+  segment at every tick.
+
+Tests: `test/pin-times.test.mjs` (the 16-line packing regression, monotonic fallback, cues bunched at
+the head), `test/watch-lines.test.mjs` (per-segment size, `at` from the on-disk subtitle cache),
+`test/lines-timing.test.mjs` (a stuck video must not speak the next line early).
+
 ### Fixed — the caption appeared before the voice, because it waited on `due` instead of "actually speaking"
 
 `attachSpeechToChat` wrote a line into `chat.jsonl` the moment `due` fired. But `due` only means
