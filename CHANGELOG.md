@@ -3,6 +3,29 @@
 All notable changes to **dsh-watch-together** are documented here.
 This package starts its own version line at `0.0.7` — it is not a continuation of `dsh-video-storyboard`.
 
+## [Unreleased]
+
+### Improved — 液态玻璃更立体，追加消息不再 O(n²)
+
+悬浮窗的"液态玻璃"以前只有一条顶部高光 + 四条边线，`GLASS_TOP` 实际没被使用，面板仍是
+一块死色；气泡和胶囊也是平涂。现在：
+
+- 上下圆角弧内做 **edge-local 渐变**（只画可见的 22px 玻璃边，不画被 shell 盖住的中间）；
+- 外圈上亮下暗 + 内圈 sheen + 左上短镜面高光 + 底部冷色反光，四层叠出玻璃厚度；
+- 气泡和输入胶囊也加上沿高光/下沿暗边，圆角按气泡高度钳制；
+- 配色统一为蓝黑玻璃（`#121722` 主体、`#303b50` 受光边），文字对比度同步提高。
+
+性能方面，旧版每追加一条消息都会 `_reflow()` **全部历史气泡**，且每个气泡都
+`update_idletasks()`；在 1.5× DPI 下实测追加 30 / 60 / 120 条分别要
+484ms / 2.89s / 14.2s，单条从 16ms 涨到 118ms。现在：
+
+- 追加只 layout 新气泡，不再全量 reflow；
+- 全量 reflow 只在宽度真的变化时做，且 resize 停 70ms 后才执行；`<Configure>` 合并到 16ms 一帧；
+- 滚动区域和"贴底"合并到一次 `after_idle`，只做一次 `update_idletasks`；
+- 配置轮询改为按 mtime/size 缓存，hint 内容没变不再 configure。
+
+同一基准下 120 条追加从 14.2s 降到约 0.62s（约 23×），且滚动到底部不再留空白。
+
 ## [0.1.0] - 2026-11-01
 
 首个发布版本。要求 `dsh-video-storyboard@^0.5.11`（字幕轨用到它的 `./transcript-pass` 子路径）。

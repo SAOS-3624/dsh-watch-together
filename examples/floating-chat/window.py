@@ -63,18 +63,19 @@ except Exception as exc:  # pragma: no cover - 环境问题，直接说清楚
 # 三个视觉支柱（tkinter 没有真模糊，靠这三样做出通透感）：
 #   ① **大圆角**（22px）+ 外描边分上下两色（上亮下暗 = 光从上面来）；
 #   ② **内侧顶部高光**：贴着圆角走一条 1px 亮线，这是玻璃"边缘折光"的来源；
-#   ③ **内部竖向微渐变**：顶部略亮、底部略暗，让底色看起来有厚度而不是一块死色。
+#   ③ **外圈竖向渐变**：只在 22px 的玻璃边上可见，顶部偏亮、底部偏暗；中间被内容层
+#      盖住，所以只画看得见的部分。不是"内部渐变" —— tkinter 的 Frame 没有透明背景。
 #
 # 气泡改成"玻璃片"：比底板稍亮 + 1px 描边 + 更大圆角，**不再用竖线区分台词**。
 # 台词和陪看现在共用同一套颜色（`ROLE` 里两者完全一致），抬头只留时间。
 
-BG = GLASS_FILL = "#171a21"   # 面板 = 玻璃主体（子控件也用它，才不会被挡出"色块"）
-BORDER = "#272c3a"            # 面板描边 / 分隔线
-TEXT = "#e8ebf2"
-MUTED = "#8a93a5"
-DIM = "#5b6473"
-ACCENT = "#4a8cdd"
-DANGER = "#c8564f"
+BG = GLASS_FILL = "#121722"   # 面板 = 玻璃主体（子控件也用它，才不会被挡出"色块"）
+BORDER = "#2a3446"            # 面板描边 / 分隔线
+TEXT = "#eef3fb"
+MUTED = "#929eb4"
+DIM = "#65728a"
+ACCENT = "#5b9cff"
+DANGER = "#e06a62"
 KEY = "#010203"           # 圆角抠图用的透明键色（只给根窗口和画布用）
 
 # 玻璃层的颜色（自上而下）
@@ -82,17 +83,18 @@ KEY = "#010203"           # 圆角抠图用的透明键色（只给根窗口和�
 # **标题栏不单独上色**：它是矩形控件，一旦比底板亮就会在左上/右上圆角内侧露出直角块，
 # 反而破坏"一整块玻璃"的观感。受光感交给 `GLASS_HILITE` 那一条折光边，更干净。
 HEAD_BG = GLASS_FILL        # = 主体色（保持同一块玻璃）
-GLASS_TOP = "#2a3040"      # 顶部渐变起点（略亮）
-GLASS_HILITE = "#7d89a8"   # 内侧顶部高光（1px）—— 这是"折光边"，要能被看见
-GLASS_EDGE_HI = "#49536a"  # 外描边上半（受光）
-GLASS_EDGE_LO = "#08090c"  # 外描边下半（背光）
+GLASS_TOP = "#303b50"      # 顶部渐变起点（受光）
+GLASS_BOTTOM = "#090c12"   # 底部渐变终点（背光）
+GLASS_HILITE = "#dce8ff"   # 内侧顶部高光（1px）—— 这是"折光边"，要能被看见
+GLASS_EDGE_HI = "#7183a5"  # 外描边上半（受光）
+GLASS_EDGE_LO = "#04060a"  # 外描边下半（背光）
 
-BUBBLE_FILL = "#2a3040"    # 玻璃片气泡：比底板亮一档，才像"浮在上面"
-BUBBLE_FILL_ME = "#22405f" # 我说的（自己那侧保留一点蓝，便于对位）
+BUBBLE_FILL = "#242e40"    # 玻璃片气泡：比底板亮一档，才像"浮在上面"
+BUBBLE_FILL_ME = "#1e456b" # 我说的（自己那侧保留一点蓝，便于对位）
 
 
-FIELD_BG = "#20242f"       # 输入框胶囊底色（比气泡暗、比底板亮）
-HOVER_BG = "#2c323f"       # 按钮悬停
+FIELD_BG = "#1a2130"       # 输入框胶囊底色（比气泡暗、比底板亮）
+HOVER_BG = "#2b3547"       # 按钮悬停
 
 # 角色 → (气泡底色, 文字色, 竖线色 或 None, 抬头)
 #
@@ -240,30 +242,109 @@ def _mix(c1, c2, t):
     return "#%02x%02x%02x" % tuple(int(round(a[k] + (b[k] - a[k]) * t)) for k in range(3))
 
 
-def glass_panel(cv, w, h, r, s=1.0, tag="panel"):
-    """画一块**液态玻璃**底板的"骨架"：主体 + 内侧顶部高光 + 上下分色的外描边。
+def _rim_span(y, w, h, r):
+    """在圆角矩形里，高度 y 处的可见横向范围（用于把渐变裁进圆角）。"""
+    if y < r:
+        dy = r - y
+    elif y > h - r:
+        dy = y - (h - r)
+    else:
+        return 0.0, float(w)
+    dx = r - math.sqrt(max(0.0, r * r - dy * dy))
+    return dx, w - dx
 
-    **不画内部渐变**：上面还压着 header / feed / composer 这些不透明的子控件
-    （tkinter 的 Frame 没有透明背景），渐变会被整块盖住 —— 画了纯属浪费一次重建。
-    受光面交给 header 自己的底色（`HEAD_BG` 比主体亮一档）来表现，效果一样，
-    拖动边框 resize 时也不会因为几十条线要重画而卡。
+
+def glass_panel(cv, w, h, r, s=1.0, tag="panel"):
+    """画一块**液态玻璃**底板：渐变厚边 + 双层高光 + 内外分色描边。
+
+    真正的 Apple Liquid Glass 靠背景模糊；tkinter 的子控件是不透明的 Frame，
+    **没有真模糊可做**。这里把"玻璃"拆成看得见的四层：
+      ① 只在圆角边上可见的竖向渐变（中间被 shell 盖住，不浪费像素）；
+      ② 顶部一条宽而柔的高光 + 左上一小段更亮的镜面反射；
+      ③ 内圈亮、外圈暗的双层描边，制造玻璃厚度；
+      ④ 底部一条冷色反光，和顶部暖色高光形成上下受光差。
+
+    拖动 resize 时由 `_paint` 合并到 16ms 一帧，渐变按 3~4px 一条带子画，
+    所以"更玻璃"不会变成"更卡"。
     """
-    # ① 主体：一整块圆角矩形
+    # ① 主体 + 圆角轮廓
     round_rect(cv, 0, 0, w, h, r, fill=GLASS_FILL, outline="", tags=(tag, f"{tag}-body"))
 
-    # ② 内侧顶部高光：贴着圆角走，玻璃的"折光边"
-    cv.create_line(r * 0.6, 1.2 * s, w - r * 0.6, 1.2 * s,
-                   fill=GLASS_HILITE, width=max(1, int(s)), tags=(tag,))
+    # ② 上下两条"斜边渐变"：只画在圆角弧内，横向渐变到主体色。
+    #    中间侧边由内容层盖住，不画；整块玻璃因此只多约 2×r/step 条线。
+    step = max(2.0, 3.2 * s)
+    y = 0.0
+    while y < r:
+        cy = min(r - 0.5, y + step / 2.0)
+        x0, x1 = _rim_span(cy, w, h, r)
+        if x1 - x0 > 0.5:
+            cv.create_line(x0, cy, x1, cy,
+                           fill=_mix(GLASS_TOP, GLASS_FILL, cy / float(max(1.0, r))),
+                           width=max(1, int(step + 1)), tags=(tag, f"{tag}-rim"))
+        y += step
+    y = max(0.0, h - r)
+    while y < h:
+        cy = min(h - 0.5, y + step / 2.0)
+        x0, x1 = _rim_span(cy, w, h, r)
+        if x1 - x0 > 0.5:
+            cv.create_line(x0, cy, x1, cy,
+                           fill=_mix(GLASS_FILL, GLASS_BOTTOM,
+                                     (cy - (h - r)) / float(max(1.0, r))),
+                           width=max(1, int(step + 1)), tags=(tag, f"{tag}-rim"))
+        y += step
 
-    # ③ 外描边分上下两色：上半受光（亮）、下半背光（暗）—— 一块真正的玻璃才会这样
+    # ②b 左右侧边：中间段内容层虽然盖住，但 22px 的玻璃边还露着。
+    #     左侧受光、右侧背光；只在上下圆角之间画，避免在圆角外露出竖条。
+    side_step = max(2.0, 3.0 * s)
+    x = 0.0
+    while x < r:
+        t = x / float(max(1.0, r))
+        cv.create_line(x + side_step / 2.0, r, x + side_step / 2.0, h - r,
+                       fill=_mix(GLASS_FILL, GLASS_TOP, (1.0 - t) * 0.55),
+                       width=max(1, int(side_step + 1)), tags=(tag, f"{tag}-rim"))
+        x += side_step
+    x = w - r
+    while x < w:
+        t = (w - x) / float(max(1.0, r))
+        cv.create_line(x + side_step / 2.0, r, x + side_step / 2.0, h - r,
+                       fill=_mix(GLASS_FILL, "#000000", (1.0 - t) * 0.35),
+                       width=max(1, int(side_step + 1)), tags=(tag, f"{tag}-rim"))
+        x += side_step
+
+    # ③ 内圈高光 / 外圈受光边：两条线的亮度不同，厚度才出得来
+    hi = max(1, int(round(s)))
+    cv.create_line(r * 0.55, 1.0 * s, w - r * 0.55, 1.0 * s,
+                   fill=GLASS_HILITE, width=hi, tags=(tag, f"{tag}-hilite"))
+    cv.create_line(r * 0.55, 2.0 * s, w - r * 0.55, 2.0 * s,
+                   fill=_mix(GLASS_TOP, "#ffffff", 0.24), width=1,
+                   tags=(tag, f"{tag}-hilite"))
+
+    # 左上镜面反射：更短、更亮；右侧只留一段冷色余晖，避免整条边一样亮
+    cv.create_line(r * 1.05, 2.6 * s, w * 0.46, 2.6 * s,
+                   fill="#f2f7ff", width=max(1, int(round(1.4 * s))),
+                   tags=(tag, f"{tag}-specular"))
+    cv.create_line(w * 0.60, 2.1 * s, w - r * 0.9, 2.1 * s,
+                   fill="#a9bad9", width=1, tags=(tag, f"{tag}-specular"))
+
+    # ④ 底部冷色反光 + 内圈暗边，像玻璃片压在桌面上
+    cv.create_line(r * 0.7, h - 2.0 * s, w - r * 0.7, h - 2.0 * s,
+                   fill="#22324a", width=1, tags=(tag, f"{tag}-glow"))
+    cv.create_line(1.6 * s, r * 0.8, 1.6 * s, h - r * 0.8,
+                   fill=_mix(GLASS_FILL, "#ffffff", 0.10), width=1,
+                   tags=(tag, f"{tag}-inner"))
+    cv.create_line(w - 1.6 * s, r * 0.8, w - 1.6 * s, h - r * 0.8,
+                   fill=_mix(GLASS_FILL, "#000000", 0.42), width=1,
+                   tags=(tag, f"{tag}-inner"))
+
+    # ⑤ 外描边：上半受光、下半背光；左右同理
     cv.create_line(r * 0.7, 0.5, w - r * 0.7, 0.5,
-                   fill=GLASS_EDGE_HI, width=max(1, int(s)), tags=(tag,))
+                   fill=GLASS_EDGE_HI, width=hi, tags=(tag, f"{tag}-edge"))
     cv.create_line(r * 0.7, h - 0.5, w - r * 0.7, h - 0.5,
-                   fill=GLASS_EDGE_LO, width=max(1, int(s)), tags=(tag,))
+                   fill=GLASS_EDGE_LO, width=hi, tags=(tag, f"{tag}-edge"))
     cv.create_line(0.5, r * 0.7, 0.5, h - r * 0.7,
-                   fill=GLASS_EDGE_HI, width=max(1, int(s)), tags=(tag,))
+                   fill=GLASS_EDGE_HI, width=hi, tags=(tag, f"{tag}-edge"))
     cv.create_line(w - 0.5, r * 0.7, w - 0.5, h - r * 0.7,
-                   fill=GLASS_EDGE_LO, width=max(1, int(s)), tags=(tag,))
+                   fill=GLASS_EDGE_LO, width=hi, tags=(tag, f"{tag}-edge"))
 
 
 class Opt:
@@ -318,7 +399,14 @@ class Bubble:
         self.layout(opt.avail)
 
     def layout(self, avail):
-        """按可用宽度重新折行并重画底板（窗口拉伸/缩放时调用）"""
+        """按可用宽度重新折行并重画底板（窗口拉伸/缩放时调用）。
+
+        **宽度没变就直接返回**：追加消息不再触发全量 reflow，只有真的 resize 才走这里。
+        """
+        avail = int(avail)
+        if getattr(self, "_avail", None) == avail and self.cv.winfo_width() > 1:
+            return
+        self._avail = avail
         opt = self.opt
         limit = max(int(120 * opt.s), int(avail * 0.86) - 2 * opt.padx)
         self.lbl.configure(wraplength=limit)
@@ -326,17 +414,27 @@ class Bubble:
         w = min(limit, max(1, self.lbl.winfo_reqwidth())) + 2 * opt.padx
         h = max(1, self.lbl.winfo_reqheight()) + 2 * opt.pady
         self.cv.configure(width=w, height=h)
-        self.cv.delete("bg", "bar", "edge")
-        r = int(opt.radius * 1.45)          # 气泡圆角比旧版大，苹果那种"胶囊感"
+        self.cv.delete("bg", "bar", "edge", "sheen")
+        r = min(int(opt.radius * 1.55), max(1, int((h - 1) / 2)))
         round_rect(self.cv, 0.5, 0.5, w - 0.5, h - 0.5, r,
                    fill=self.fill, outline="", tags="bg")
-        # 1px 描边：上亮下暗，一片浮在玻璃上的薄片（不是一块实心色块）
-        self.cv.create_line(r * 0.6, 0.8, w - r * 0.6, 0.8,
-                            fill=_mix(self.fill, "#ffffff", 0.14),
-                            width=1, tags="edge")
-        self.cv.create_line(r * 0.6, h - 0.8, w - r * 0.6, h - 0.8,
-                            fill=_mix(self.fill, "#000000", 0.45),
-                            width=1, tags="edge")
+
+        # 玻璃片边缘：外圈上亮下暗，内圈再压一条更细的 sheen。
+        # Label 盖住中间，只有 9px padding 露出来 —— 这两条就够了，画满渐变反而会被遮住。
+        self.cv.create_line(r * 0.55, 0.8, w - r * 0.55, 0.8,
+                            fill=_mix(self.fill, "#ffffff", 0.20),
+                            width=max(1, int(round(opt.s))), tags="edge")
+        self.cv.create_line(r * 0.55, 2.1 * opt.s, w - r * 0.55, 2.1 * opt.s,
+                            fill=_mix(self.fill, "#ffffff", 0.10),
+                            width=1, tags=("edge", "sheen"))
+        self.cv.create_line(r * 0.55, h - 1.2 * opt.s, w - r * 0.55, h - 1.2 * opt.s,
+                            fill=_mix(self.fill, "#000000", 0.38),
+                            width=1, tags=("edge", "sheen"))
+        # 左上角的一小段镜面反射：没有它，圆角看起来只是"圆"，不是"玻璃"
+        self.cv.create_line(r * 0.55, 1.5 * opt.s, r * 1.8, 1.5 * opt.s,
+                            fill=_mix(self.fill, "#ffffff", 0.32),
+                            width=max(1, int(round(opt.s))), tags=("edge", "sheen"))
+
         if self.bar:
             # 台词那条竖线已经不用了（`ROLE` 里是 None），保留分支给将来别的角色
             x = max(2, opt.padx // 3)
@@ -399,10 +497,16 @@ class Pill(tk.Canvas):
             self.lbl.configure(bg=bg)
         except Exception:
             pass
-        self.delete("cap")
+        self.delete("cap", "sheen")
         w, h = max(1, self.winfo_width()), max(1, self.winfo_height())
-        round_rect(self, 0.5, 0.5, w - 0.5, h - 0.5, h / 2,
+        r = h / 2
+        round_rect(self, 0.5, 0.5, w - 0.5, h - 0.5, r,
                    fill=bg, outline="", tags="cap")
+        # 胶囊也当成一小片玻璃：上沿高光、下沿暗边，悬停换色时一起重画
+        self.create_line(r * 0.75, 1.4 * self.host.s, w - r * 0.75, 1.4 * self.host.s,
+                         fill=_mix(bg, "#ffffff", 0.13), width=1, tags=("cap", "sheen"))
+        self.create_line(r * 0.75, h - 1.2 * self.host.s, w - r * 0.75, h - 1.2 * self.host.s,
+                         fill=_mix(bg, "#000000", 0.28), width=1, tags=("cap", "sheen"))
         self.tag_lower("cap")
 
     def _draw(self):
@@ -499,6 +603,19 @@ class FloatChat:
         self.rows = []
         self.empty = None
 
+        # 渲染节流/缓存：Configure 一帧最多画一次玻璃；reflow 等拖动停下来再做。
+        self._paint_job = None
+        self._reflow_job = None
+        self._glass_size = None
+        self._last_reflow_width = None
+        self._paint_size = None
+        self._scroll_job = None
+        self._stick_bottom = False
+
+        # 每 200ms 轮询只 stat 一次配置，内容没变就不读盘
+        self._cfg_key = None
+        self._cfg_hidden = False
+
         self._build()
 
         self._offset = 0
@@ -572,24 +689,66 @@ class FloatChat:
         self.root.bind_all("<MouseWheel>", self._on_wheel)
 
     def _paint(self, event=None):
-        w = event.width if event else self.root.winfo_width()
-        h = event.height if event else self.root.winfo_height()
-        self.canvas.delete("panel")
-        if self.rounded:
-            # 液态玻璃底板：渐变 + 内侧高光 + 上下分色描边（见 glass_panel）
-            glass_panel(self.canvas, w, h, self.radius, self.s)
+        """合并 Configure 事件：拖动边框时一帧只重画一次玻璃，不跟着每个像素抖。"""
+        if event is not None:
+            self._paint_size = (event.width, event.height)
+        if self._paint_job is not None:
+            return
+        self._paint_job = self.root.after(16, self._paint_now)
+
+    def _paint_now(self):
+        self._paint_job = None
+        if self._paint_size is not None:
+            w, h = self._paint_size
+        else:
+            w, h = self.canvas.winfo_width(), self.canvas.winfo_height()
+        if w < 2 or h < 2:
+            return
+        if (w, h) != self._glass_size:
+            self._glass_size = (w, h)
+            self.canvas.delete("panel")
+            if self.rounded:
+                # 液态玻璃底板：只在圆角边上可见的渐变 + 双层高光 + 内外分色描边
+                glass_panel(self.canvas, w, h, self.radius, self.s)
         inner_w = max(1, w - 2 * self.pad)
         inner_h = max(1, h - 2 * self.pad)
         self.canvas.itemconfigure(self._shell_item, width=inner_w, height=inner_h)
-        self._reflow(max(1, inner_w - int(8 * self.s)))
+        self._schedule_reflow()
+
+    def _schedule_reflow(self, delay=70):
+        """把全量折行推迟到 resize 停下来之后：拖动时只画边框，不排 200 条消息。"""
+        if self._reflow_job is not None:
+            try:
+                self.root.after_cancel(self._reflow_job)
+            except Exception:
+                pass
+        self._reflow_job = self.root.after(delay, self._reflow_now)
+
+    def _reflow_now(self):
+        self._reflow_job = None
+        stick = self._at_bottom()
+        self._stick_bottom = self._stick_bottom or stick
+        try:
+            w = self.canvas.winfo_width()
+        except Exception:
+            w = self.w
+        self._reflow(max(1, w - 2 * self.pad - int(8 * self.s)))
 
     def _build_header(self):
         head = tk.Frame(self.shell, bg=HEAD_BG, height=int(42 * self.s))
         head.pack(fill="x")
         head.pack_propagate(False)
 
-        self.dot = tk.Label(head, text="●", bg=HEAD_BG, fg=ACCENT, font=self._f(7.5))
+        # 状态球：外圈冷光 + 内芯高亮，比一个"●"字符更像玻璃上的小指示灯
+        dot_size = max(10, int(13 * self.s))
+        self.dot = tk.Canvas(head, width=dot_size, height=dot_size, bg=HEAD_BG,
+                             highlightthickness=0, bd=0)
         self.dot.pack(side="left", padx=(int(15 * self.s), int(8 * self.s)))
+        self._dot_ring = self.dot.create_oval(0.5, 0.5, dot_size - 0.5, dot_size - 0.5,
+                                              outline="#2f5f9e", width=1)
+        self._dot_core = self.dot.create_oval(dot_size * 0.31, dot_size * 0.31,
+                                              dot_size * 0.69, dot_size * 0.69,
+                                              fill=ACCENT, outline="")
 
         # **名字可以改**：用户要把它改成自己的叫法（"大肥鱼"之类），不再写死"陪看"。
         # 单击标题 → 就地变成输入框，回车/失焦保存到 `~/.dsh/watch-window.json` 的 `name`。
@@ -628,6 +787,14 @@ class FloatChat:
 
         self.head = head
         self.sep = sep
+
+    def _set_dot(self, color):
+        """切换状态球颜色；环色跟主体混一下，避免外圈比内芯还抢眼。"""
+        try:
+            self.dot.itemconfigure(self._dot_core, fill=color)
+            self.dot.itemconfigure(self._dot_ring, outline=_mix(color, HEAD_BG, 0.55))
+        except Exception:
+            pass
 
     # ---- 改名 ----
     def _edit_title(self, _event=None):
@@ -745,6 +912,8 @@ class FloatChat:
                    fill=FIELD_BG, outline="", tags="pill")
         cv.create_line(r, 0.8, w - r, 0.8,
                        fill=ACCENT if accent else "#333a4b", width=1, tags="pill")
+        cv.create_line(r * 0.8, h - 1.2 * self.s, w - r * 0.8, h - 1.2 * self.s,
+                       fill=_mix(FIELD_BG, "#000000", 0.30), width=1, tags="pill")
         cv.tag_lower("pill")
         cv.coords(self._entry_item, int(12 * self.s), h / 2)
         try:
@@ -790,7 +959,7 @@ class FloatChat:
             self._add_meta(f"起不来麦克风进程：{exc}")
             return
         self.mic_btn.set(text="●", bg="#7a2b2b", fg="#ffd9d9")
-        self.dot.configure(fg=DANGER)
+        self._set_dot(DANGER)
         self.hint.configure(text="录音中")
         threading.Thread(target=self._mic_log, args=(self.mic_proc,), daemon=True).start()
 
@@ -803,7 +972,7 @@ class FloatChat:
             except Exception:
                 pass
         self.mic_btn.set(text="麦", bg="#222732", fg=MUTED)
-        self.dot.configure(fg=ACCENT)
+        self._set_dot(ACCENT)
         self._update_hint()
 
     def _mic_log(self, proc):
@@ -887,22 +1056,56 @@ class FloatChat:
 
     # ---- 列表 ----
     def _reflow(self, avail=None):
-        """窗口/字体变化后重新折行：气泡宽度按新的可用宽度算"""
+        """窗口/字体变化后重新折行：气泡宽度按新的可用宽度算。
+
+        **只在宽度真的变了时工作**。追加消息走 `_append` 的单条 layout，
+        不再每来一句就把所有历史气泡重排一遍（旧行为是 O(n²)）。
+        """
         feed = getattr(self, "feed", None)
         if feed is None:            # 画布的 Configure 可能早于列表建好
             return
         width = int(avail or feed.winfo_width() or 300)
         width = max(120, width - int(10 * self.s))      # 给细滚动条留位置
+        if width == self._last_reflow_width:
+            return
+        self._last_reflow_width = width
         self.opt.avail = width
         for row in self.rows:
             try:
                 row.layout(width)
             except Exception:
                 pass
+        self._update_scrollregion(width)
+
+    def _update_scrollregion(self, width=None):
+        """安排一次 idle 更新：合并整批新增消息，滚到真正的底部。
+
+        **不能在 append 里同步 update_idletasks**：那会把整棵树重排一遍，每来一句都付
+        O(rows) 的代价，正是旧版越用越卡的主因。把 update 合并到一次 idle，既快又不会
+        因为 bbox 早了一帧而留下底部空白。
+        """
+        feed = getattr(self, "feed", None)
+        if feed is None:
+            return
+        if width is not None:
+            try:
+                feed.itemconfigure(self._inner_item, width=width)
+            except Exception:
+                pass
+        if self._scroll_job is None:
+            self._scroll_job = self.root.after_idle(self._scroll_now)
+
+    def _scroll_now(self):
+        self._scroll_job = None
+        feed = getattr(self, "feed", None)
+        if feed is None:
+            return
         try:
-            feed.itemconfigure(self._inner_item, width=width)
             self.inner.update_idletasks()
             feed.configure(scrollregion=feed.bbox("all"))
+            if self._stick_bottom:
+                self._to_bottom()
+                self._stick_bottom = False
         except Exception:
             pass
 
@@ -933,26 +1136,25 @@ class FloatChat:
             return
         self.empty = Meta(self.inner, "在这里跟它说话 · 回车发送", self.opt, center=True)
         self.rows.append(self.empty)
-        self._reflow()
-        self._to_bottom()
+        self._stick_bottom = True
+        self._update_scrollregion()
 
     def _add_bubble(self, role, text, stamp):
+        # 在 append **之前**判断：加完这一条之后 yview 已经变了，再判断就永远"不在底部"。
         stick = self._at_bottom()
         self._clear_empty()
         b = Bubble(self.inner, role, text, stamp, self.opt)
         self.rows.append(b)
-        self._reflow()
-        if stick:
-            self._to_bottom()
+        self._stick_bottom = self._stick_bottom or stick
+        self._update_scrollregion()
 
     def _add_meta(self, text):
         stick = self._at_bottom()
         self._clear_empty()
         m = Meta(self.inner, text, self.opt)
         self.rows.append(m)
-        self._reflow()
-        if stick:
-            self._to_bottom()
+        self._stick_bottom = self._stick_bottom or stick
+        self._update_scrollregion()
 
     def _render(self, entry):
         """一条 jsonl → 一个玻璃片。**新消息和历史回放走同一条路**，样式才不会两套。
@@ -1049,9 +1251,27 @@ class FloatChat:
 
     def _update_hint(self):
         if self.mic_proc and self.mic_proc.poll() is None:
-            self.hint.configure(text="录音中")
+            text = "录音中"
         else:
-            self.hint.configure(text=f"{self.seen} 条" if self.seen else "已连上")
+            text = f"{self.seen} 条" if self.seen else "已连上"
+        # 每 200ms 都 configure 一次会让 Tk 重排 header；内容没变就别碰。
+        try:
+            if self.hint.cget("text") != text:
+                self.hint.configure(text=text)
+        except Exception:
+            pass
+
+    def _hidden_from_config(self):
+        """每 200ms 只 stat 配置文件；内容没变就不读盘、不解析 JSON。"""
+        try:
+            st = os.stat(CONFIG)
+            key = (st.st_mtime_ns, st.st_size)
+        except OSError:
+            key = None
+        if key != self._cfg_key:
+            self._cfg_key = key
+            self._cfg_hidden = bool(read_config().get("hidden"))
+        return self._cfg_hidden
 
     def _sync_visible(self):
         """跟随配置里的 `hidden`：插件写 true 就藏起来（进程还活着，照样收话、照样念），写 false 就回来。
@@ -1061,7 +1281,7 @@ class FloatChat:
         用 withdraw 而不是 iconify：图标化的窗口还会占任务栏/出现在 Alt+Tab 里，
         而这是置顶悬浮窗，藏起来就该完全看不见。
         """
-        want = bool(read_config().get("hidden"))
+        want = self._hidden_from_config()
         if want == self.hidden:
             return
         self.hidden = want
