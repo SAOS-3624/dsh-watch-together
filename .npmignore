@@ -1,5 +1,5 @@
-__pycache__/
-*.pyc
-.tmp/
-*.log
-package-lock.json
+# npm 打包**不读 .gitignore**（`files` 白名单命中就全收），所以 Python 字节码
+# 会跟着 examples/ 一起进包 —— 实测 +276kB，而且带着已经删掉源文件的 .pyc
+# （glass_window.pyc 就是这么混进去的）。
+**/__pycache__/
+**/*.pyc
