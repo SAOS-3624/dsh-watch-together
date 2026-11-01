@@ -46,6 +46,47 @@ function portOpen(port, timeoutMs = 450) {
   });
 }
 
+function downloadFor(id, platform = process.platform) {
+  const win = platform === 'win32';
+  switch (id) {
+    case 'ffmpeg':
+    case 'ffprobe':
+      return {
+        downloadUrl: win
+          ? 'https://www.gyan.dev/ffmpeg/builds/ffmpeg-release-essentials.zip'
+          : 'https://ffmpeg.org/download.html',
+        downloadLabel: win ? '下载 FFmpeg zip' : '下载 FFmpeg',
+      };
+    case 'python':
+      return {
+        downloadUrl: win ? 'https://www.python.org/downloads/windows/' : 'https://www.python.org/downloads/',
+        downloadLabel: '下载 Python',
+      };
+    case 'core':
+      return {
+        downloadUrl: 'https://github.com/SAOS-3624/dsh-video-storyboard',
+        downloadLabel: '获取分镜插件',
+      };
+    case 'extension':
+      return {
+        downloadUrl: 'https://github.com/SAOS-3624/dsh-watch-together/tree/main/extension',
+        downloadLabel: '扩展目录',
+      };
+    case 'voice':
+      return {
+        downloadUrl: 'https://github.com/SAOS-3624/dsh-watch-together/tree/main/examples/voice-edge-tts',
+        downloadLabel: '语音示例',
+      };
+    case 'browser':
+      return {
+        downloadUrl: 'https://learn.microsoft.com/en-us/microsoft-edge/devtools-guide-chromium/remote-debugging/',
+        downloadLabel: '调试端口说明',
+      };
+    default:
+      return {};
+  }
+}
+
 function corePackage() {
   try {
     return { ok: true, detail: require.resolve('dsh-video-storyboard/package.json') };
@@ -99,7 +140,7 @@ export async function checkEnvironment(_ctx, env = process.env) {
   const watch = readWatchSettings(env);
   const browserOpen = video.browserPort ? await portOpen(video.browserPort) : false;
   const chatOpen = await portOpen(watch.chatPort);
-  return [
+  const rows = [
     { id: 'ffmpeg', label: 'ffmpeg', ...ffmpeg },
     { id: 'ffprobe', label: 'ffprobe', ...ffprobe },
     { id: 'python', label: 'Python（悬浮窗）', ...python },
@@ -116,4 +157,5 @@ export async function checkEnvironment(_ctx, env = process.env) {
     },
     { id: 'voice', label: '语音适配器', ...voiceState },
   ];
+  return rows.map((row) => ({ ...row, ...downloadFor(row.id) }));
 }

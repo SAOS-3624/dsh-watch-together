@@ -103,6 +103,13 @@ test('watch settings server: token、保存、key 不适用但路径可读', asy
   assert.equal(state.watch.chatPort, 9388);
   assert.equal(state.voice.adapter, 'D:/voice/my.mjs');
   assert.equal(state.paths.watch.endsWith('watch.json'), true);
+  const checked = await api('/check', { method: 'POST', headers: { 'content-type': 'application/json' }, body: '{}' });
+  assert.equal(checked.status, 200);
+  const checks = JSON.parse(checked.body).checks;
+  for (const id of ['ffmpeg', 'python', 'core']) {
+    const row = checks.find((c) => c.id === id);
+    assert.match(row.downloadUrl, /^https:\/\//, id + ' 需要官方下载地址');
+  }
   assert.equal(page.tool.name, 'watch_together_settings');
   assert.equal((await page.tool.execute()).available, true);
 });
