@@ -7,6 +7,18 @@ This package starts its own version line at `0.0.7` — it is not a continuation
 
 两项都是从社区审计（#18 / #16）来的，各配了回归用例。
 
+### Changed — 悬浮窗换成实时捕获管线，模块拆成接口（合 PR #20）
+
+- **窗口实现换代**：`examples/floating-chat/window.py` 以 PR #15 的实时捕获管线为底稿重写
+  （1454 行，原 3372 行）。每帧抓屏 → 1/4 尺度模糊 → SDF 边缘折射 → 透镜采样 → 合成，
+  静帧时整条管线跳过。**依赖变化**：`mss` 和 `numpy` 从可选变必需，缺了窗口起不来。
+- **保留并补齐交互**：双击标题改名、▾ 折叠/展开、系统行（meta）、发送回写、位置保存、
+  麦克风图标、滑入动画。输入框仍是"画布上画字 + 2×2 的 Entry 只收 IME/键盘"。
+- **模块解耦**：`src/interfaces.js` 组合识别 / TTS / 悬浮窗三个接口，`handler.js` 与
+  `watch-loop.js` 只调接口、不再直接 import 实现（`docs/INTERFACES.zh.md`）。
+- **窗口线协议**：插件写 `window-events.jsonl`、窗口写 `window-outbox.jsonl`，
+  Python 侧 `window_protocol.py` 只共享线格式；旧版只写 `chat.jsonl` 时窗口继续兼容。
+
 ### Fixed — 无音轨视频不再卡在"缺台词"门槛（fixes #18）
 
 `noListen` 之前只改了文案，**没有参与 `hasLines`** —— 无可等台词时 `segLines` 为空，

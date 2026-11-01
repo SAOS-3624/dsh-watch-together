@@ -125,6 +125,8 @@ const loop = {
   cache: null,
   /** 上一句台词比画面晚了几秒（可观测性：用户说"后面越来越慢"时先看它） */
   lastSpeechLateSec: null,
+  /** TTS 接口的订阅者计数；startWatchLoop 注入 tts 后设置，loopStatus 用 */
+  voiceListeners: null,
   /** 最后一条已经投出去的插话（`{ at, text }`）—— 同一条不投第二遍，见 tick 里那段 */
   lastChatFed: null,
   lastWake: null,
@@ -255,7 +257,7 @@ export function loopStatus() {
     },
     // 声音：核心只发事件。listeners = 0 表示"没人接声音"，到点的词会改走叫醒模型。
     voice: {
-      listeners: speechSubscribers(),
+      listeners: loop.voiceListeners ? loop.voiceListeners() : speechSubscribers(),
       lastAt: loop.lastSpeechAt ?? null,
     },
     pos: est ? +est.pos.toFixed(1) : null,
@@ -305,6 +307,8 @@ export function startWatchLoop({
   lead = WATCH_LEAD,
   // 段缓存（可选）：只用于 `statusOnly` 里报"缓存里已有几段"，不参与任何决策
   cache = null,
+  // TTS 接口可注入（handler 传 api.tts）；不传就走 deps.tts / 旧总线。
+  tts: ttsOption = null,
   // 依赖可注入：进程内默认真实实现；测试/仿真用假的，于是"到点会不会说话"可以离线验证
   deps = {},
   // **到点是否往会话里投一条消息把人叫醒**。默认**关**。
@@ -335,6 +339,12 @@ export function startWatchLoop({
     // 关掉时给一个**不会报错**的空实现：所有调用点照旧，但什么都不发
     : async () => ({ ok: true, via: 'disabled' });
   const now = deps.now ?? (() => Date.now());
+  // TTS 走接口：循环只发事件，不 import 声音实现。没注入就退回旧的总线，
+  // 兼容 CLI/测试；宿主通过 handler 注入 api.tts 后这条 fallback 不会走到。
+  const tts = deps.tts ?? ttsOption ?? null;
+  const listeners = () => (tts?.subscribers ? tts.subscribers() : speechSubscribers());
+  loop.voiceListeners = listeners;
+  const speak = (event) => (tts?.due ? tts.due(event) : emitSpeech(event));
   const ticker = deps.ticker ?? startTicker;
   const readLatency = deps.loadLatency ?? loadLatency;
   // 读进度的间隔可注入：真机 15 秒够了（读一次 CDP 是毫秒级，主要是别太频繁）；
@@ -389,7 +399,7 @@ export function startWatchLoop({
   const browserPort = explicitPort ?? deps.browserPort ?? null;
   // 没有会话 id 也不许起循环 —— **除非**已经有声音订阅者：那种情况下到点的词
   // 交给订阅者念，不需要叫醒任何模型（宿主的 speech service 就属于这一类）。
-  if (!sessionId && speechSubscribers() === 0) return { ok: false, reason: 'no-session-id' };
+  if (!sessionId && listeners() === 0) return { ok: false, reason: 'no-session-id' };
   // 段可以由批次表生成，所以只有"既没给段、也没给段长"才算没段
   if ((!Array.isArray(segments) || segments.length === 0) && !(Number(segment) > 0 || Array.isArray(ramp))) {
     return { ok: false, reason: 'no-segments' };
@@ -917,7 +927,7 @@ export function startWatchLoop({
         // ② 模型刚用 `say` 回了一句（`replyBusyUntil`）。以前只算①，
         // 于是回话刚开口两秒，脚本那句就塞进串行链 —— 排队太久会被适配器
         // 当作"追不上画面"直接丢掉（连字都不出现）。
-        const voiceBusy = speechSubscribers() > 0
+        const voiceBusy = listeners() > 0
           && (tNow < (loop.voiceBusyUntil ?? 0) || tNow < replyBusyUntil());
         const est = estimate(loop.anchor, tNow);
         // **位置不可信就不许念**（2026-10-31 实报："关了浏览器还在念台词"）。
@@ -941,7 +951,7 @@ export function startWatchLoop({
           }).catch(() => null);
           const line = due ? String(due.text ?? due) : null;
           if (line) {
-            const delivered = emitSpeech({
+            const delivered = speak({
               at: est.pos, text: line, input: loop.input, segment: segNow.from,
             });
             if (delivered > 0) {
@@ -949,12 +959,12 @@ export function startWatchLoop({
               if (due && Number.isFinite(due.late)) loop.lastSpeechLateSec = due.late;
               // 记下"引擎到什么时候才空出来"。**用完整时长**（不是 speechLag 的一半，
               // 那是"什么时候可以插话"，两件事）。
-              if (speechSubscribers() > 0) loop.voiceBusyUntil = tNow + speechSeconds(line.length) * 1000;
+              if (listeners() > 0) loop.voiceBusyUntil = tNow + speechSeconds(line.length) * 1000;
               note(`speech ${Math.round(est.pos)}s → ${delivered} listener(s): ${line.slice(0, 20)}…`);
               loop.lastReason = 'spoke';
               // **只有"真有人念"才算说过了**：只写进流不算 —— 那样模型再也不会被叫醒，
               // 用户就只能盯着悬浮窗里一句没人念的字。
-              if (speechSubscribers() > 0) return;
+              if (listeners() > 0) return;
             }
           }
         }
