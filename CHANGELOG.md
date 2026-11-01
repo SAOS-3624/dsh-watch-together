@@ -3,6 +3,14 @@
 All notable changes to **dsh-watch-together** are documented here.
 This package starts its own version line at `0.0.7` — it is not a continuation of `dsh-video-storyboard`.
 
+## [0.2.2] - 2026-11-01
+
+只改元数据，不动行为。
+
+- `package.json` 补 `dsh.catalog`（category / 中英双语 summary / capabilities）——
+  社区插件市场直接读 npm 上带 `dsh-plugin` 关键词的包，每天同步一次、没有提交入口；
+  有 `dsh.catalog` 时市场页面展示的是这里写的分类和摘要，没有就退回 npm description。
+
 ## [0.2.1] - 2026-11-01
 
 两项都是从社区审计（#18 / #16）来的，各配了回归用例。

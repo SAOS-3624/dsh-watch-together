@@ -1,6 +1,6 @@
 {
   "name": "dsh-watch-together",
-  "version": "0.2.1",
+  "version": "0.2.2",
   "description": "Watch a video together with a text-only agent: follow the user's real playback position, hand over one segment at a time just before it ends, and keep a single text stream of scripted lines, interjections and the user's replies.",
   "keywords": [
     "dsh",
@@ -95,6 +95,17 @@
     },
     "client": {
       "platform": "web"
+    },
+    "catalog": {
+      "category": "tool",
+      "summary": {
+        "en": "Watch a video together with a text-only agent: it follows your real playback position and hands over one segment at a time, just before that segment ends.",
+        "zh": "和只有文字的智能体一起看视频：跟着你真实的播放位置，一段一段把画面和台词交到它手上，在每段结束前说完。"
+      },
+      "capabilities": [
+        "fs",
+        "shell"
+      ]
     }
   }
 }
