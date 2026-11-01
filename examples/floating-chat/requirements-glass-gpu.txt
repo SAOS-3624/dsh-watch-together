@@ -1,0 +1,4 @@
+# dsh-watch-together — optional GPU live-capture glass window
+# Windows 10 2004+ only; OpenGL 3.3+ (NVIDIA/AMD/Intel).
+-r requirements-glass.txt
+moderngl>=5.10

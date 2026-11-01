@@ -452,6 +452,20 @@ DSH_GLASS_WINDOW=1 pythonw examples/floating-chat/glass_window.py
 - 输入框文字画在 Canvas 上，原生 Entry 只做 IME 输入，不会再出现一条黑色输入条。
 - `chat.jsonl` 里的 `role: "meta"` 状态行（例如早期的"叫醒失败"）不会进入聊天时间线。
 
+#### GPU 版（可选）
+
+`examples/floating-chat/glass_window_gpu.py` 复用同一套 UI/聊天流，只把每帧的抓屏 → 模糊 → 折射 → 合成搬到 GPU；
+底图原生分辨率，保留运动残影和外框色散。默认仍不开，CPU 版不需要 `moderngl`。
+
+```bash
+pip install -r examples/floating-chat/requirements-glass-gpu.txt
+DSH_GLASS_GPU=1 pythonw examples/floating-chat/glass_window_gpu.py
+```
+
+- 需要 OpenGL 3.3+；GPU 初始化失败会自动回退到 CPU 的 `glass_window.py` 合成。
+- 三块玻璃布局（标题 / 主体 / 输入），滚动条在主体右侧外面；主体仍保留 4 条可见消息 + 滚轮翻页。
+- 静态画面会跳帧省 GPU；感知到变化后 0.3s 内保持出帧。
+
 
 ## 命令行（没有 DSH 宿主时）
 

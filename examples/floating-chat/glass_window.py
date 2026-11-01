@@ -137,6 +137,16 @@ def display_hz():
         return 60
 
 
+def slabs_for(w, h):
+    """仓库那种三块玻璃：标题栏 / 主体 / 输入栏，中间留透明缝。"""
+    out, gap = 12, 10
+    top_h, bot_h = 54, 70
+    top = (out, out, w - out, out + top_h)
+    bot = (out, h - out - bot_h, w - out, h - out)
+    body = (out, top[3] + gap, w - out, bot[1] - gap)
+    return top, body, bot
+
+
 def chat_layout(h):
     """消息区在高度不足 560 时压缩行高；底部输入框始终贴底。"""
     input_top = h - 80
@@ -169,10 +179,13 @@ SHAPES = shapes_for(W, H)
 
 
 def rounded_mask():
-    # 4x 超采样再缩小，圆角边缘不会出现锯齿
-    m = Image.new("L", (W * 4, H * 4), 0)
-    ImageDraw.Draw(m).rounded_rectangle(
-        (0, 0, W * 4 - 1, H * 4 - 1), radius=R * 4, fill=255)
+    # 三块独立的玻璃；缝里保持透明，能透出桌面。
+    ss = 4
+    m = Image.new("L", (W * ss, H * ss), 0)
+    d = ImageDraw.Draw(m)
+    for x0, y0, x1, y1 in slabs_for(W, H):
+        d.rounded_rectangle((x0 * ss, y0 * ss, x1 * ss, y1 * ss),
+                            radius=22 * ss, fill=255)
     return m.resize((W, H), Image.Resampling.LANCZOS)
 
 
@@ -633,20 +646,29 @@ class LiveGlass:
         sw4, sh4 = max(2, (gr - gl) // 4), max(2, (gb - gt) // 4)
         # 60fps 路径：只在 1/4 分辨率做一次模糊和折射，再放大
         small_raw = im.resize((sw4, sh4), Image.Resampling.BILINEAR)
-        small = small_raw.filter(ImageFilter.GaussianBlur(1.45))
-        strong = small.filter(ImageFilter.GaussianBlur(2.6))
-        arr = np.asarray(small)
         arr_raw = np.asarray(small_raw)
-        arr_strong = np.asarray(strong)
-        # 背景没变就不重新合成/上传，静态桌面时把 CPU 让出来
-        sig = arr[::8, ::8].astype(np.int16).mean(axis=2)
+        # 静态跳帧：先用未模糊的 raw 判断，静止时连模糊都不用做。
+        # 采样 4px、均值 0.01 + 最大差 0.5、运动后保持 0.3s；比原来的
+        # 8px / 0.18 更早触发，慢速滚动不会先停一两帧再动。
+        sig = arr_raw[::4, ::4].astype(np.int16).mean(axis=2)
         box = (gl, gt, gr, gb)
-        if (not FORCE and self._sig is not None and box == self._sig_bbox
-                and float(np.abs(sig - self._sig).mean()) < 0.18):
+        now = time.perf_counter()
+        moved = False
+        if self._sig is not None and box == self._sig_bbox and sig.shape == self._sig.shape:
+            d = np.abs(sig - self._sig)
+            moved = bool(float(d.mean()) > 0.01 or float(d.max()) > 0.5)
+        if moved:
+            self._last_motion = now
+        if (not FORCE and not moved and box == self._sig_bbox
+                and now - getattr(self, "_last_motion", 0.0) > 0.30):
             self._sig = sig
             return None
         self._sig = sig
         self._sig_bbox = box
+        small = small_raw.filter(ImageFilter.GaussianBlur(1.45))
+        strong = small.filter(ImageFilter.GaussianBlur(2.6))
+        arr = np.asarray(small)
+        arr_strong = np.asarray(strong)
         px = int(round((l - gl) / 4.0))
         py = int(round((t - gt) / 4.0))
         sx = np.rint(WARP_X + px).astype(np.int32)
@@ -823,8 +845,18 @@ class LiveGlass:
         except Exception:
             pass
         self.entry = None
+        # 重排时必须先清掉上一轮的文字和底图：只 create 不 delete 会在每一条
+        # 新消息到达时把旧文字留在 Canvas 上，形成重影（而且旧的左对齐用户消息
+        # 会和新的右对齐版本叠在一起，看起来像“左右没分开”）。
+        c.delete("all")
         # 背景图 item 先建，后续文字都在它上面
         self._bg = c.create_image(0, 0, anchor="nw")
+        if self._last_frame is not None:
+            try:
+                self._img = ImageTk.PhotoImage(self._last_frame, master=self.canvas)
+                c.itemconfigure(self._bg, image=self._img)
+            except Exception:
+                pass
         if PREVIEW:
             c.create_rectangle(0, 0, W, H, fill="#0d131d", outline="",
                                tags=("preview-bg",))
@@ -850,13 +882,20 @@ class LiveGlass:
         if h >= 560:
             for i, msg in enumerate(shown):
                 if msg.get("stamp"):
-                    self._text(72, ys[i] - 20, msg["stamp"], anchor="nw",
-                               fill="#a8b7c9", font=f(9))
+                    if str(msg.get("role") or "").lower() in ("user", "me", "human"):
+                        self._text(SHAPES[i][2] - 26, ys[i] - 20, msg["stamp"], anchor="ne",
+                                   fill="#a8b7c9", font=f(9))
+                    else:
+                        self._text(72, ys[i] - 20, msg["stamp"], anchor="nw",
+                                   fill="#a8b7c9", font=f(9))
 
         # 可见的最近 4 条；滚轮往前翻时整体换页
         for i, msg in enumerate(shown):
             x0, y0, x1, _y1, _r = SHAPES[i]
-            self._text(x0 + 26, y0 + bh // 2, msg["text"], anchor="w",
+            is_user = str(msg.get("role") or "").lower() in ("user", "me", "human")
+            tx = (x1 - 26) if is_user else (x0 + 26)
+            ta = "e" if is_user else "w"
+            self._text(tx, y0 + bh // 2, msg["text"], anchor=ta,
                        max_width=max(120, x1 - x0 - 52),
                        fill="#edf6ff", font=f(14))
         if not shown:
@@ -901,6 +940,28 @@ class LiveGlass:
         c.tag_bind("inputzone", "<Button-1>", self._focus_input)
         c.tag_raise("close")
         c.tag_raise("send")
+        self._draw_scrollbar()
+
+    def _draw_scrollbar(self):
+        """仓库布局：滚动条放在主体玻璃右侧外面，不占消息区。"""
+        c = self.canvas
+        c.delete("sbar")
+        total = len(self.messages)
+        visible = 4
+        if total <= visible:
+            return
+        _top, body, _bot = slabs_for(W, H)
+        x = W - 6
+        top = body[1] + 8
+        view_h = max(1, body[3] - body[1] - 16)
+        frac = visible / float(total)
+        thumb = max(24, int(view_h * frac))
+        max_off = max(1, total - visible)
+        t = 1.0 - max(0, min(max_off, self._msg_offset)) / float(max_off)
+        y0 = top + t * max(0, view_h - thumb)
+        c.create_line(x, y0, x, y0 + thumb, width=3, fill="#8d95a4",
+                      capstyle="round", tags=("sbar",))
+        c.tag_raise("sbar")
 
     def _preview_resize(self, w, h):
         """拖拽时先缩放上一帧并重排文字，松手后再重建玻璃贴图。"""
