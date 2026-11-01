@@ -89,7 +89,9 @@ function downloadFor(id, platform = process.platform) {
 
 function corePackage() {
   try {
-    return { ok: true, detail: require.resolve('dsh-video-storyboard/package.json') };
+    // package.json is intentionally absent from the core package exports map,
+    // so resolve an exported module face instead of the manifest.
+    return { ok: true, detail: require.resolve('dsh-video-storyboard/probe') };
   } catch {
     return { ok: false, detail: '未解析到 dsh-video-storyboard（陪看依赖它建段）' };
   }

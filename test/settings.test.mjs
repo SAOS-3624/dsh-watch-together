@@ -127,6 +127,9 @@ test('watch settings server: token、保存、key 不适用但路径可读', asy
     const row = checks.find((c) => c.id === id);
     assert.match(row.downloadUrl, /^https:\/\//, id + ' 需要官方下载地址');
   }
+  const core = checks.find((c) => c.id === 'core');
+  assert.equal(core.ok, true, '已安装的核心包必须被识别，不能只在缺包时才有下载按钮');
+  assert.match(core.detail, /probe\.js$/);
   assert.equal(page.tool.name, 'watch_together_settings');
   assert.equal((await page.tool.execute()).available, true);
 });
