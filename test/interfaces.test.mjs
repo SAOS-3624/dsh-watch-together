@@ -79,12 +79,15 @@ test('window interface uses the transport, not a hard-coded process', async () =
       show: () => { seen.push(['show']); return true; },
       alive: () => true,
       hidden: () => false,
+      message: (entry) => { seen.push(['message', entry.text]); return true; },
     },
   });
   assert.deepEqual(w.open({ force: true }), { ok: true });
   assert.equal(w.hide(), true);
+  w.message({ role: 'assistant', text: 'via transport' });
   assert.deepEqual(w.status(), { alive: true, hidden: false });
-  assert.deepEqual(seen.map((s) => s[0]), ['open', 'hide']);
+  assert.deepEqual(seen.map((s) => s[0]), ['open', 'hide', 'message']);
+  assert.equal(seen[2][1], 'via transport');
 });
 
 test('chat-store mirrors entries into the window protocol', async () => {

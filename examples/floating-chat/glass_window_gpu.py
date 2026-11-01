@@ -462,14 +462,8 @@ def capture_gpu(self, sct):
         self._sig_bbox = box
 
         panel = _gpu.render(shot.bgra, shot.size, px, py, motion=_gpu._motion)
-        out = panel.copy()
-        mic_box = out.crop((G.MIC_POS[0], G.MIC_POS[1],
-                            G.MIC_POS[0] + 28, G.MIC_POS[1] + 28)).convert("L")
-        mic_bg = float(np.median(np.asarray(mic_box))) / 255.0
-        out = out.convert("RGBA")
-        icon = G.MIC_LIGHT if mic_bg < 0.48 else G.MIC_DARK
-        out.paste(icon, G.MIC_POS, icon)
-        return G.finish(out.convert("RGB"))
+        # 麦克风由 window.py 的 Canvas 图标绘制，GPU 路径不再叠第二层。
+        return G.finish(panel.convert("RGB"))
     except Exception as exc:
         print("GPU capture failed, falling back to CPU:", repr(exc), flush=True)
         return _orig_capture(self, sct)

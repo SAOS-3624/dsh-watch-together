@@ -7,6 +7,12 @@ export {
   INTERFACE_VERSION,
   createWatchInterfaces,
 } from './interfaces.js';
+export {
+  getTtsPort,
+  getWindowPort,
+  installPorts,
+  resetPorts,
+} from './runtime-ports.js';
 export { createRecognitionInterface } from './recognition-interface.js';
 export { createTtsInterface } from './tts-interface.js';
 export { createWindowInterface } from './window-interface.js';

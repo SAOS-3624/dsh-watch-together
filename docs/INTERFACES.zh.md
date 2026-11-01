@@ -30,6 +30,23 @@ api.tts.due({ at, segment, ... }); // 声音事件
 每个接口都是 frozen 对象；缺少依赖时在**创建时**报错（`recognition` 缺
 `runStoryboard` 等），而不是陪看跑到一半才炸。
 
+### 运行时端口
+
+`src/runtime-ports.js` 是核心模块取接口的唯一入口：
+
+```js
+import { installPorts, getTtsPort, getWindowPort } from 'dsh-watch-together/public-api';
+
+installPorts({ tts: api.tts, window: api.window }); // 组合根注入
+getTtsPort().due({ at: 12, text: '...' });
+getWindowPort().message({ role: 'assistant', text: '...' });
+```
+
+`chat-store.js` / `watch-loop.js` / `watch-actions.js` / `input-surface.js`
+只 import 这个端口模块，不再 import `voice.js`、`floating-window.js` 或
+`window-protocol.js`。没有注入时端口提供历史默认实现（speech-bus + 自带
+Python 窗口），所以 CLI 和既有测试行为不变。
+
 ## 2. 窗口线协议
 
 窗口实现不需要 import 插件代码，只读写两个 JSONL 文件（默认在

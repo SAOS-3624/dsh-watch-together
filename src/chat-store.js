@@ -23,9 +23,8 @@ import { appendFileSync, closeSync, mkdirSync, openSync, readFileSync, readSync,
 import { join } from 'node:path';
 
 import { cacheDir } from 'dsh-video-storyboard/cache';
-import { emitSpeech, onSpeech, speechSubscribers } from './voice.js';
 import { noteReply } from './reply-guard.js';
-import { appendWindowEvent } from './window-protocol.js';
+import { getTtsPort, getWindowPort } from './runtime-ports.js';
 
 /** 聊天记录（jsonl，一行一条 {role, text, at}） */
 export function chatFile(env = process.env) {
@@ -103,10 +102,15 @@ export function appendChat(role, text, meta = {}, env = process.env) {
   // 浏览器页和旧窗口还能读；窗口按 (role, text, at) 去重，不会出现两遍。
   // 写失败不能影响聊天主流程 —— 窗口是展示层，不是数据层。
   try {
-    appendWindowEvent({
-      type: role === 'meta' ? 'meta' : 'message',
-      role, text: entry.text, at: entry.at, ...(entry.t != null ? { t: entry.t } : {}),
-    }, env);
+    const win = getWindowPort();
+    if (role === 'meta') {
+      win.meta(entry.text, { role, at: entry.at }, env);
+    } else {
+      win.message({
+        role, text: entry.text, at: entry.at,
+        ...(entry.t != null ? { t: entry.t } : {}),
+      }, env);
+    }
   } catch { /* 展示接口不可用时静默降级到 chat.jsonl */ }
   return entry;
 }
@@ -132,7 +136,9 @@ export function appendChat(role, text, meta = {}, env = process.env) {
  * @param {{ env?: object, onEntry?: (e:object)=>void, fallbackMs?: number }} [o]
  *        `fallbackMs` 兜底等待（默认 2500ms，可用 `DSH_WATCH_CAPTION_FALLBACK_MS` 覆盖）
  */
-export function attachSpeechToChat({ env = process.env, onEntry = null, fallbackMs = null } = {}) {
+export function attachSpeechToChat({
+  env = process.env, onEntry = null, fallbackMs = null, tts = null,
+} = {}) {
   const fromEnv = Number(env?.DSH_WATCH_CAPTION_FALLBACK_MS);
   const waitMs = Number.isFinite(fallbackMs) && fallbackMs >= 0
     ? Number(fallbackMs)
@@ -152,7 +158,8 @@ export function attachSpeechToChat({ env = process.env, onEntry = null, fallback
     try { onEntry?.(entry); } catch { /* 展示层的事，别影响写盘 */ }
   };
 
-  const off = onSpeech((e) => {
+  const bus = tts ?? getTtsPort();
+  const off = bus.subscribe((e) => {
     // 插话那句是**先写流再广播**的（`appendSpoken`），这里再写就重复了
     if (e.origin === 'chat') return;
     if (e.state !== 'due' && e.state !== 'spoken' && e.state !== 'skipped') return;
@@ -178,7 +185,7 @@ export function attachSpeechToChat({ env = process.env, onEntry = null, fallback
     }
 
     // `due`：没人会出声就直接写 —— 零依赖路径不能因为等不到 `spoken` 而变哑
-    if (speechSubscribers() === 0) { write({ at: e.at, text }); return; }
+    if (bus.subscribers() === 0) { write({ at: e.at, text }); return; }
     if (waiting.has(key) || writtenKeys.has(key)) return;
     const timer = setTimeout(() => {
       waiting.delete(key);
@@ -240,7 +247,7 @@ export function appendSpoken(role, text, { t = null, env = process.env, speak = 
   // **登记**：这句已经在流里了。之后声音适配器发来的 `spoken`（没有 origin）看到这条就不会再写一遍。
   writtenKeys.add(speechKey(t, clean));
   if (writtenKeys.size > 500) writtenKeys.clear();
-  if (speak) emitSpeech({ at: t, text: clean, state: 'due', origin: 'chat' });
+  if (speak) getTtsPort().due({ at: t, text: clean, origin: 'chat' });
   return entry;
 }
 
