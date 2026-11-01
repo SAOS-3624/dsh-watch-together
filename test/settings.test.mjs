@@ -1,0 +1,112 @@
+import test from 'node:test';
+import assert from 'node:assert/strict';
+import { mkdtempSync, readFileSync, writeFileSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
+import { Readable } from 'node:stream';
+
+import {
+  configuredChatPort, readVideoSettings, readVoiceSettings, readWatchSettings,
+  writeVideoSettings, writeVoiceSettings, writeWatchSettings,
+} from '../src/settings/config.js';
+import { createSettingsPage } from '../src/settings/server.js';
+
+const home = () => mkdtempSync(join(tmpdir(), 'watch-settings-'));
+const envOf = (dir) => ({ DSH_HOME: dir });
+
+test('watch settings: 默认端口、写入 watch.json、合并未知字段', () => {
+  const dir = home();
+  const env = envOf(dir);
+  assert.equal(readWatchSettings(env).chatPort, 9377);
+  writeFileSync(join(dir, 'watch.json'), JSON.stringify({ custom: true }));
+  const saved = writeWatchSettings({ chatPort: 9388 }, env);
+  assert.equal(saved.chatPort, 9388);
+  assert.equal(configuredChatPort(env), 9388);
+  const raw = JSON.parse(readFileSync(join(dir, 'watch.json'), 'utf8'));
+  assert.equal(raw.custom, true);
+  assert.throws(() => writeWatchSettings({ chatPort: 70000 }, env), /65535/);
+});
+
+test('watch settings: video 端口与 voice adapter 写入', () => {
+  const dir = home();
+  const env = envOf(dir);
+  const video = writeVideoSettings({ browserPort: 9333 }, env);
+  assert.equal(video.browserPort, 9333);
+  assert.equal(readVideoSettings(env).browserPort, 9333);
+  writeVideoSettings({ browserPort: false }, env);
+  assert.equal(readVideoSettings(env).browserPort, null);
+
+  const voice = writeVoiceSettings({ adapter: 'D:/voice/my.mjs' }, env);
+  assert.equal(voice.adapter, 'D:/voice/my.mjs');
+  assert.equal(readVoiceSettings(env).adapter, 'D:/voice/my.mjs');
+  writeVoiceSettings({ adapter: '' }, env);
+  assert.equal(readVoiceSettings(env).adapter, '');
+  assert.equal(Object.hasOwn(JSON.parse(readFileSync(join(dir, 'voice.json'), 'utf8')), 'adapter'), false);
+});
+
+function fakeWeb() {
+  let handler = null;
+  const webServer = {
+    port: 3080,
+    register(route) { handler = route.handler; return () => { handler = null; }; },
+    getOrigin() { return 'http://127.0.0.1:3080'; },
+  };
+  return { webServer, handler: () => handler };
+}
+
+function response() {
+  const out = { status: 0, headers: {}, body: '' };
+  return {
+    out, headersSent: false,
+    writeHead(status, headers) { out.status = status; out.headers = headers || {}; this.headersSent = true; },
+    end(body = '') { out.body = String(body); },
+  };
+}
+
+async function invoke(handler, { method = 'GET', url = '/', headers = {}, body } = {}) {
+  const req = Readable.from(body === undefined ? [] : [Buffer.from(body)]);
+  req.method = method; req.url = url; req.headers = headers;
+  const res = response();
+  await handler(req, res);
+  return res.out;
+}
+
+test('watch settings server: token、保存、key 不适用但路径可读', async () => {
+  const dir = home();
+  const env = envOf(dir);
+  const web = fakeWeb();
+  const page = createSettingsPage({ ctx: { get: () => web.webServer }, env });
+  assert.ok(page);
+  const token = new URL(page.url).searchParams.get('token');
+  const html = await invoke(web.handler(), { url: '/dsh-watch-together/settings?token=' + token });
+  assert.equal(html.status, 200);
+  assert.match(html.body, /一起看 · 设置/);
+  assert.equal((await invoke(web.handler(), { url: '/dsh-watch-together/settings?token=nope' })).status, 403);
+
+  const api = (action, options = {}) => invoke(web.handler(), {
+    ...options,
+    url: '/dsh-watch-together/settings/api' + action,
+    headers: { 'x-settings-token': token, ...(options.headers || {}) },
+  });
+  assert.equal((await api('/state', { headers: { 'x-settings-token': 'nope' } })).status, 401);
+  const saved = await api('/save', {
+    method: 'POST',
+    body: JSON.stringify({
+      video: { browserPort: 9333 },
+      watch: { chatPort: 9388 },
+      voice: { adapter: 'D:/voice/my.mjs' },
+    }),
+  });
+  assert.equal(saved.status, 200);
+  const state = JSON.parse(saved.body);
+  assert.equal(state.video.browserPort, 9333);
+  assert.equal(state.watch.chatPort, 9388);
+  assert.equal(state.voice.adapter, 'D:/voice/my.mjs');
+  assert.equal(state.paths.watch.endsWith('watch.json'), true);
+  assert.equal(page.tool.name, 'watch_together_settings');
+  assert.equal((await page.tool.execute()).available, true);
+});
+
+test('watch settings server: 没有 webServer 时返回 null', () => {
+  assert.equal(createSettingsPage({ ctx: { get: () => undefined }, env: { DSH_HOME: home() } }), null);
+});

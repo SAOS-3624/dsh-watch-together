@@ -19,6 +19,7 @@
 import { attachSpeechToChat } from './chat.js';
 import { watchTools } from './register.js';
 import { attachConfiguredVoice } from './voice.js';
+import { createSettingsPage } from './settings/server.js';
 
 export const name = 'dsh-watch-together';
 // **只声明 tools**：cordis 的 inject 是硬依赖，服务缺失时 apply 永远不会被调用，
@@ -114,6 +115,18 @@ async function registerAll(ctx) {
   disposers.push(attachSpeechToChat());
 
   disposers.push(...tools.map((tool) => ctx.tools.register(tool)));
+
+  // 设置页是可选能力：没有本机 webServer 的宿主只注册 watch_together。
+  try {
+    const settings = createSettingsPage({ ctx, env: process.env, log: (message) => ctx?.logger?.warn?.(message) });
+    if (settings) {
+      disposers.push(settings.dispose);
+      disposers.push(ctx.tools.register(defineTool(settings.tool)));
+    }
+  } catch (e) {
+    try { ctx?.logger?.warn?.('[dsh-watch-together] settings page failed: ' + String(e?.message ?? e)); } catch { /* ignore */ }
+  }
+
   return () => {
     for (const dispose of disposers.reverse()) dispose?.();
   };

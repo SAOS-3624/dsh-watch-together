@@ -1,0 +1,207 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>一起看 · 设置</title>
+<style>
+:root{color-scheme:light dark;--bg:#f6f7f9;--card:#fff;--text:#1c1f24;--muted:#68707d;--line:#dfe3e9;--accent:#2563eb;--ok:#12805c;--bad:#b42318;--code:#f0f2f5}
+@media(prefers-color-scheme:dark){:root{--bg:#111418;--card:#191d23;--text:#e8eaed;--muted:#9aa3af;--line:#2b313a;--accent:#7aa2ff;--ok:#5bd6a8;--bad:#ff8b82;--code:#0e1115}}
+*{box-sizing:border-box}body{margin:0;background:var(--bg);color:var(--text);font:14px/1.55 system-ui,-apple-system,"Segoe UI",sans-serif}
+main{max-width:900px;margin:0 auto;padding:32px 20px 64px}h1{font-size:24px;margin:0 0 4px}h2{font-size:16px;margin:0 0 12px}p{margin:6px 0;color:var(--muted)}
+.card{background:var(--card);border:1px solid var(--line);border-radius:12px;padding:18px;margin:16px 0}
+.grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(240px,1fr));gap:12px}
+label.field{display:flex;flex-direction:column;gap:6px;font-weight:600;font-size:13px}
+input[type=text],input[type=password],input[type=number],select{width:100%;padding:9px 10px;border:1px solid var(--line);border-radius:8px;background:var(--bg);color:var(--text);font:inherit}
+input[type=checkbox]{margin-right:8px}.check{display:flex;align-items:center;font-weight:500;color:var(--text)}
+.hint{font-size:12px;color:var(--muted);font-weight:400}.actions{display:flex;gap:10px;align-items:center;flex-wrap:wrap;margin-top:16px}
+button{padding:9px 14px;border:1px solid var(--line);border-radius:8px;background:var(--card);color:var(--text);font:inherit;cursor:pointer}
+button.primary{background:var(--accent);border-color:var(--accent);color:#fff}button:disabled{opacity:.55;cursor:default}
+#status{font-size:13px;color:var(--muted)}#status.ok{color:var(--ok)}#status.bad{color:var(--bad)}
+.paths{font-size:12px;color:var(--muted);margin-top:10px}.paths code{background:var(--code);padding:2px 5px;border-radius:4px;color:var(--text)}
+.dep{display:flex;gap:10px;padding:10px 0;border-bottom:1px solid var(--line)}.dep:last-child{border-bottom:0}
+.dot{width:9px;height:9px;border-radius:50%;margin-top:6px;flex:none;background:var(--muted)}.dot.ok{background:var(--ok)}.dot.bad{background:var(--bad)}
+.dep .name{font-weight:600}.dep .detail{font-size:12px;color:var(--muted)}
+.help h3{font-size:14px;margin:14px 0 4px}.help ul{margin:6px 0 0;padding-left:20px}.help li{margin:5px 0;color:var(--muted)}
+code{font:12px/1.5 ui-monospace,SFMono-Regular,Consolas,monospace;background:var(--code);padding:2px 5px;border-radius:4px;color:var(--text)}
+.banner{padding:10px 12px;border-radius:8px;background:var(--code);font-size:12px;color:var(--muted);margin:10px 0}
+</style>
+</head>
+<body><main>
+<h1>一起看 · 设置</h1>
+<p>本页只写本机 JSON。端口与语音适配器在下一场陪看开始时生效；台词/ASR 的 key 在“视频分镜”设置页里配。</p>
+
+<div class="card">
+  <h2>位置与聊天</h2>
+  <div class="grid">
+    <label class="field">浏览器调试端口
+      <input id="browserPort" type="number" min="1" max="65535" placeholder="9333；留空关闭">
+      <span class="hint">Edge 带 --remote-debugging-port=9333 时，插件才能直接读 &lt;video&gt;.currentTime；扩展上报优先于它。</span>
+    </label>
+    <label class="field">聊天服务端口
+      <input id="chatPort" type="number" min="1" max="65535" placeholder="9377">
+      <span class="hint">悬浮窗/扩展插话都写同一个 chat.jsonl；端口被占时换一个。</span>
+    </label>
+  </div>
+  <div class="banner" id="positionHint">位置来源顺序：扩展上报 → 调试端口 → 系统媒体会话（SMTC）；都没有时才需要手动传 cursor。</div>
+</div>
+
+<div class="card">
+  <h2>声音</h2>
+  <div class="grid">
+    <label class="field">语音适配器
+      <input id="adapter" type="text" placeholder="D:/code/my-voice.mjs 或包名；留空关闭">
+      <span class="hint">核心只负责 import 和转发，不自带 TTS。示例见 examples/voice-edge-tts。</span>
+    </label>
+  </div>
+  <div class="banner" id="voiceHint">留空 = 台词只写进聊天记录，不念出来。</div>
+</div>
+
+<div class="card">
+  <h2>依赖与下载</h2>
+  <p>插件不静默安装系统软件；点“重新检查”看现状，命令可复制到终端执行。</p>
+  <div id="deps"></div>
+  <div class="help">
+    <h3>Python（悬浮窗）</h3>
+    <ul>
+      <li>Windows 从 <a href="https://www.python.org/downloads/windows/" target="_blank" rel="noopener">python.org</a> 安装，勾选 “Add python.exe to PATH”。</li>
+      <li>装完终端运行 <code>python --version</code>；没有悬浮窗时仍可用浏览器页面兜底。</li>
+    </ul>
+    <h3>浏览器扩展</h3>
+    <ul>
+      <li>Edge 打开 <code>edge://extensions</code>，开启“开发人员模式”，选择仓库的 <code>extension/</code> 目录“加载解压缩的扩展”。</li>
+      <li>没有扩展时，仍可用调试端口或 SMTC 读位置；只是浏览器页面内播放不一定能上报。</li>
+    </ul>
+    <h3>ffmpeg / ffprobe</h3>
+    <ul>
+      <li>Windows：<code>winget install Gyan.FFmpeg</code>；macOS：<code>brew install ffmpeg</code>。</li>
+      <li>建段和截图都依赖它们；没有 ffmpeg 时陪看无法生成图片。</li>
+    </ul>
+    <h3>dsh-video-storyboard</h3>
+    <ul>
+      <li>陪看插件单向依赖它建段；缺它时工具会报错。先安装/启用分镜插件。</li>
+    </ul>
+    <h3>语音适配器</h3>
+    <ul>
+      <li>示例：<code>examples/voice-edge-tts/</code>；也可以填自己的 .mjs 路径或包名。</li>
+      <li>适配器导入失败只会没声音，不会让陪看起不来；错误会出现在下一场开始时的 note 里。</li>
+    </ul>
+  </div>
+</div>
+
+<div class="card">
+  <div class="paths" id="paths"></div>
+  <div class="actions"><button class="primary" id="save">保存设置</button><button id="check">重新检查环境</button><span id="status"></span></div>
+</div>
+</main>
+<script>
+(() => {
+  const token = new URLSearchParams(location.search).get('token') || '';
+  const apiBase = '/dsh-watch-together/settings/api';
+  const $ = (id) => document.getElementById(id);
+  const state = { video: null, watch: null, voice: null, checks: [], paths: {} };
+
+  async function api(path, body) {
+    const res = await fetch(apiBase + path, {
+      method: body ? 'POST' : 'GET',
+      headers: { 'x-settings-token': token, 'content-type': 'application/json' },
+      body: body ? JSON.stringify(body) : undefined,
+    });
+    const data = await res.json().catch(() => ({}));
+    if (!res.ok) throw new Error(data.error || ('HTTP ' + res.status));
+    return data;
+  }
+
+  function setStatus(text, kind) {
+    const el = $('status');
+    el.textContent = text || '';
+    el.className = kind || '';
+  }
+
+  function escapeHtml(value) {
+    return String(value || '').replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
+  }
+
+  function render() {
+    const v = state.video || {};
+    const w = state.watch || {};
+    const s = state.voice || {};
+    $('browserPort').value = v.browserPort || '';
+    $('chatPort').value = w.chatPort || '';
+    $('adapter').value = s.adapter || '';
+    $('positionHint').textContent = v.browserPort
+      ? '浏览器调试端口：' + v.browserPort + '；扩展上报优先，端口用于直接读页面。'
+      : '未配置调试端口：仍可用扩展上报或 SMTC；都没有时才需要手动传 cursor。';
+    $('voiceHint').textContent = s.adapter
+      ? '当前适配器：' + s.adapter + '（下一场开始时挂载）'
+      : '留空 = 台词只写进聊天记录，不念出来。';
+    $('paths').innerHTML = '<div>video.json：<code>' + escapeHtml(state.paths.video || '') + '</code></div>'
+      + '<div>watch.json：<code>' + escapeHtml(state.paths.watch || '') + '</code></div>'
+      + '<div>voice.json：<code>' + escapeHtml(state.paths.voice || '') + '</code></div>';
+  }
+
+  function renderChecks() {
+    const box = $('deps');
+    if (!state.checks.length) { box.textContent = '尚未检查。'; return; }
+    box.innerHTML = '';
+    for (const c of state.checks) {
+      const row = document.createElement('div');
+      row.className = 'dep';
+      const dot = document.createElement('span');
+      dot.className = 'dot ' + (c.ok ? 'ok' : 'bad');
+      const body = document.createElement('div');
+      const name = document.createElement('div');
+      name.className = 'name';
+      name.textContent = c.label || c.id;
+      const detail = document.createElement('div');
+      detail.className = 'detail';
+      detail.textContent = c.detail || (c.ok ? '可用' : '不可用');
+      body.append(name, detail);
+      row.append(dot, body);
+      box.append(row);
+    }
+  }
+
+  async function load() {
+    setStatus('加载中…');
+    try {
+      const data = await api('/state');
+      state.video = data.video; state.watch = data.watch; state.voice = data.voice;
+      state.checks = data.checks || []; state.paths = data.paths || {};
+      render(); renderChecks();
+      setStatus('');
+      check();
+    } catch (e) { setStatus(e.message, 'bad'); }
+  }
+
+  async function save() {
+    setStatus('保存中…');
+    try {
+      const video = {
+        browserPort: $('browserPort').value === '' ? false : Number($('browserPort').value),
+      };
+      const watch = { chatPort: Number($('chatPort').value) };
+      const voice = { adapter: $('adapter').value };
+      const data = await api('/save', { video, watch, voice });
+      state.video = data.video; state.watch = data.watch; state.voice = data.voice;
+      render();
+      setStatus('已保存；下一场陪看开始时生效。', 'ok');
+    } catch (e) { setStatus(e.message, 'bad'); }
+  }
+
+  async function check() {
+    setStatus('检查中…');
+    try {
+      const data = await api('/check', {});
+      state.checks = data.checks || [];
+      renderChecks();
+      setStatus('检查完成。', 'ok');
+    } catch (e) { setStatus(e.message, 'bad'); }
+  }
+
+  $('save').addEventListener('click', save);
+  $('check').addEventListener('click', check);
+  load();
+})();
+</script>
+</body></html>
