@@ -30,24 +30,40 @@ import { appendChat } from './chat-store.js';
 import { markHungUp, sessionKey } from './watch-state.js';
 import { interjectNote } from './interject.js';
 import { __resetReplyGuard, replyBusyUntil } from './reply-guard.js';
+import { isRetryableWakeFailure, wakeFailureGate, wakeFailureHint } from './wake-failure.js';
 
 /**
  * 叫醒失败要**看得见**。
  *
  * 以前这里是 `void chatWake(...)`：`wakeSession` 回 `{ok:false, reason}` 也不会有人看，
  * 用户在悬浮窗里说的话就这么被吞掉了 —— 表现就是"突然不理我了"（2026-10-31 实报）。
- * 现在：失败重试一次；还失败就写一条看得见的话进悬浮窗，并留一条日志。
+ * 现在：只对偶发失败重试一次；确定性失败不空等。
+ * 失败提示按 (session, reason) 节流，静默期内的次数折叠到下一次显示，
+ * 避免持续故障把聊天流刷成几十条同样的 meta。
  */
-async function wakeWithRetry({ ctx, sessionId, text, wake, note = () => {} }) {
+export async function wakeWithRetry({
+  ctx, sessionId, text, wake, note = () => {}, gate = wakeFailureGate,
+  append = appendChat, sleep = (ms) => new Promise((res) => setTimeout(res, ms)),
+}) {
   let r = null;
   for (let attempt = 0; attempt < 2; attempt += 1) {
     try { r = await wake(ctx, { sessionId, text }); } catch (e) { r = { ok: false, reason: String(e?.message ?? e) }; }
     if (r?.ok) return r;
-    if (attempt === 0) await new Promise((res) => setTimeout(res, 800));
+    if (attempt === 0 && isRetryableWakeFailure(r?.reason)) {
+      await sleep(800);
+      continue;
+    }
+    break;
   }
   const reason = String(r?.reason ?? 'unknown').slice(0, 120);
-  try { appendChat('meta', `[一起看] 叫醒失败：${reason}`, { say: false }); } catch { /* 写不进流也要留日志 */ }
-  note(`wake failed: ${reason}`);
+  const verdict = gate.admit(`${sessionId ?? 'unknown'}:${reason}`);
+  if (verdict.allowed) {
+    const folded = verdict.suppressed > 0 ? `（同类失败另有 ${verdict.suppressed} 次已折叠）` : '';
+    try {
+      append('meta', `[一起看] 叫醒失败：${reason}${wakeFailureHint(reason)}${folded}`, { say: false });
+    } catch { /* 写不进流也要留日志 */ }
+  }
+  note(`wake failed: ${reason}` + (verdict.allowed ? '' : ` (suppressed x${verdict.suppressed})`));
   return r ?? { ok: false, reason: 'unreachable' };
 }
 

@@ -3,6 +3,18 @@
 All notable changes to **dsh-watch-together** are documented here.
 This package starts its own version line at `0.0.7` — it is not a continuation of `dsh-video-storyboard`.
 
+## [Unreleased]
+
+### Fixed — 叫醒失败不再刷屏，确定性失败不再空等
+
+`no-session-controller`（当前进程没有 DSH 会话控制器）和 `no-session-id` 是确定性失败，
+以前每次都会等 800ms 再重试，并把一条 `[一起看] 叫醒失败` 写进 `chat.jsonl`；持续故障时
+悬浮窗会被同样的几十条 meta 刷满。现在：
+
+- 这两类失败不重试；其他偶发失败仍重试一次。
+- 失败提示按 `(sessionId, reason)` 节流，60 秒内只显示第一条，折叠掉的次数在下次显示时带上。
+- `no-session-controller` 的提示补一句可行动说明（从 DSH 里启动，或先关掉陪看循环）。
+
 ## [0.1.0] - 2026-11-01
 
 首个发布版本。要求 `dsh-video-storyboard@^0.5.11`（字幕轨用到它的 `./transcript-pass` 子路径）。
