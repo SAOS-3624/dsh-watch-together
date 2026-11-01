@@ -1,8 +1,8 @@
 /**
  * settings/server.js — 陪看插件自己的本机设置页与 API。
  *
- * 同分镜插件：host-only 包不为了一个表单去构建 lazy-CJS 浏览器半侧；页面是
- * 本机 HTML，由 watch_together_settings 工具给出带随机 token 的地址。
+ * 同分镜插件：页面本体是独立 HTML；另挂一个极小的 lazy-CJS 半侧，
+ * 只把 tokenized URL 塞进 DSH 设置里的 iframe。工具也仍返回同一地址。
  */
 
 import { randomBytes } from 'node:crypto';
@@ -17,6 +17,7 @@ import { settingsPage } from './page.js';
 const PAGE_PATH = '/dsh-watch-together/settings';
 const API_PREFIX = PAGE_PATH + '/api';
 const MAX_BODY = 64 * 1024;
+const INDEX_GLOBAL = '__DSH_WATCH_TOGETHER_SETTINGS__';
 
 function json(res, status, data) {
   const body = JSON.stringify(data);
@@ -126,13 +127,27 @@ export function createSettingsPage({ ctx, env = process.env, log = () => {} } = 
 
   const origin = webServer.getOrigin?.() || ('http://127.0.0.1:' + webServer.port);
   const url = origin + PAGE_PATH + '?token=' + token;
+
+  // The DSH settings tab runs in the same browser origin; hand it the tokenized
+  // URL through the boot injection table instead of adding a second API.
+  let offIndex = null;
+  if (typeof ctx.on === 'function') {
+    try {
+      offIndex = ctx.on('webserver/index-inject', (table) => {
+        table.push({ kind: 'global', name: INDEX_GLOBAL, value: { url } });
+      });
+    } catch (e) {
+      log('[dsh-watch-together] settings index injection unavailable: ' + String(e?.message ?? e));
+    }
+  }
+
   const tool = {
     name: 'watch_together_settings',
     description: [
       'Open the local watch_together settings page: browser debugging port,',
       'chat service port, voice adapter path, and a read-only dependency check',
       'with official download links and setup instructions for Python, the browser extension, and ffmpeg.',
-      'Returns a tokenized local URL.',
+      'Returns a tokenized local URL; the same page is a Settings > Built-in plugins tab in the Web GUI.',
     ].join(' '),
     parameters: {},
     output: {
@@ -173,6 +188,7 @@ export function createSettingsPage({ ctx, env = process.env, log = () => {} } = 
     dispose() {
       if (disposed) return;
       disposed = true;
+      try { offIndex?.(); } catch { /* ignore */ }
       try { routeDispose?.(); } catch { /* ignore */ }
     },
   };

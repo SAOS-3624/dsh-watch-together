@@ -117,14 +117,27 @@ async function registerAll(ctx) {
   disposers.push(...tools.map((tool) => ctx.tools.register(tool)));
 
   // 设置页是可选能力：没有本机 webServer 的宿主只注册 watch_together。
-  try {
-    const settings = createSettingsPage({ ctx, env: process.env, log: (message) => ctx?.logger?.warn?.(message) });
-    if (settings) {
-      disposers.push(settings.dispose);
-      disposers.push(ctx.tools.register(defineTool(settings.tool)));
+  const attachSettings = (settingsCtx) => {
+    try {
+      const settings = createSettingsPage({ ctx: settingsCtx, env: process.env, log: (message) => settingsCtx?.logger?.warn?.(message) });
+      if (settings) {
+        disposers.push(settings.dispose);
+        disposers.push(settingsCtx.tools.register(defineTool(settings.tool)));
+      }
+    } catch (e) {
+      try { settingsCtx?.logger?.warn?.('[dsh-watch-together] settings page failed: ' + String(e?.message ?? e)); } catch { /* ignore */ }
     }
-  } catch (e) {
-    try { ctx?.logger?.warn?.('[dsh-watch-together] settings page failed: ' + String(e?.message ?? e)); } catch { /* ignore */ }
+  };
+  // webServer 可能晚于插件就绪；动态 inject 比 apply 时硬探测更可靠。
+  if (typeof ctx.inject === 'function') {
+    try {
+      const off = ctx.inject(['webServer'], (webCtx) => attachSettings(webCtx));
+      if (typeof off === 'function') disposers.push(off);
+    } catch (e) {
+      try { ctx?.logger?.warn?.('[dsh-watch-together] settings injection failed: ' + String(e?.message ?? e)); } catch { /* ignore */ }
+    }
+  } else {
+    attachSettings(ctx);
   }
 
   return () => {
