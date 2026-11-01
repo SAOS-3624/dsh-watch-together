@@ -36,7 +36,7 @@ import { mmss } from './time.js';
 import { saveLines } from './watch.js';
 import { pinTimes } from './watch-lines.js';
 import { recapFor, recapOptions } from './recap.js';
-import { cachedCues } from './lines-util.js';
+import { cachedCues, explainCuesFailure } from './lines-util.js';
 import { describeBrowser, readPositionOrNull } from './watch-browser.js';
 import { resolveWatchSource } from './watch-source.js';
 import { runWatchMode } from './watch-modes.js';
@@ -218,6 +218,12 @@ async function buildOnce({
     }),
     cells: r.sheets?.[0]?.cells?.length ?? 0,
     omitTranscript,
+    // **"它到底听没听"要带出来**：清单里那行英文说明只在第一次交付时出现，
+    // 台词写完之后清单就不再递（见下面的 body），于是用户问"你怎么听不到声音"时
+    // 模型手里什么依据都没有，只能含糊一句"我听不到"。这两个字段让它能答得具体。
+    transcriptSource: r.transcript?.source ?? null,
+    transcriptError: r.transcript?.error ? String(r.transcript.error).slice(0, 160) : null,
+    subtitleNeedsLogin: Boolean(r.transcript?.subtitleNeedsLogin),
   };
   cache.set(key, entry);
   // 每段一张 PNG，一部电影会有几十段。只留最近 8 段，别把内存吃掉。
@@ -227,6 +233,46 @@ async function buildOnce({
 
 // 模块级：latencyNote() 需要知道"这一轮从什么时候开始"（每次 runWatchPass 开头写一次）
 let tStartForNote = 0;
+
+/** 同一部片子里"为什么没声音"的完整解释只发一次 —— 60 段各带 120 字是纯成本 */
+const listenShown = new Set();
+
+/** 这些来源码有明确含义（其余一律沉默，不编一句话给用户） */
+const KNOWN_NO_LISTEN = new Set([
+  'no-key', 'no-audio', 'asr-failed', 'asr-empty', 'off', 'needs-login',
+  'no-media', 'asr-unreachable', 'no-subs', 'no-ytdlp', 'local-file-needs-sidecar',
+]);
+
+/**
+ * 这一段"为什么没有句子" —— 返回一句能直接说给用户听的话；有句子时返回 null。
+ *
+ * 判据用 storyboard 交回来的 `transcript.source`，**不靠猜**：
+ *   subtitle / asr / file → 有句子（哪怕这一格恰好是静音）
+ *   no-key                → 没配 ASR（评论区里最常见的那一种）
+ *   no-audio              → 这份副本没音轨（下载只取了画面）
+ *   asr-failed            → 装了但连不上
+ *   asr-empty             → 听了，这段真没说话
+ *   off                   → 被显式关掉
+ */
+function noListenReason(entry, input) {
+  if (!entry) return null;
+  if (entry.omitTranscript) return null;      // 句子已经单独喂过了
+  const src = entry.transcriptSource;
+  if (src === 'subtitle' || src === 'asr' || src === 'file') return null;
+  const tag = entry.subtitleNeedsLogin ? 'needs-login' : String(src ?? '');
+  // 认不出的来源（老配置 / 新版本加的 source）就当没话说，不要给用户一句"拿不到台词（）"
+  if (!KNOWN_NO_LISTEN.has(tag)) return null;
+  const full = () => (tag === 'off'
+    ? '转写被显式关掉了（transcript:"off"），这一段没去听。'
+    : explainCuesFailure(tag, entry.transcriptError));
+  const id = `${input ?? ''}|${tag}`;
+  if (!listenShown.has(id)) {
+    listenShown.add(id);
+    if (listenShown.size > 40) listenShown.delete(listenShown.values().next().value);
+    return full();
+  }
+  return `${tag}（同上，前面已经解释过）—— 这一段仍然没有句子，别编对白。`;
+}
 
 /**
  * 标定值只在**真正交付**时喂一次。
@@ -812,6 +858,19 @@ export async function runWatchPass(args, deps) {
   } catch { /* 记账失败不影响交付 */ }
   const materialLine = material ? materialNote(material) : '';
 
+  // ---- 听音状态（"它为什么听不到声音"）
+  //
+  // 这是这个插件被问得最多的一句（2026-11-01 B 站评论区：好几个人以为是插件坏了）。
+  // 三种根因在用户眼里长得一模一样：没配 ASR / 没登录拿不到 CC / 这份副本本来没音轨。
+  // 清单里虽有英文说明，但**台词一写完清单就不再递**（见下面 body），
+  // 于是用户后来问起来时模型手里没有依据，只能含糊一句"我听不到"。
+  // 所以这里直接给一句可原样转述的中文。
+  const noListen = noListenReason(entry, input);
+  const listenNote = noListen
+    ? `\n[听音] 这一段没有台词素材：${noListen}\n`
+      + '  → 用户问"你怎么听不到声音"，就**照这句回答**（别只说"我听不到"，他们会以为插件坏了）。'
+    : '';
+
   // **文字流那一半**：这一段的稿子连同 `at` 一起交出去，谁接了声音谁就能照着念。
   // 核心自己不发声，也不因此多加载任何东西（见 voice.js）。
   // **台词什么时候念，只由 `at` 决定** —— 交付这一下**不许**把整段稿子一次性吐出去。
@@ -869,12 +928,19 @@ export async function runWatchPass(args, deps) {
   const owed = Object.keys(st[sk]?.missingLines ?? {}).map(Number).sort((a, b) => a - b);
   const gate = hasLines
     ? ''
-    : `\n[DELIVERY INCOMPLETE] 这一段 ${mmss(segStart)}–${mmss(segStart + size)} **还没有台词**，交付不算完成。\n`
-      + '台词比回复插话高一级：先把这几句写进去 ——\n'
-      + `  watch_together({ segment: ${size}, lines: [{ from: ${segStart}, at: <秒数或字幕原文>, `
-      + 'text: "一句要念出来的话" }] })\n'
-      + '`at` 优先传**画面上/转写里的原文片段**，代码会去查出真实秒数；凭印象写秒数整段会错。\n'
-      + '写完再交付一次（图在缓存里，不重跑），那一次才推进进度。';
+    : noListen
+      // **没有句子可引时不能再逼它写台词** —— 那只会逼出一段编出来的对白，
+      // 而用户会把编出来的对白当成真的念过。这时只要求用画面说一句。
+      ? `\n[DELIVERY INCOMPLETE] 这一段 ${mmss(segStart)}–${mmss(segStart + size)} 还没有台词，`
+        + '但**这里本来就没有句子可引**（见上面 [听音]）。\n'
+        + '交付只要求一件事：用你**看见的画面**说一句（`say`），别编对白、别假装听到了什么。\n'
+        + '字幕/听音怎么补，把 [听音] 那句原样告诉用户。'
+      : `\n[DELIVERY INCOMPLETE] 这一段 ${mmss(segStart)}–${mmss(segStart + size)} **还没有台词**，交付不算完成。\n`
+        + '台词比回复插话高一级：先把这几句写进去 ——\n'
+        + `  watch_together({ segment: ${size}, lines: [{ from: ${segStart}, at: <秒数或字幕原文>, `
+        + 'text: "一句要念出来的话" }] })\n'
+        + '`at` 优先传**画面上/转写里的原文片段**，代码会去查出真实秒数；凭印象写秒数整段会错。\n'
+        + '写完再交付一次（图在缓存里，不重跑），那一次才推进进度。';
   const owedNote = owed.length > 0 && hasLines
     ? `\n[欠台词] 还有这些段没有台词：${owed.map((s) => mmss(s)).join('、')} —— 有空就补上。`
     : '';
@@ -929,7 +995,7 @@ export async function runWatchPass(args, deps) {
     // 只报**还没念的**：`speech` 以前是整份稿子，连刚刚被 prune 掉的过期句都在里面，
     // 模型会以为那几句还会念（`upcoming` 才是真的会响的）。
     speech: upcoming,
-    text: `${gate}${materialLine}${linesNote}${owedNote}${head}${waitNote}\n${recapText}${guidance}${latencyLine}${bufferHint}\n\n${body}`,
+    text: `${gate}${listenNote}${materialLine}${linesNote}${owedNote}${head}${waitNote}\n${recapText}${guidance}${latencyLine}${bufferHint}\n\n${body}`,
     images,
   });
 }

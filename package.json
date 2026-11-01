@@ -1,6 +1,6 @@
 {
   "name": "dsh-watch-together",
-  "version": "0.1.1",
+  "version": "0.2.0",
   "description": "Watch a video together with a text-only agent: follow the user's real playback position, hand over one segment at a time just before it ends, and keep a single text stream of scripted lines, interjections and the user's replies.",
   "keywords": [
     "dsh",

@@ -17,7 +17,7 @@
 
 import { configuredPort, probeBrowser } from 'dsh-video-storyboard/browser-time';
 import { checkBiliLogin, fetchRemoteSubtitles } from 'dsh-video-storyboard/subtitles';
-import { loadCues, sentencesBetween } from './lines-util.js';
+import { explainCuesFailure, loadCues, sentencesBetween } from './lines-util.js';
 import { linesOverview } from './watch-lines.js';
 import { markMaterial, materialNote } from './watch-material.js';
 import { controllerOf, wakeSession } from './timer.js';
@@ -85,8 +85,11 @@ export async function runWatchAction(args, { ctx = null, sessionId = null, brows
       .catch((e) => ({ ok: false, reason: String(e?.message ?? e) }));
     if (!cuesRes.ok) {
       return {
-        text: `[transcriptOnly] 拿不到字幕（${cuesRes.reason}）。`
-          + '那就用带图交付里每格下面那行转写 —— 它和这里是同一批句子。别凭印象写 `at`。',
+        text: `[transcriptOnly] 拿不到台词（${cuesRes.reason}）。`
+          + explainCuesFailure(cuesRes.reason, cuesRes.detail)
+          + '\n如果用户问"你为什么听不到声音"，就照上面这句回答（**别只说"我听不到"**：'
+          + '他们以为插件坏了，其实是缺一步配置）。'
+          + '\n还能用的：带图交付里每格下面那行转写 —— 它和这里是同一批句子。别凭印象写 `at`。',
         images: [],
       };
     }

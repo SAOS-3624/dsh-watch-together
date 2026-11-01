@@ -64,11 +64,15 @@ async function asrCues(input, { env = process.env, start = 0, end = undefined } 
   if (!media) return { ok: false, cues: [], source: 'none', reason: 'no-media' };
 
   const here = new URL('./', import.meta.resolve('dsh-video-storyboard/locate'));
-  const [{ resolveAsrConfig }, { ensureAsr }] = await Promise.all([
+  const [{ resolveAsrConfig, canTranscribe }, { ensureAsr }] = await Promise.all([
     import(new URL('asr.js', here)),
     import(new URL('asr-lifecycle.js', here)),
   ]);
   const cfg = resolveAsrConfig(env);
+  // **没配就先说"没配"，别发请求。** 以前这里照样往默认的云端地址发，401 被 catch 吞成
+  // `asr-empty` —— 于是"这台机器没装 ASR"和"这片子真的没人说话"在结果里长得一模一样。
+  // 用户听到的只有一句"我听不见声音"，不知道该装什么（2026-11-01 评论区的主要来源）。
+  if (!canTranscribe(cfg)) return { ok: false, cues: [], source: 'none', reason: 'no-key' };
   // 本机 ASR 服务没起就拉起来。**必须把配置传进去** —— `ensureAsr({})` 读不到
   // `~/.dsh/asr.json` 里的 `manage.start`，只会回 "no manage.start configured"。
   await ensureAsr({ baseUrl: cfg.baseUrl, config: cfg, env }).catch(() => {});
@@ -78,15 +82,28 @@ async function asrCues(input, { env = process.env, start = 0, end = undefined } 
   const base = cfg.baseUrl.replace(/\/$/, '');
 
   const out = [];
+  // 三种失败要分开报，否则全糊成 asr-empty（= "这片子没人说话"，一个会误导人的结论）：
+  //   wav === null   → 媒体里抽不出音轨（这条副本没声音，或 ffmpeg 不认）
+  //   sent === 0     → 一次都没连上 ASR（服务没起 / 端口错 / 云端 401）
+  //   其余           → 真连上了，但一个字都没听出来
+  let chunks = 0;
+  let sent = 0;
+  let lastError = null;
   for (let s = from; s < to; s += CHUNK_SEC) {
     const len = Math.min(CHUNK_SEC, to - s);
     const wav = await extractWav(media, s, len, env);
     if (!wav) continue;
+    chunks += 1;
     let got = null;
     for (let attempt = 0; attempt < 2 && !got; attempt++) {
-      got = await postWav(base, wav, cfg).catch(() => null);
-      if (!got) await new Promise((r) => setTimeout(r, 800));
+      try {
+        got = await postWav(base, wav, cfg);
+      } catch (e) {
+        lastError = e;
+        await new Promise((r) => setTimeout(r, 800));
+      }
     }
+    if (got) sent += 1;
     for (const seg of got?.segments ?? []) {
       const text = String(seg.text ?? '').trim();
       const a = Number(seg.start ?? seg.from);
@@ -95,7 +112,19 @@ async function asrCues(input, { env = process.env, start = 0, end = undefined } 
       out.push({ from: a + s, to: (Number.isFinite(b) ? b : a + 2) + s, text });
     }
   }
-  if (out.length === 0) return { ok: false, cues: [], source: 'none', reason: 'asr-empty' };
+  if (out.length === 0) {
+    if (chunks === 0) return { ok: false, cues: [], source: 'none', reason: 'no-audio' };
+    if (sent === 0) {
+      return {
+        ok: false,
+        cues: [],
+        source: 'none',
+        reason: 'asr-unreachable',
+        detail: `${String(lastError?.message ?? lastError ?? 'no response').slice(0, 120)} @ ${base}`,
+      };
+    }
+    return { ok: false, cues: [], source: 'none', reason: 'asr-empty' };
+  }
 
   const file = subsFile(input, env);
   let merged = out;
@@ -159,16 +188,22 @@ function findCachedMedia(input, env = process.env) {
   // 和 storyboard 的 media-store 同一个默认值（`<tmpdir>/dsh-video-storyboard/media`）。
   // 以前写的是 `LOCALAPPDATA/Temp/...` —— 在 Windows 上碰巧是同一个目录，换个系统就找不到。
   const dir = env.DSH_VIDEO_MEDIA_DIR || join(tmpdir(), 'dsh-video-storyboard', 'media');
-  const s = String(input ?? '');
+  const s = String(input ?? '').trim();
+  if (!s) return null;
+  // 本地文件**自己就是媒体**，不用去缓存目录里找。
+  if (!/^https?:/i.test(s)) return existsSync(s) ? s : null;
   const m = s.match(/(BV[0-9A-Za-z]{10})/i);
-  const needle = m ? m[1].toLowerCase() : null;
+  // 匹配用的针：B 站用 BV 号，别的站点用整条 URL。
+  // **不能留 `if (!needle) return video` 那种兜底** —— YouTube / 直链没有 BV 号时会
+  // 返回目录里碰到的**第一个** video.mp4，于是转写的是另一部片子的音轨：台词全错，
+  // 而且一句错都不报（用户只会说"它听到的东西和画面对不上"）。
+  const needle = (m ? m[1] : s).toLowerCase();
   try {
     for (const d of readdirSync(dir)) {
       const sub = join(dir, d);
       const meta = join(sub, 'meta.json');
       const video = join(sub, 'video.mp4');
       if (!existsSync(video) || !existsSync(meta)) continue;
-      if (!needle) return video;
       try {
         const j = JSON.parse(readFileSync(meta, 'utf8'));
         if (String(j?.url ?? '').toLowerCase().includes(needle)) return video;
@@ -176,6 +211,42 @@ function findCachedMedia(input, env = process.env) {
     }
   } catch { /* 没有媒体目录 */ }
   return null;
+}
+
+/**
+ * "拿不到台词"的每种原因 → 一句**用户能懂**的话（含该做什么）。
+ *
+ * 文案只写一份：`transcriptOnly` 的返回、陪看交付时的告示都从这里取。
+ * 以前这些都只报一个英文码（`no-key` / `asr-empty`），模型转述成"我听不见声音"，
+ * 用户既不知道缺什么、也不知道装一次就永久解决 —— 评论区里同一个问题被问了几十遍。
+ */
+export function explainCuesFailure(reason, detail) {
+  switch (String(reason ?? '')) {
+    case 'no-key':
+      return '这台机器没有可用的听音能力：默认后端是云端（要 key），本机 ASR 也没起。'
+        + '装一次 sherpa-onnx（免费、不联网，约 15 分钟，docs/INSTALL.zh.md 第 3 步）就能永久解决；'
+        + '或者给 B 站 cookie，让我改读它的 CC 字幕。';
+    case 'asr-unreachable':
+      return `ASR 服务连不上（${detail ?? 'no response'}）—— 装了但没启动，或地址/端口不对（~/.dsh/asr.json）。`;
+    case 'asr-failed':
+      return `ASR 调用失败（${detail ?? 'see log'}）—— 服务在跑但这一路不通。`;
+    case 'no-audio':
+      return '这份副本**没有音轨**（下载时只取了画面），不是我听不见 —— 换成带声音的副本或本地文件。';
+    case 'asr-empty':
+      return 'ASR 跑过了，这一段没听到人声（纯音乐 / 只有音效 / 真没人说话）。';
+    case 'no-media':
+      return '还没有本地副本可听 —— 先让它出一次图（会顺手下载这一段），再取字幕。';
+    case 'local-file-needs-sidecar':
+      return '本地文件没有配套字幕：把同名 .srt/.ass 放在旁边，或让它直接听这个文件。';
+    case 'needs-login':
+      return 'B 站有 CC 字幕，但要登录才给 —— 配一次 cookies（`checkCookies: true` 可当场验证）。';
+    case 'no-ytdlp':
+      return '这台机器没有 yt-dlp，抓不到站点字幕。';
+    case 'no-subs':
+      return '这条片子既没有 CC 字幕，ASR 也没给出句子。';
+    default:
+      return `拿不到台词（${reason ?? 'unknown'}）。`;
+  }
 }
 
 /**
@@ -206,7 +277,15 @@ export async function loadCues(input, {
     // 台词就会提前几十秒冒出来 —— 用户 2026-10-31 报的"台词比视频提前了有点多"就是这个。
     const a = await asrCues(input, { env, start, end }).catch(() => null);
     if (a?.ok) return a;
-    return { ok: false, cues: [], source: 'none', reason: r?.reason ?? 'no-subs' };
+    // 把 ASR 那边的**具体**原因带上去：`no-key`（没装）/ `asr-unreachable`（装了没起）/
+    // `no-audio`（这份副本没音轨）/ `asr-empty`（真没说话）—— 四种药方完全不同。
+    return {
+      ok: false,
+      cues: [],
+      source: 'none',
+      reason: a?.reason ?? r?.reason ?? 'no-subs',
+      ...(a?.detail ? { detail: a.detail } : {}),
+    };
   }
   const cues = r.segments
     .map((c) => ({ from: Number(c.from), to: Number(c.to), text: String(c.text ?? '').trim() }))

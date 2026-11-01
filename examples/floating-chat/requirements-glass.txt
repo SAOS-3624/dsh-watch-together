@@ -1,0 +1,17 @@
+# 悬浮窗「液态玻璃」的可选依赖
+#
+# 没有这些也能起窗（自动回退成纯色圆角面板），只是玻璃不会透出背后画面。
+#
+#   pip install -r requirements-glass.txt
+#
+# 注意：必须装到**带 tkinter 的那个 Python** 里。有些发行版（例如微软商店版）
+# 只给不带 tk 的构建；确认方式：
+#
+#   python -c "import tkinter, PIL, mss; print('ok')"
+
+Pillow>=10          # 截图、模糊、色散、合成
+mss>=9              # 可选：整屏抓取比 ImageGrab 快约一倍（38ms vs 71ms）。
+                    # 装了自动用，没装退回 ImageGrab。
+numpy>=1.24          # 可选：边缘折射用它做"沿 SDF 法线向外采样"（PR #15 那套）。
+                    # 没装会自动退回"整图放大再按边缘权重盖回"的老折射 —— 能跑，
+                    # 但边缘没有"折进框外画面"的物理感。

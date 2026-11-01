@@ -69,8 +69,23 @@ const STORYBOARD = (() => {
   }
 })();
 
-// 下面这三个默认值**只有这个 CLI 用得到**，插件本体（watch_together）完全不依赖它们。
-//
+/**
+ * 装上的 `dsh-video-storyboard` 版本。
+ *
+ * STORYBOARD 指向 `<包根>/src/storyboard/pipeline.js`，所以包根是上两级。
+ * 读不到就返回 null —— doctor 里会显示"读不到版本"，不会因此崩掉。
+ */
+function storyboardVersion() {
+  if (!STORYBOARD) return null;
+  try {
+    const root = join(dirname(STORYBOARD), '..', '..');
+    return JSON.parse(readFileSync(join(root, 'package.json'), 'utf8')).version ?? null;
+  } catch {
+    return null;
+  }
+}
+
+// 下面这三个默认值**只有这个 CLI 用得到**，插件本体（watch_together）完全不依赖它们。//
 // 规矩：`WATCH_*` 环境变量最优先，其次 `~/.dsh/watch`。
 // **不许写死任何人的本机路径** —— 以前这里硬编码了作者的工作区，别人装上会去一个
 // 不存在的目录里找 cookie、往那儿写图。cookie 改成优先读 `~/.dsh/video.json` 里那份
@@ -685,6 +700,19 @@ async function cmdDoctor() {
   const add = (name, ok, detail = '', level = null) => checks.push({ name, ok, detail, level: level ?? (ok ? 'ok' : 'fail') });
 
   add('plugin', Boolean(STORYBOARD), STORYBOARD ?? 'dsh-video-storyboard 没装（npm i dsh-watch-together 会带上它）');
+  // **版本单独报一项**：0.5.x 与 0.6.x 的 `boardOptions` 参数名已经换过（cells/sheets → maxFrames/maxSheets），
+  // 混装的症状是出图最后一步报 `Cannot read properties of undefined (reading 'compression')` ——
+  // 那个报错看着像音轨问题，其实是 0.5.12 把宿主的 saveImage 裸调丢了 this（0.6.0 已修）。
+  // 不显式报版本，用户会一路去查"是不是没抓到音轨"（2026-11-01 评论区真实发生）。
+  const sbVer = storyboardVersion();
+  const sbOk = sbVer ? Number(String(sbVer).split('.')[0]) > 0 || Number(String(sbVer).split('.')[1]) >= 6 : false;
+  if (STORYBOARD) {
+    add('storyboard', sbOk,
+      sbVer
+        ? `v${sbVer}${sbOk ? '' : ' —— 太旧：陪看需要 0.6.0 以上（升级：npm i dsh-video-storyboard@latest）'}`
+        : '读不到版本',
+      sbOk ? 'ok' : 'fail');
+  }
   // cookie 只有看 B 站才需要：本地文件、直链都不用它。缺了是"少一样能力"，不是"坏了"。
   add('cookie-file', existsSync(COOKIES),
     existsSync(COOKIES) ? COOKIES : `${COOKIES}（看 B 站才需要，跑 login 生成）`, existsSync(COOKIES) ? 'ok' : 'wait');
@@ -737,7 +765,7 @@ async function cmdDoctor() {
     p ? `${p.title ?? '(没有标题)'} @${tc(p.pos)}`
       : '读不到：调试端口没开，或者页面里没有 <video>（播个视频就好）', p ? 'ok' : 'wait');
 
-  const required = ['plugin', 'ffmpeg'];
+  const required = ['plugin', 'storyboard', 'ffmpeg'];
   const hardOk = checks.filter((c) => required.includes(c.name)).every((c) => c.ok);
   // 位置只要有一条通就行：调试端口，或者浏览器扩展在报
   const canLocate = port || Boolean(bs?.fresh);

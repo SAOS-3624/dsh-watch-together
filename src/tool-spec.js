@@ -367,7 +367,12 @@ export function watchToolSpec() {
           'plugin cannot see your normal reply and the chat box would otherwise show only the script. ' +
           'Do not wait for the user to speak first.\n\n' +
           'It is the cheapest call there is: no position read, no frame built, no batch advanced. ' +
-          'One round trip and the sentence is out.',
+          'One round trip and the sentence is out.\n\n' +
+          '**ONE call carries everything you want to say at this moment.** The text is spoken as a ' +
+          'single utterance and lands as a single bubble, so two or three short sentences belong in ' +
+          'ONE `say` (separate them with 。 or a newline) - not in two or three separate calls. Every ' +
+          'call re-sends the whole conversation, and firing one per sentence is the single easiest way ' +
+          'to burn tokens for nothing. Batch the thought, not the round trips.',
       },
       loop: {
         type: 'boolean',

@@ -51,8 +51,7 @@ test('没有缓存也没有媒体副本时，ASR 兜底失败但给出 no-subs�
   }
 });
 
-test('缓存里已有 asr 时间码时直接用，不再联网', async () => {
-  const dir = await mkdtemp(join(tmpdir(), 'asr3-'));
+test('缓存里已有 asr 时间码时直接用，不再联网', async () => {  const dir = await mkdtemp(join(tmpdir(), 'asr3-'));
   process.env.DSH_VIDEO_CACHE_DIR = dir;
   try {
     const { writeFileSync } = await import('node:fs');
@@ -64,6 +63,68 @@ test('缓存里已有 asr 时间码时直接用，不再联网', async () => {
     assert.equal(r.ok, true);
     assert.equal(r.source, 'cache');
     assert.equal(r.cues[0].from, 100.4);
+  } finally {
+    await rm(dir, { recursive: true, force: true });
+  }
+});
+
+/* ------------------------------------------------------------------ 没声音的四种原因 */
+
+/**
+ * 用户实报（2026-11-01，B 站评论区）："能看视频，但是听不了 / 没有声音"。
+ *
+ * 三种根因在用户眼里长得一模一样，旧代码把它们全糊成 `asr-empty`
+ * （= "这片子没人说话"，一个会误导人的结论）：
+ *   没配 ASR / 装了但连不上 / 这份副本没音轨。
+ * 药方完全不同，所以必须分开报。
+ */
+test('有本地副本但没配 ASR：报 no-key，不说成"没人说话"', async () => {
+  const dir = await mkdtemp(join(tmpdir(), 'asr4-'));
+  const media = join(dir, 'media');
+  const sub = join(media, 'bv1zzz0000000');
+  const { mkdirSync, writeFileSync } = await import('node:fs');
+  mkdirSync(sub, { recursive: true });
+  writeFileSync(join(sub, 'video.mp4'), Buffer.alloc(4096));
+  writeFileSync(join(sub, 'meta.json'), JSON.stringify({
+    url: 'https://www.bilibili.com/video/BV1zzz0000000/',
+  }));
+  process.env.DSH_VIDEO_CACHE_DIR = dir;
+  process.env.DSH_VIDEO_MEDIA_DIR = media;
+  // 空 DSH_HOME = 没有 asr.json；再把 env 挪开，确保走"默认云端 + 没 key"
+  process.env.DSH_HOME = join(dir, 'home');
+  const saved = { key: process.env.DSH_ASR_KEY, base: process.env.DSH_ASR_BASE_URL };
+  delete process.env.DSH_ASR_KEY;
+  delete process.env.DSH_ASR_BASE_URL;
+  try {
+    const r = await loadCues('https://www.bilibili.com/video/BV1zzz0000000/', { start: 0, end: 30 });
+    assert.equal(r.ok, false);
+    assert.equal(r.reason, 'no-key', '没配 ASR 必须直接说没配，不能报 asr-empty');
+  } finally {
+    if (saved.key !== undefined) process.env.DSH_ASR_KEY = saved.key;
+    if (saved.base !== undefined) process.env.DSH_ASR_BASE_URL = saved.base;
+    await rm(dir, { recursive: true, force: true });
+  }
+});
+
+test('媒体目录里只有别的片子时，不拿它的音轨当这支的台词', async () => {
+  const dir = await mkdtemp(join(tmpdir(), 'asr5-'));
+  const media = join(dir, 'media');
+  const sub = join(media, 'bv1other00000');
+  const { mkdirSync, writeFileSync } = await import('node:fs');
+  mkdirSync(sub, { recursive: true });
+  writeFileSync(join(sub, 'video.mp4'), Buffer.alloc(4096));
+  writeFileSync(join(sub, 'meta.json'), JSON.stringify({
+    url: 'https://www.bilibili.com/video/BV1other00000/',
+  }));
+  process.env.DSH_VIDEO_CACHE_DIR = dir;
+  process.env.DSH_VIDEO_MEDIA_DIR = media;
+  try {
+    // 目录里**只有另一部片子**的副本。旧代码在拿不到 BV 号时会
+    // `return video` 兜底 —— 于是拿别人的音轨转写，台词全错且一句都不报。
+    // 这条锁的就是"匹配不上就说没有"。
+    const r = await loadCues('https://www.bilibili.com/video/BV1zzz9999999/', { start: 0, end: 30 });
+    assert.equal(r.ok, false);
+    assert.equal(r.reason, 'no-media', `不能借用别的片子的副本，实际：${r.reason}`);
   } finally {
     await rm(dir, { recursive: true, force: true });
   }

@@ -3,12 +3,92 @@
 All notable changes to **dsh-watch-together** are documented here.
 This package starts its own version line at `0.0.7` — it is not a continuation of `dsh-video-storyboard`.
 
-## [0.1.0] - 2026-11-01
+## [0.2.0] - 2026-11-01
 
-首个发布版本。要求 `dsh-video-storyboard@^0.5.11`（字幕轨用到它的 `./transcript-pass` 子路径）。
+这一版把悬浮窗的玻璃重做了。三块独立玻璃、底色真正跟着背景走、静帧不空转、
+边缘不再是"放大贴纸"而是把框外画面折进来；同时把「听不到声音」这件事从
+"模型答不上来"变成"能直接说清原因"。
+
+### 听不到声音，不再只有一个答案
+
+用户反馈（2026-11-01，B 站评论区）：「能看视频，但是听不了」「没有音轨」。
+文档里写清楚了要装 ASR，但**运行时没有任何地方告诉用户这件事** —— 模型只能回一句"我听不到"，
+用户于是以为插件坏了（同一个问题在评论区被问了十几遍）。
+
+- `explainCuesFailure()`：把每种原因翻成**一句能直接说给用户听的话**（没配 ASR / 装了连不上 /
+  这份副本没音轨 / 听了但没说话 / 字幕要登录）。`transcriptOnly` 的返回和陪看交付共用这一份文案，
+  不再各写一遍。
+- `asrCues` **不再把"没配 key"和"服务连不上"糊成 `asr-empty`**（那是"这片子没人说话"，
+  一个会误导人的结论）。没配 key 时连请求都不发 —— 以前会照发，401 被吞掉。
+- 陪看交付新增 `[听音]` 段（同一部片子只详说一次，之后一句短的）：用户问"你怎么听不到声音"时，
+  模型手里终于有依据。**没句子时门槛改成"用画面说一句、别编对白"**，而不是硬逼出一段台词。
+- 修 `findCachedMedia`：拿不到 BV 号时原来会 `return video` —— 返回媒体目录里碰到的**第一个**
+  `video.mp4`，于是拿**另一部片子**的音轨去转写。台词全错，而且一句都不报。
+
+### 玻璃底色跟着背景走
+
+用户原话：「太卡顿，而且刷新很慢……经常是背景换了，液态玻璃还没动，还没变颜色。」
+
+根因不在渲染算法，在**缓存永不过期**：整屏截图只在开窗那一刻做一次（`_stage` 的注释还写着
+"之后无论拖到哪儿都是裁一刀"），所以对面视频换场景、桌面换壁纸，这块玻璃永远是开窗时的颜色。
+拖动结束后那个"8 秒才值得重截"的判定也救不了**静止**的窗口 —— 而陪看时窗口恰恰是静止的。
+
+现在：
+
+- **按 TTL 定时重截**（`DSH_WATCH_GLASS_TTL`，默认 **600ms**，0 = 关掉回到旧行为）。
+- **截屏在子线程**（抓屏 + 1/4 缩放 + 模糊 + 色散 + 提饱和），主线程只做裁片 + 贴图（1~2ms）。
+  Tk 对象一个都不在子线程碰 —— 屏幕尺寸、缩放系数都在主线程读好再传。
+- **优先用 `mss` 抓屏**（可选依赖，见 `examples/floating-chat/requirements-glass.txt`）：
+  整屏 38ms vs ImageGrab 71ms，全管线从 ~200ms 降到 ~98ms，所以 TTL 才敢压到 600ms。
+  没装就自动退回 ImageGrab。
+- **新增 `_repaint_glass()`：只换玻璃不动内容**。`_paint()` 末尾会 `_reflow()` 重排所有气泡，
+  为了换一层底色付这个代价不值得；现在只 `delete("panel")` 再贴一张。
+- `_glass_busy` 防重入：上一发没回来就跳过这一拍；窗口隐藏/折叠时根本不截。
+
+实测（本机 2560×1600 / 150% 缩放，TTL=500ms）：3 秒内 6 次截屏，底板时间戳推进 3.3 秒，稳定。
+抓屏基准：mss 38.3ms / ImageGrab 71.0ms；mss 全管线（抓 + 1/4 缩 + 模糊）98.6ms。
+
+**依赖**：Pillow + 可选 `mss`（**0.1MB**、纯 Python 无编译）。numpy 不需要。
+
+**踩到的坑**：第一版把 `_glass_ttl_start()` 插进了 `poll()` 末尾（那个方法每 200ms 自己再排一次），
+于是每拍都重启一条定时链 —— 实测 3.2 秒触发 16 次、截屏频率飙到 9Hz。加了 `_glass_started` 锁。
+
+### 液态玻璃重做（本轮）
+
+三块**分离**的玻璃（标题栏 / 主体 / 输入栏，中间 10px 真缝，缝里透出桌面），
+滚动条移到主体右侧外面，不占消息区。
+
+- **`WDA_EXCLUDEFROMCAPTURE`**：让窗口从屏幕捕获里消失，于是抓"自己背后"时
+  **不用把 `-alpha` 设 0 再恢复** —— 那个来回会逼 DWM 把整个桌面重排两次，
+  视频在播时最贵，肉眼就是"松手闪一下"。`DSH_GLASS_WDA=0` 可关（录屏要用）。
+- **静帧跳帧**：用未模糊的原图缩到 48×30 比灰度差，`mean>0.8` 才算动了；
+  没动且运动已停 0.3 秒就直接复用上一帧，整条管线（抓屏 17ms + 糊 + 色散）全跳过。
+  慢速滚动不会先停一两帧 —— 阈值比"定时到点就重算"灵敏。
+- **边缘折射换成 SDF 法线向外采样**：老做法是"整图放大一点、再按边缘权重把放大版盖回"，
+  边缘看到的是**自己被放大的内容**，像贴了层凸透镜贴纸。现在沿圆角矩形 signed distance
+  field 的梯度法线**向外**取样本，边上一窄条里塞的是**框外**的画面，被压扁折进来。
+- **底板 1/8 → 1/4**：1/8 放大 8 倍时边缘和背景细节都发虚。
+- **文字可读性**：新增 `text_on_glass()`（整段文字 + 右下 1px 深色影子）和
+  `on_glass_fill()`（按那个点的背景亮度决定用浅字还是深字）。影子用在气泡正文、
+  标题栏名字、系统行、输入槽；翻色用在标题栏名字。
+  **没有逐字建 item** —— 玻璃上几十像素内明暗本来就不变，整段取一次样就够，
+  长列表滚动时 item 数不翻倍。
+
+**依赖**：Pillow + 可选 `mss`；**numpy 也是可选**（只给 SDF 折射用，没装自动退回老折射）。
+
+### 参考并移植了上游的 PR
+
+- **#13 `feat/liquid-glass-speed`**：O(n²) → O(n) 的追加优化（只 layout 新气泡、resize debounce 70ms、
+  Configure 合并到 16ms、after_idle 批量、mtime 缓存、玻璃尺寸没变不重画、拖动只画边框）。
+  它的数据是 210 条消息从 14.22s 降到 605ms（23×）。**这次没合**：那个 PR 基于 1314 行的旧
+  `window.py`，我们这边已经 2632 行（液态玻璃二版 + 本轮改动），冲突面太大；但思路（尤其
+  "玻璃尺寸没变不重画"）以后可以逐条移植。
+- **#15 `feat/live-glass-window`**：独立一套 `glass_window.py` / `glass_window_gpu.py`。
+  **没有整包拿过来**（它是第二套 UI，切过去会丢掉气泡、meta、入场动画、折叠、改名这些交互），
+  而是逐项移植了它的机制：`WDA_EXCLUDEFROMCAPTURE`、静帧跳帧、SDF 法线折射、1/4 底板、
+  文字影子与按背景翻色。GPU 合成（moderngl）没有采用 —— 需要额外依赖且仅限 Windows/OpenGL 3.3+。
 
 ## [0.1.1] - 2026-11-01
-
 **依赖升到 `dsh-video-storyboard@^0.6.0`。** 分镜从"固定宫格"改成"档位排布"——
 一格 = 一个镜头、格子大小跟切点密度走，`boardOptions()` 返回的参数从
 `cells / sheets / minGap` 换成 `maxFrames / maxSheets / minFrames`。旧的参数名在 0.6.0 里已经不存在，
@@ -457,8 +537,10 @@ TTS chain means the second one either drifts or is dropped by the adapter (queue
 
 Tests: 243 pass (`node --test`), 6 of them new in `test/interject-reply.test.mjs`.
 
-## [0.0.7] — 2026-10-31 (first release)
+## [0.1.0] - 2026-11-01
+首个发布版本。要求 `dsh-video-storyboard@^0.5.11`（字幕轨用到它的 `./transcript-pass` 子路径）。
 
+## [0.0.7] — 2026-10-31 (first release)
 The first published version. One tool, `watch_together`: it follows the user's real playback
 position, hands the model one storyboard + transcript per segment just before that segment ends,
 and speaks the scripted lines at the second they belong to.
