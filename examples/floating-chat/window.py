@@ -158,7 +158,9 @@ def chat_layout(h):
     """消息区在高度不足 560 时压缩行高；底部输入框始终贴底。"""
     input_top = h - 80
     if h >= 560:
-        ys, bh = [124, 214, 304, 404], 60
+        # 四条消息每条都能放下"时间头 + 两行正文"；f12 在 150% DPI 下
+        # 行高约 28px，82px 的框刚好装 2 行，不再为了塞下文字把字号压到 9。
+        ys, bh = [104, 198, 292, 386], 88
     else:
         # 顶部留 8px 空隙给最后一条和输入框，避免贴在一起
         avail = max(0, input_top - 124 - 8)
@@ -428,6 +430,7 @@ class LiveGlass:
         self.root.after(60, self._tick)
         self.root.after(30, lambda: self._intro_step(0))
         self.root.after(250, self._poll_chat)
+        self.root.after(1200, self._keep_on_top)
         if SNAPSHOT:
             self.root.after(2600, self._snapshot_mode)
 
@@ -443,6 +446,19 @@ class LiveGlass:
             pass
         if n < 6:
             self.root.after(26, lambda: self._intro_step(n + 1))
+
+    def _keep_on_top(self):
+        """DSH 等置顶窗口被激活后会把悬浮窗压下去；定时重新抬到最上层。"""
+        try:
+            if not getattr(self, "_hidden", False):
+                self.root.attributes("-topmost", True)
+                self.root.lift()
+        except Exception:
+            pass
+        try:
+            self.root.after(1800, self._keep_on_top)
+        except Exception:
+            pass
 
     # ---- 真实聊天流 ----
 
@@ -605,7 +621,7 @@ class LiveGlass:
                 if changed:
                     if self._msg_offset > 0:
                         self._msg_offset += len(new)
-                    self._msg_offset = max(0, min(self._msg_offset, max(0, len(self.messages) - 1)))
+                    self._msg_offset = max(0, min(self._msg_offset, max(0, len(self.messages) - 4)))
                     self._refresh_feed()
             self._file_size = size
         except Exception as exc:
@@ -637,9 +653,10 @@ class LiveGlass:
             self._hidden = not want
 
     def _visible_messages(self):
-        end = max(0, len(self.messages) - self._msg_offset)
-        start = max(0, end - 4)
-        return self.messages[start:end]
+        total = len(self.messages)
+        visible = min(4, total)
+        start = max(0, total - visible - self._msg_offset)
+        return self.messages[start:start + visible]
 
     def _refresh_feed(self):
         """聊天流变了就重画文字；Entry 的草稿和焦点要保住。"""
@@ -689,7 +706,8 @@ class LiveGlass:
         if not self.messages:
             return
         step = 1 if e.delta > 0 else -1
-        self._msg_offset = max(0, min(len(self.messages) - 1, self._msg_offset + step))
+        max_off = max(0, len(self.messages) - 4)
+        self._msg_offset = max(0, min(max_off, self._msg_offset + step))
         self._refresh_feed()
 
     def _toggle_mic(self):
@@ -814,15 +832,9 @@ class LiveGlass:
         panel = Image.composite(lens_2x, base_2x, BOX_UNION_2X)
         panel = Image.alpha_composite(
             panel.convert("RGBA"), OVERLAY_2X).convert("RGB")
-        # 麦克风图标：先回到全分辨率再贴，避免坐标落在 2x 画布外
         out = panel.convert("RGB").resize((W, H), Image.Resampling.BILINEAR)
-        mic_box = out.crop((MIC_POS[0], MIC_POS[1],
-                            MIC_POS[0] + 28, MIC_POS[1] + 28)).convert("L")
-        mic_bg = float(np.median(np.asarray(mic_box))) / 255.0
-        out = out.convert("RGBA")
-        icon = MIC_LIGHT if mic_bg < 0.48 else MIC_DARK
-        out.paste(icon, MIC_POS, icon)
-        return finish(out.convert("RGB"))
+        # 麦克风由 Canvas 矢量绘制（_build_ui），这里不再叠位图，避免两层图标。
+        return finish(out)
 
     def _work(self):
         """抓取 + 模糊 + 合成全在后台，主线程只负责显示最新一帧。"""
@@ -864,6 +876,33 @@ class LiveGlass:
                     time.sleep(max(0.016, 1 / max(1, self._target_fps) - dt))
                 else:
                     time.sleep(max(0.0, 1 / max(1, self._target_fps) - dt))
+
+    def _fit_lines(self, text, font, max_width, max_height):
+        """按框宽/框高折行并截断，避免文字溢出气泡。"""
+        fobj = tkfont.Font(root=self.root, font=font)
+        ls = max(1, fobj.metrics("linespace"))
+        max_lines = max(1, int(max_height // ls))
+        lines = []
+        no_start = "，。、；：！？）》」』…,.;:!?)]}"
+        for para in str(text).splitlines() or [""]:
+            cur = ""
+            for ch in para:
+                if not cur or fobj.measure(cur + ch) <= max_width:
+                    cur += ch
+                elif ch in no_start:
+                    # 标点不能单独掉到下一行（会变成孤零零一个句号）
+                    cur += ch
+                else:
+                    lines.append(cur)
+                    cur = ch
+            lines.append(cur)
+        if len(lines) > max_lines:
+            lines = lines[:max_lines]
+            last = lines[-1]
+            while last and fobj.measure(last + "…") > max_width:
+                last = last[:-1]
+            lines[-1] = (last + "…") if last else "…"
+        return lines or [""]
 
     def _text(self, x, y, text, anchor="center", fill="#f2f8ff",
               font=None, max_width=None, tags=()):
@@ -1008,11 +1047,15 @@ class LiveGlass:
         if self._collapsed:
             self._saved_h = H
             H = 2 * 12 + 54
+            # 折叠态只需要标题栏：不重建整窗几何，直接缩窗口 + 只画头。
+            # 这样不会在小高度下生成负尺寸的输入框/主体玻璃。
+            self.root.geometry(f"{W}x{H}+{self._x}+{self._y}")
+            self._build_ui()
         else:
             H = getattr(self, "_saved_h", H)
-        rebuild_geometry(W, H)
-        self.root.geometry(f"{W}x{H}+{self._x}+{self._y}")
-        self._rebuild(W, H)
+            rebuild_geometry(W, H)
+            self.root.geometry(f"{W}x{H}+{self._x}+{self._y}")
+            self._rebuild(W, H)
         try:
             if self._protocol is not None:
                 self._protocol.action("collapse" if self._collapsed else "expand")
@@ -1049,11 +1092,23 @@ class LiveGlass:
             c.tag_lower("preview-bg")
 
         w, h = W, H
+        # 状态点：仓库实现里的"亮着的蓝点 + 很淡的光环"。纯色圆点像贴纸，
+        # 带一圈环才像状态灯；录音时变红。
+        dot = "#e05a5a" if (self._mic_proc is not None and self._mic_proc.poll() is None) else "#0a84ff"
+        cy = 54
+        c.create_oval(44 - 7, cy - 7, 44 + 7, cy + 7,
+                      outline="#2b4d73" if dot == "#0a84ff" else "#6b3030", width=1)
+        c.create_oval(44 - 3, cy - 3, 44 + 3, cy + 3, fill=dot, outline="")
         name = self.name[:10]
         self._text(76, 54, name, anchor="w", fill="#f7fbff",
                    font=f(21, True), tags=("title",))
         count = self._status or f"{len(self.messages)} 条"
-        self._text(176, 54, count, anchor="w", fill="#dbe6f5",
+        try:
+            nx = 76 + tkfont.Font(root=self.root, font=f(21, True)).measure(name) + 10
+        except Exception:
+            nx = 176
+        self._text(max(176, nx), 54, count, anchor="w",
+                   fill="#ffb4b4" if self._status else "#dbe6f5",
                    font=f(11))
         # 右上角按钮跟随窗口宽度内收
         self._text(w - 94, 38, "▾", anchor="w",
@@ -1061,29 +1116,41 @@ class LiveGlass:
         self._text(w - 58, 38, "✕", anchor="w", fill="#9fb0c8",
                    font=f(13), tags=("close",))
 
-        ys = [s[1] for s in SHAPES[:4]]
-        bh = SHAPES[0][3] - SHAPES[0][1]
-        shown = self._visible_messages()
-        # 小窗口不放时间戳，避免和压缩后的气泡文字重叠
-        if h >= 560:
-            for i, msg in enumerate(shown):
-                if msg.get("stamp"):
-                    if str(msg.get("role") or "").lower() in ("user", "me", "human"):
-                        self._text(SHAPES[i][2] - 26, ys[i] - 20, msg["stamp"], anchor="ne",
-                                   fill="#a8b7c9", font=f(9), tags=("feed",))
-                    else:
-                        self._text(72, ys[i] - 20, msg["stamp"], anchor="nw",
-                                   fill="#a8b7c9", font=f(9), tags=("feed",))
+        if getattr(self, "_collapsed", False):
+            self.canvas.config(width=w, height=h)
+            c.tag_bind("close", "<Button-1>", self._close)
+            c.tag_bind("collapse", "<Button-1>", self.toggle_collapse)
+            c.tag_bind("title", "<Button-1>", self._edit_title)
+            self._bar_len = max(72, int(w * BAR_FRAC))
+            self._bar = c.create_line(w // 2 - self._bar_len // 2, BAR_Y,
+                                      w // 2 + self._bar_len // 2, BAR_Y,
+                                      width=BAR_THICK, fill="#b8cbe0",
+                                      capstyle="round")
+            return
 
-        # 可见的最近 4 条；滚轮往前翻时整体换页
+        shown = self._visible_messages()
+        # 每条消息的头部（时间戳）和正文都在自己的框里；正文按框高折行/截断，
+        # 不再用气泡中心当基线，否则两行以上会溢出框外（时间也会被顶到框上）。
         for i, msg in enumerate(shown):
-            x0, y0, x1, _y1, _r = SHAPES[i]
+            x0, y0, x1, y1, _r = SHAPES[i]
             is_user = str(msg.get("role") or "").lower() in ("user", "me", "human")
             tx = (x1 - 26) if is_user else (x0 + 26)
-            ta = "e" if is_user else "w"
-            self._text(tx, y0 + bh // 2, msg["text"], anchor=ta,
-                       max_width=max(120, x1 - x0 - 52),
-                       fill="#edf6ff", font=f(14), tags=("feed",))
+            ta = "ne" if is_user else "nw"
+            stamp = str(msg.get("stamp") or "")
+            head_h = 26 if stamp else 4
+            if stamp:
+                self._text(tx, y0 + 2, stamp, anchor=ta,
+                           fill="#a8b7c9", font=f(9), tags=("feed",))
+            max_w = max(80, x1 - x0 - 52)
+            avail_h = max(12, (y1 - y0) - head_h - 2)
+            body_font = f(11)
+            lines = self._fit_lines(msg.get("text") or "", body_font, max_w, avail_h)
+            fobj = tkfont.Font(root=self.root, font=body_font)
+            ls = fobj.metrics("linespace")
+            ty = y0 + head_h + 2
+            for li, line in enumerate(lines):
+                self._text(tx, ty + li * ls, line, anchor=ta,
+                           fill="#edf6ff", font=body_font, tags=("feed",))
         if not shown:
             self._text(w // 2, SHAPES[0][1] + bh // 2,
                        "在这里跟它说话 · 滚轮翻历史", anchor="center",
@@ -1113,6 +1180,18 @@ class LiveGlass:
         self._text((x0 + x1) // 2, y0 + 27, "发送", tags=("send", "feed"),
                    fill="#ffffff", font=f(12, True))
 
+        # 麦克风：直接用 PR #15 的 mic-dsh.png 图标（白色/录音红），
+        # 不再用几条线画一个像"i"的代替品；Canvas 图不依赖合成帧，预览也可见。
+        if not getattr(self, "_collapsed", False):
+            active = self._mic_proc is not None and self._mic_proc.poll() is None
+            color = (255, 128, 128, 0) if active else (224, 238, 255, 0)
+            icon_img = Image.new("RGBA", MIC_MASK.size, color)
+            icon_img.putalpha(MIC_MASK)
+            self._mic_icon = ImageTk.PhotoImage(icon_img, master=self.canvas)
+            c.create_image(67, H - 58, image=self._mic_icon,
+                           tags=("mic", "micart"))
+            c.tag_bind("mic", "<Button-1>", lambda _e: self._toggle_mic())
+
         # 最上面正中的细条，长度随窗口宽度走
         self._bar_len = max(72, int(w * BAR_FRAC))
         self._bar = c.create_line(w // 2 - self._bar_len // 2, BAR_Y,
@@ -1123,7 +1202,7 @@ class LiveGlass:
         c.tag_bind("close", "<Button-1>", self._close)
         c.tag_bind("send", "<Button-1>", self._send)
         c.tag_bind("collapse", "<Button-1>", self.toggle_collapse)
-        c.tag_bind("title", "<Double-Button-1>", self._edit_title)
+        c.tag_bind("title", "<Button-1>", self._edit_title)
         c.tag_bind("inputzone", "<Button-1>", self._focus_input)
         c.tag_raise("close")
         c.tag_raise("send")
@@ -1291,7 +1370,7 @@ class LiveGlass:
         if self._resize:
             self.root.after(INTERVAL_MS, self._tick)
             return
-        if not self._excluded:
+        if not self._excluded and os.environ.get("DSH_GLASS_WDA") != "0":
             self._set_exclude(True)
         self._pause.clear()
 
