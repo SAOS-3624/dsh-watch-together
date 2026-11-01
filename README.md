@@ -416,8 +416,11 @@ watch_together({ say: "你看这条，鱼比人还紧张。" })
 pythonw examples/floating-chat/window.py     # 无控制台
 ```
 
-它长这样：剧本台词是琥珀色气泡（左边一道竖线，表示"这句会被念出来"）、
-模型插话是浅灰气泡、你说的话是蓝色气泡靠右，每条上面一行小字写着谁、什么时候。
+它长这样：三块分开的液态玻璃（标题 / 主体 / 输入栏），气泡圆角、半透明，
+你说的话靠右；标题栏可拖动、点标题就地改名、▾ 折叠、✕ 关闭，底部有麦克风图标和发送。
+窗口底稿就是 PR #15 的 `glass_window.py`（现在叫 `window.py`），没有另写一套
+近似样式；GPU 伴生 `glass_window_gpu.py` 只把每帧合成搬到 moderngl，UI 和交互
+仍是同一份，所以 CPU/GPU 形式一致。
 
 几个有意为之的细节：
 
@@ -429,6 +432,11 @@ pythonw examples/floating-chat/window.py     # 无控制台
 | 关窗时记住位置和大小（`~/.dsh/watch-window.json` 的 `geometry`） | 下次不用重新摆 |
 | 增量读 `chat.jsonl`（开场只回放最后 60 条） | 以前每 200ms 全量解析，两小时一场几千条会越来越慢 |
 | 圆角外的像素用 `-transparentcolor` 抠掉 | tkinter 没有圆角窗口；取不到这个能力就老实退成直角 |
+| 窗口只读 `window-events.jsonl`，写 `window-outbox.jsonl` | 和插件解耦；旧版插件没有协议文件时仍增量读 `chat.jsonl` |
+| CPU/GPU 共用同一份 UI | GPU 只换每帧合成，不另写窗口 |
+
+> 窗口默认要 Pillow + numpy + mss；GPU 额外要 moderngl/OpenGL 3.3。接口和
+> 线协议见 [`docs/INTERFACES.zh.md`](docs/INTERFACES.zh.md)。
 
 > **一定要用带 tkinter 的 Python**：Windows 商店版自带；python.org 官方安装包勾上 tcl/tk 也有。
 > WorkBuddy 托管的那份**没有** tkinter。

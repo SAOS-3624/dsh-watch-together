@@ -14,9 +14,8 @@
 
 import { DEFAULT_RAMP, DEFAULT_SEGMENT } from './batches.js';
 import { configuredPort } from 'dsh-video-storyboard/browser-time';
-import { formatManifest } from 'dsh-video-storyboard/format';
-import { runStoryboard } from 'dsh-video-storyboard/pipeline';
 import { createInputSurface } from './input-surface.js';
+import { createWatchInterfaces } from './interfaces.js';
 import { appendAssistantSay } from './chat.js';
 import { replyReminder } from './interject.js';
 import { pullLinesNear, pulledLinesNote } from './reply-guard.js';
@@ -37,8 +36,10 @@ import { sessionKey } from './watch.js';
  *   signal 是宿主的取消信号（`ToolRunContext.signal`）：阻塞等待必须看它，否则"停止"按不住。
  */
 export async function execute(ctx, args, {
-  sessionId = null, cache = new Map(), signal = null,
+  sessionId = null, cache = new Map(), signal = null, interfaces = null,
 } = {}) {
+  // 识别 / TTS / 悬浮窗只从这里拿；测试和伴生插件可以注入自己的实现。
+  const api = interfaces ?? createWatchInterfaces();
   const problems = validateWatchArgs(args);
   // 这一次调用看到的循环状态：说话要用它的位置，开窗要用它的源。只读一次。
   const st0 = loopStatus();
@@ -91,7 +92,7 @@ export async function execute(ctx, args, {
   // `waitForVideo` 会在主流程之外提前预铺一遍，那一遍要是少了 `input`/`reopen`，
   // 后面真正的调用就再也传不进去 —— 用户关过窗、模型调 `waitForVideo` 时，
   // 因为没有 `input` 就判不出 `hung`，窗口又被顶回来（"关了它自己弹出来"那个实报）。
-  const prepareInputSurface = createInputSurface();
+  const prepareInputSurface = createInputSurface({ windowService: api.window });
   const known = typeof args.input === 'string' && args.input.trim()
     ? args.input
     : (typeof st0.input === 'string' && st0.input ? st0.input : null);
@@ -168,8 +169,8 @@ export async function execute(ctx, args, {
   const r = await runWatchPass(callArgs, {
     browserPort,
     cache,
-    runStoryboard,
-    formatManifest,
+    runStoryboard: api.recognition.segment,
+    formatManifest: api.recognition.manifest,
     signal,
     prepareWait: prepareInputSurface,
     // 关窗即收工：只有这次真把窗口开起来了，才把"窗口没了"当作"不看了"
@@ -214,6 +215,7 @@ export async function execute(ctx, args, {
     const refillBelow = args.refillBelow === undefined ? 0 : Math.max(0, Number(args.refillBelow) || 0);
     startWatchLoop({
       ctx, sessionId, input: r.input,
+      tts: api.tts,
       cursor: r.cursor, status: r.status,
       // 段缓存只用来报"缓存里已有几段"（statusOnly），不参与决策
       cache,
@@ -234,7 +236,10 @@ export async function execute(ctx, args, {
       deps: {
         browserPort,
         build: makeBuilder({
-          input: r.input, args: callArgs, runStoryboard, formatManifest, cache,
+          input: r.input, args: callArgs,
+          runStoryboard: api.recognition.segment,
+          formatManifest: api.recognition.manifest,
+          cache,
         }),
         // 字幕轨：和画面轨照抄同一套段表 / 余量，只是不带图。它跑得快一个数量级，
         // 所以通常先于画面到；到了就先喂台词，画面那次则带 `omitTranscript` 不重复发。

@@ -36,7 +36,13 @@
     "./chat": "./src/chat.js",
     "./voice": "./src/voice.js",
     "./speech-bus": "./src/speech-bus.js",
-    "./voice-adapter": "./src/voice-adapter.js"
+    "./voice-adapter": "./src/voice-adapter.js",
+    "./interfaces": "./src/interfaces.js",
+    "./public-api": "./src/public-api.js",
+    "./recognition-interface": "./src/recognition-interface.js",
+    "./tts-interface": "./src/tts-interface.js",
+    "./window-interface": "./src/window-interface.js",
+    "./window-protocol": "./src/window-protocol.js"
   },
   "bin": {
     "dsh-watch": "./bin/watch.mjs",
