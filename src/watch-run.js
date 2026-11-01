@@ -817,9 +817,14 @@ export async function runWatchPass(args, deps) {
   // 现在的口径：**没有台词的交付不算完成** —— 不推进 `lastDelivered`，
   // 下一次调用仍然会落到这一段，并且开头就把"缺台词"顶到最前面。
   const segLines = await readSlot(input, segStart).catch(() => []);
+  // **没有句子可等的交付**：没音轨/没配 ASR/ASR 连不上/这段真静音。此时画面仍然能看，
+  // 不能让"等台词"把整段永远钉在原地。noListen 的文案同时给模型和用户。
+  const noListen = noListenReason(entry, input);
+  const noLinesNeeded = Boolean(noListen);
   // 门槛可以关掉：`DSH_WATCH_REQUIRE_LINES=0`（写测别的行为的老用例时用；线上默认开）
   const requireLines = process.env.DSH_WATCH_REQUIRE_LINES !== '0';
-  const hasLines = !requireLines || (Array.isArray(segLines) && segLines.length > 0);
+  const hasLines = !requireLines || noLinesNeeded
+    || (Array.isArray(segLines) && segLines.length > 0);
   const missing = { ...(st[sk]?.missingLines ?? {}) };
   if (hasLines) delete missing[segStart];
   else missing[segStart] = Date.now();
@@ -856,7 +861,9 @@ export async function runWatchPass(args, deps) {
     const hasTranscriptText = /^\s{2,}"/m.test(String(entry?.manifest ?? '')) || entry?.omitTranscript === true;
     if (hasTranscriptText) material = await markMaterial(input, segStart, 'transcript');
   } catch { /* 记账失败不影响交付 */ }
-  const materialLine = material ? materialNote(material) : '';
+  // 没有句子可等时别再提示"先取字幕"：那会把模型推去取一个根本不存在的东西，
+  // 也会和上面 [听音] 的结论打架。画面这一半已经交付，够了。
+  const materialLine = noLinesNeeded ? '' : (material ? materialNote(material) : '');
 
   // ---- 听音状态（"它为什么听不到声音"）
   //
@@ -865,10 +872,10 @@ export async function runWatchPass(args, deps) {
   // 清单里虽有英文说明，但**台词一写完清单就不再递**（见下面 body），
   // 于是用户后来问起来时模型手里没有依据，只能含糊一句"我听不到"。
   // 所以这里直接给一句可原样转述的中文。
-  const noListen = noListenReason(entry, input);
   const listenNote = noListen
     ? `\n[听音] 这一段没有台词素材：${noListen}\n`
-      + '  → 用户问"你怎么听不到声音"，就**照这句回答**（别只说"我听不到"，他们会以为插件坏了）。'
+      + '  → 用户问"你怎么听不到声音"，就**照这句回答**（别只说"我听不到"，他们会以为插件坏了）。\n'
+      + '  这一段也**没有台词可等**：交付已经算完成，用你看见的画面说一句即可，别编对白。'
     : '';
 
   // **文字流那一半**：这一段的稿子连同 `at` 一起交出去，谁接了声音谁就能照着念。
@@ -928,20 +935,13 @@ export async function runWatchPass(args, deps) {
   const owed = Object.keys(st[sk]?.missingLines ?? {}).map(Number).sort((a, b) => a - b);
   const gate = hasLines
     ? ''
-    : noListen
-      // **没有句子可引时不能再逼它写台词** —— 那只会逼出一段编出来的对白，
-      // 而用户会把编出来的对白当成真的念过。这时只要求用画面说一句。
-      ? `\n[DELIVERY INCOMPLETE] 这一段 ${mmss(segStart)}–${mmss(segStart + size)} 还没有台词，`
-        + '但**这里本来就没有句子可引**（见上面 [听音]）。\n'
-        + '交付只要求一件事：用你**看见的画面**说一句（`say`），别编对白、别假装听到了什么。\n'
-        + '字幕/听音怎么补，把 [听音] 那句原样告诉用户。'
-      : `\n[DELIVERY INCOMPLETE] 这一段 ${mmss(segStart)}–${mmss(segStart + size)} **还没有台词**，交付不算完成。\n`
-        + '台词比回复插话高一级：先把这几句写进去 ——\n'
-        + `  watch_together({ segment: ${size}, lines: [{ from: ${segStart}, at: <秒数或字幕原文>, `
-        + 'text: "一句要念出来的话" }] })\n'
-        + '`at` 优先传**画面上/转写里的原文片段**，代码会去查出真实秒数；凭印象写秒数整段会错。\n'
-        + '写完再交付一次（图在缓存里，不重跑），那一次才推进进度。';
-  const owedNote = owed.length > 0 && hasLines
+    : `\n[DELIVERY INCOMPLETE] 这一段 ${mmss(segStart)}–${mmss(segStart + size)} **还没有台词**，交付不算完成。\n`
+      + '台词比回复插话高一级：先把这几句写进去 ——\n'
+      + `  watch_together({ segment: ${size}, lines: [{ from: ${segStart}, at: <秒数或字幕原文>, `
+      + 'text: "一句要念出来的话" }] })\n'
+      + '`at` 优先传**画面上/转写里的原文片段**，代码会去查出真实秒数；凭印象写秒数整段会错。\n'
+      + '写完再交付一次（图在缓存里，不重跑），那一次才推进进度。';
+  const owedNote = owed.length > 0 && hasLines && !noLinesNeeded
     ? `\n[欠台词] 还有这些段没有台词：${owed.map((s) => mmss(s)).join('、')} —— 有空就补上。`
     : '';
 
@@ -958,8 +958,13 @@ export async function runWatchPass(args, deps) {
   // 交付指引。**每段都会重发**，所以只留硬规则：一段 20 次 × 一千多字符是纯成本，
   // 而"节奏/循环/插话"那些属于工具契约（tool-spec 的 description 里一直有），不必重复。
   const guidance = [
-    'PRIORITY: 1) write this segment\'s lines (`lines`), 2) answer an interjection, 3) anything else.',
-    'A delivery without lines is NOT finished.',
+    noLinesNeeded
+      ? 'PRIORITY: this segment has NO transcript to wait for. The delivery is complete once '
+        + 'you say one sentence about what you SEE. Do not fabricate dialogue.'
+      : 'PRIORITY: 1) write this segment\'s lines (`lines`), 2) answer an interjection, 3) anything else.',
+    noLinesNeeded
+      ? 'This delivery is complete without lines; there is no transcript to wait for.'
+      : 'A delivery without lines is NOT finished.',
     `[together-watch] They just watched ${mmss(segStart)}–${mmss(segStart + size)} (now at ${mmss(cursor)}).`,
     'They watched it themselves — do NOT retell the plot.',
     `**NO SPOILERS**: they are only at ${mmss(cursor)} — anything after that is still in your hands. `
@@ -978,7 +983,7 @@ export async function runWatchPass(args, deps) {
   // 清单里是整段 5 分钟的画面和句子，`cursor` 之后的全都在 —— 写台词时必须给，
   // 但写完了就没用了，而模型会持续把它当成"我知道后面"的凭据：光靠提示词说
   // "不许提"压不住真实内容。所以台词一就绪就换成一句简报。
-  const body = hasLines
+  const body = hasLines && !noLinesNeeded
     ? `[本段台词已就绪] ${mmss(segStart)}–${mmss(segStart + size)} 的台词已经写好了，`
       + `清单不再提供 —— 你手里没有后面的信息，也别假装有。\n`
       + `现在在 ${mmss(cursor)}，只说此刻屏幕上正在发生的事。`

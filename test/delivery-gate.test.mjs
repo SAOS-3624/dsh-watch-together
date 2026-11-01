@@ -58,6 +58,38 @@ test('没有台词就交付 → 不算完成：不说、不推进、结果头顶
   }
 });
 
+test('没有音轨/没有句子可等 → 交付完成，不挂 DELIVERY INCOMPLETE', async () => {
+  const dir = await mkdtemp(join(tmpdir(), 'gate-noaudio-'));
+  process.env.DSH_VIDEO_CACHE_DIR = dir;
+  delete process.env.DSH_WATCH_REQUIRE_LINES;
+  try {
+    const noAudioDeps = {
+      ...deps(),
+      runStoryboard: async () => ({
+        sheets: [{ png: Buffer.from('x'), cells: [] }],
+        transcript: { source: 'no-audio' },
+      }),
+    };
+    const r = await runWatchPass(
+      { input: 'silent.mp4', cursor: 106, segment: 120, lead: 15 }, noAudioDeps,
+    );
+
+    assert.equal(r.complete, true, '没有句子可等时，画面交付就算完成');
+    assert.ok(!r.text.includes('[DELIVERY INCOMPLETE]'), '不能把整段永远钉在缺台词上');
+    assert.match(r.text, /没有音轨/, '要告诉用户为什么没有声音');
+    assert.match(r.text, /用你看见的画面说一句/, '要明确只凭画面说一句，别编对白');
+    assert.doesNotMatch(r.text, /先取字幕/, '不能一边说没音轨一边让模型去取字幕');
+
+    const st = await loadWatch();
+    const [sk] = Object.keys(st).filter((k) => k !== 'version' && k !== '$schema');
+    const s = st[sk] ?? {};
+    assert.equal(s.lastDelivered, 0, '无音轨交付也要推进 lastDelivered');
+    assert.ok(!(s.missingLines?.[0]), '无音轨不该留下欠台词');
+  } finally {
+    await rm(dir, { recursive: true, force: true });
+  }
+});
+
 test('补上台词之后再交付 → 放行，且欠账清掉', async () => {
   const dir = await mkdtemp(join(tmpdir(), 'gate2-'));
   process.env.DSH_VIDEO_CACHE_DIR = dir;
