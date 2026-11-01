@@ -36,7 +36,7 @@ import { attachConfiguredVoice, attachedAdapters, configuredVoiceAdapter } from 
  *
  * @returns {() => Promise<{note: string}>}
  */
-export function createInputSurface() {
+export function createInputSurface({ windowService = null } = {}) {
   let prepared = null;
   /**
    * @param {{start?: boolean}} [o]
@@ -47,7 +47,7 @@ export function createInputSurface() {
    * "我不看了"的方式，下一次调用立刻又把窗口顶回来，等于把他的动作撤销了。
    */
   return ({ start = false, input = null, reopen = false } = {}) => {
-    prepared ??= open({ start, input, reopen });
+    prepared ??= open({ start, input, reopen, windowService });
     return prepared;
   };
 }
@@ -70,7 +70,9 @@ async function ensureVoice() {
 
 const tail = (p) => String(p).split(/[\\/]/).filter(Boolean).pop() || String(p);
 
-async function open({ start = false, input = null, reopen = false } = {}) {
+async function open({ start = false, input = null, reopen = false, windowService = null } = {}) {
+  const winAlive = () => (windowService ? windowService.alive() : floatingWindowAlive());
+  const winOpen = (opts) => (windowService ? windowService.open(opts) : openFloatingWindow(opts));
   // 0) 声音：每次开始陪看都确认一次 —— 不挂的话台词只会写进流、一句也不念
   const voice = await ensureVoice();
   const voiceNote = voice.ok
@@ -92,7 +94,7 @@ async function open({ start = false, input = null, reopen = false } = {}) {
   if (hung) {
     if (reopen) {
       await clearHungUp().catch(() => {});
-    } else if (!floatingWindowAlive()) {
+    } else if (!winAlive()) {
       return {
         windowOpen: false,
         closedByUser: true,
@@ -102,7 +104,7 @@ async function open({ start = false, input = null, reopen = false } = {}) {
       };
     }
   }
-  if (!start && running.active && !floatingWindowAlive()) {
+  if (!start && running.active && !winAlive()) {
     stopWatchLoop('widget-closed');
     if (input) await markHungUp(input).catch(() => {});
     return {
@@ -113,7 +115,7 @@ async function open({ start = false, input = null, reopen = false } = {}) {
         + `\n[voice] ${voiceNote}。`,
     };
   }
-  const win = openFloatingWindow({ log: () => {} });
+  const win = winOpen({ log: () => {} });
   // 2) 聊天服务（扩展上报位置走它，记录页也由它提供）
   const srv = await ensureChatSession().catch(() => null);
   const port = srv?.port ?? DEFAULT_CHAT_PORT;

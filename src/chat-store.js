@@ -25,6 +25,7 @@ import { join } from 'node:path';
 import { cacheDir } from 'dsh-video-storyboard/cache';
 import { emitSpeech, onSpeech, speechSubscribers } from './voice.js';
 import { noteReply } from './reply-guard.js';
+import { appendWindowEvent } from './window-protocol.js';
 
 /** 聊天记录（jsonl，一行一条 {role, text, at}） */
 export function chatFile(env = process.env) {
@@ -98,6 +99,15 @@ export function appendChat(role, text, meta = {}, env = process.env) {
     ...(meta?.say === true ? { say: true } : {}),
   };
   appendFileSync(file, `${JSON.stringify(entry)}\n`, 'utf8');
+  // 悬浮窗主接口：消息同时写一份给 window-events.jsonl。旧的 chat.jsonl 仍然保留，
+  // 浏览器页和旧窗口还能读；窗口按 (role, text, at) 去重，不会出现两遍。
+  // 写失败不能影响聊天主流程 —— 窗口是展示层，不是数据层。
+  try {
+    appendWindowEvent({
+      type: role === 'meta' ? 'meta' : 'message',
+      role, text: entry.text, at: entry.at, ...(entry.t != null ? { t: entry.t } : {}),
+    }, env);
+  } catch { /* 展示接口不可用时静默降级到 chat.jsonl */ }
   return entry;
 }
 
