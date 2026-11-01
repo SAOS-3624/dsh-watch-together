@@ -462,7 +462,7 @@ pip install -r examples/floating-chat/requirements-glass-gpu.txt
 DSH_GLASS_GPU=1 pythonw examples/floating-chat/glass_window_gpu.py
 ```
 
-- 需要 OpenGL 3.3+；GPU 初始化失败会自动回退到 CPU 的 `glass_window.py` 合成。
+- 需要 OpenGL 3.3+；GPU 初始化失败会直接报错（先装好驱动 / moderngl），抓屏或合成阶段的异常才回退到 CPU capture。
 - 三块玻璃布局（标题 / 主体 / 输入），滚动条在主体右侧外面；主体仍保留 4 条可见消息 + 滚轮翻页。
 - 静态画面会跳帧省 GPU；感知到变化后 0.3s 内保持出帧。
 
