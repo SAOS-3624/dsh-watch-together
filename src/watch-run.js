@@ -21,9 +21,8 @@ import {
   deliveryState, loadWatch, pruneSlot, readSlot, saveWatch,
   sessionKey, WATCH_LEAD,
 } from './watch.js';
-import { floatingWindowAlive } from './floating-window.js';
 import { markMaterial, materialNote, materialState } from './watch-material.js';
-import { speechEvents } from './voice.js';
+import { speechEvents } from './speech-bus.js';
 import { appendChat, appendSpoken } from './chat.js';
 import { describeLatency, aheadSeconds, loadLatency, recordLatency } from './latency.js';
 import { DEFAULT_LOOKAHEAD, DEFAULT_SEGMENT, makePlan, windowFor } from './batches.js';
@@ -303,13 +302,14 @@ export async function runWatchPass(args, deps) {
     signal = null,
     /** 进入阻塞前的准备（起聊天服务 + 开悬浮窗）。只有真要走 wait 才回调它 */
     prepareWait = null,
-    /** 窗口"还开着吗"（可注入；默认 pid 判活） */
-    windowAlive = floatingWindowAlive,
+    /** 窗口"还开着吗"（必须由调用方/接口注入；没有就不启用关窗即收工） */
+    windowAlive = null,
     /** 这次真的开过窗吗 —— 只有开过才知道"关掉"是什么意思 */
     expectWindow = false,
   } = deps;
   // 关窗即收工：等待期间用户把悬浮窗关了，就别再挂着（他没有插话入口了）
-  const windowGone = () => expectWindow === true && windowAlive() !== true;
+  const windowGone = () => expectWindow === true
+    && typeof windowAlive === 'function' && windowAlive() !== true;
   // 从"开始读进度"到"结果返回"的耗时 —— 这就是本机延迟的实测值，用来做提前量标定
   const tStart = Date.now();
   tStartForNote = tStart;

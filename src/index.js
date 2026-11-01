@@ -17,8 +17,8 @@
  */
 
 import { attachSpeechToChat } from './chat.js';
+import { getTtsPort } from './runtime-ports.js';
 import { watchTools } from './register.js';
-import { attachConfiguredVoice } from './voice.js';
 import { createSettingsPage } from './settings/server.js';
 
 export const name = 'dsh-watch-together';
@@ -99,11 +99,11 @@ async function registerAll(ctx) {
     }
   }
 
-  // 声音适配器（可选）。核心**不内置任何引擎**：只按 `~/.dsh/voice.json` 里写的那个路径
-  // 去 dynamic import，挂不上就算了 —— 声音是加分项，装坏了不能让插件起不来。
+  // 声音适配器（可选）：只通过 tts 接口挂，不 import voice.js。
+  // 这里也保留启动时挂载，这样第一次只调 `say`（还没开窗）也有声音。
   try {
-    const v = await attachConfiguredVoice({ log: (m) => ctx?.logger?.info?.(m) });
-    if (!v.ok && v.reason !== 'not-configured') {
+    const v = await getTtsPort().attachConfigured?.({ log: (m) => ctx?.logger?.info?.(m) });
+    if (v && !v.ok && v.reason !== 'not-configured') {
       ctx?.logger?.warn?.(`[dsh-watch-together] voice adapter not loaded: ${v.reason}`);
     }
   } catch (e) {

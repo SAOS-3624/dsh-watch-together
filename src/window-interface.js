@@ -56,23 +56,31 @@ export function createWindowInterface({ transport = null } = {}) {
     hidden() {
       return t.hidden();
     },
-    message(entry) {
-      return appendWindowEvent({ type: 'message', ...entry });
+    message(entry, env = process.env) {
+      return typeof t.message === 'function'
+        ? t.message(entry, env)
+        : appendWindowEvent({ type: 'message', ...entry }, env);
     },
-    meta(text, extra = {}) {
-      return appendWindowEvent({ type: 'meta', text, ...extra });
+    meta(text, extra = {}, env = process.env) {
+      return typeof t.meta === 'function'
+        ? t.meta(text, extra, env)
+        : appendWindowEvent({ type: 'meta', text, ...extra }, env);
     },
-    control(action, value = null) {
-      return appendWindowEvent({ type: 'control', action, value });
+    control(action, value = null, env = process.env) {
+      return typeof t.control === 'function'
+        ? t.control(action, value, env)
+        : appendWindowEvent({ type: 'control', action, value }, env);
     },
-    tts(event) {
-      return appendWindowEvent({ type: 'tts', ...event });
+    tts(event, env = process.env) {
+      return typeof t.tts === 'function'
+        ? t.tts(event, env)
+        : appendWindowEvent({ type: 'tts', ...event }, env);
     },
     actions(env = process.env) {
-      return readWindowActions(env);
+      return typeof t.actions === 'function' ? t.actions(env) : readWindowActions(env);
     },
     accept(action, env = process.env) {
-      return appendWindowAction(action, env);
+      return typeof t.accept === 'function' ? t.accept(action, env) : appendWindowAction(action, env);
     },
     status() {
       return { alive: Boolean(t.alive()), hidden: Boolean(t.hidden()) };

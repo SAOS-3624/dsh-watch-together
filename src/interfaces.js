@@ -15,9 +15,11 @@ import { createRecognitionInterface } from './recognition-interface.js';
 import { createTtsInterface } from './tts-interface.js';
 import { createWindowInterface } from './window-interface.js';
 import * as speechBus from './speech-bus.js';
+import * as voiceAdapter from './voice-adapter.js';
 import { runStoryboard } from 'dsh-video-storyboard/pipeline';
 import { formatManifest } from 'dsh-video-storyboard/format';
 import { cachedCues } from './lines-util.js';
+import { installPorts } from './runtime-ports.js';
 
 export const INTERFACE_VERSION = '1.0.0';
 
@@ -27,17 +29,21 @@ export function createWatchInterfaces(overrides = {}) {
     formatManifest,
     cues: cachedCues,
   });
-  const tts = overrides.tts ?? createTtsInterface(speechBus);
+  const tts = overrides.tts ?? createTtsInterface({ ...speechBus, ...voiceAdapter });
   const window = overrides.window ?? createWindowInterface();
   const chat = overrides.chat ?? Object.freeze({
     append: appendChat,
     read: readChat,
   });
-  return Object.freeze({
+  const api = Object.freeze({
     version: INTERFACE_VERSION,
     recognition,
     tts,
     window,
     chat,
   });
+  // 组合根：把这一组接口装进运行时端口，chat-store / watch-loop 等核心模块
+  // 只从这里取 TTS / 窗口，不再 import 具体实现。
+  installPorts(api);
+  return api;
 }
