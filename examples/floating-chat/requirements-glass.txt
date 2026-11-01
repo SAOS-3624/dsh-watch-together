@@ -1,0 +1,6 @@
+# dsh-watch-together — experimental live-capture glass window
+# Windows 10 2004+ only: the window uses SetWindowDisplayAffinity(WDA_EXCLUDEFROMCAPTURE)
+# and MSS screen capture. Use the same Python that has tkinter.
+Pillow>=10
+numpy>=1.24
+mss>=9

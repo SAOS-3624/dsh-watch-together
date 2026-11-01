@@ -261,6 +261,14 @@ pythonw examples/floating-chat/window.py     # 无控制台
   `pip install sounddevice numpy`；缺了只是按钮不可用，窗口照常。
 - 它和网页版（<http://127.0.0.1:9377/>）读的是同一个 `chat.jsonl`，两个一起开也不打架。
 
+### 实验性：抓屏玻璃窗
+
+`glass_window.py` 是另一版真实抓屏的液态玻璃窗（opt-in，默认不启用）：把自己从屏幕捕获里排除，
+逐帧抓取背后桌面并模糊；需要 Windows 10 2004+ 和 `Pillow`、`numpy`、`mss`。
+装好依赖后设置 `DSH_GLASS_WINDOW=1`（或在 `watch-window.json` 写 `"glass": true`）。
+它也是建议中的下一版悬浮窗，见仓库 issue / draft PR；在合入前遇到问题请回退到默认的 `window.py`。
+
+
 ---
 
 ## 6. 文件都落在哪

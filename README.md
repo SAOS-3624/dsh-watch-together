@@ -436,6 +436,23 @@ pythonw examples/floating-chat/window.py     # 无控制台
 它和聊天记录页（`http://127.0.0.1:9377/`，只读兜底）看的是同一个文件，两个一起开着也不打架。
 浏览器置顶小窗（`/widget` + 画中画）那条老路已经删了 —— 要先开一个标签页、关掉就没了。
 
+#### 实验性：抓屏液态玻璃窗（draft）
+
+仓库里另有一版真实抓屏的玻璃窗 `examples/floating-chat/glass_window.py`：它把自己从屏幕捕获里排除，
+实时抓取窗口背后的桌面并做圆角/折射/模糊，文字按背后明暗逐字选色，支持四角/四边缩放、滚轮翻历史、
+麦克风和回车发送。**默认仍是上面那版**；它作为 opt-in 提案存在，接口和依赖都还可能变。
+
+```bash
+pip install -r examples/floating-chat/requirements-glass.txt
+DSH_GLASS_WINDOW=1 pythonw examples/floating-chat/glass_window.py
+```
+
+- 仅 Windows 10 2004+（依赖 `SetWindowDisplayAffinity(WDA_EXCLUDEFROMCAPTURE)`）；macOS/Linux 不走这条。
+- 需要 `Pillow`、`numpy`、`mss`；用带 tkinter 的 Python 安装。
+- 输入框文字画在 Canvas 上，原生 Entry 只做 IME 输入，不会再出现一条黑色输入条。
+- `chat.jsonl` 里的 `role: "meta"` 状态行（例如早期的"叫醒失败"）不会进入聊天时间线。
+
+
 ## 命令行（没有 DSH 宿主时）
 
 `bin/watch.mjs` 是给**没有 `watch_together` 工具的会话**（比如普通的终端 AI）用的壳，

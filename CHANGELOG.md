@@ -5,6 +5,14 @@ This package starts its own version line at `0.0.7` — it is not a continuation
 
 ## [Unreleased]
 
+### Experimental — 抓屏液态玻璃悬浮窗（opt-in draft）
+
+新增 `examples/floating-chat/glass_window.py`：把窗口自己从 Windows 屏幕捕获里排除，实时抓取背后的
+桌面做圆角、边缘折射和两档模糊；文字按逐字背后的明暗选择深/浅色，聊天流仍读同一份 `chat.jsonl`，
+支持四角/四边缩放、滚轮翻历史、回车发送、麦克风和隐藏配置。需要 `Pillow`、`numpy`、`mss`，
+用 `DSH_GLASS_WINDOW=1` 或 `watch-window.json` 的 `glass: true` 才启用，默认仍是纯 tkinter 的
+`window.py`。同时过滤 `role: "meta"` 状态行，避免历史"叫醒失败"铺满时间线。
+
 ### Improved — 液态玻璃更立体，追加消息不再 O(n²)
 
 悬浮窗的"液态玻璃"以前只有一条顶部高光 + 四条边线，`GLASS_TOP` 实际没被使用，面板仍是

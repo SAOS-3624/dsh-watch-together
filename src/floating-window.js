@@ -14,9 +14,10 @@
  * 所以解析顺序是：
  *
  *   1. `DSH_FLOAT_WINDOW` 环境变量       —— 显式指定脚本
- *   2. `<DSH_HOME>/watch-window.json`    —— `{ "script": "...", "python": "..." }`
+ *   2. `DSH_GLASS_WINDOW=1` / config `glass: true` —— 实验性抓屏玻璃窗
+ *   3. `<DSH_HOME>/watch-window.json`    —— `{ "script": "...", "python": "..." }`
  *      （和 `voice.json` 一样：那里面也是指到开发仓库的适配器）
- *   3. 包里自带的 `examples/floating-chat/window.py`
+ *   4. 包里自带的 `examples/floating-chat/window.py`
  *
  * 解释器同理：`DSH_FLOAT_PYTHON` → 配置里的 `python` → `pythonw`（不留黑框）→ `python`。
  *
@@ -36,6 +37,8 @@ import { fileURLToPath } from 'node:url';
 const HERE = dirname(fileURLToPath(import.meta.url));
 /** 包里自带的那份（装到 profile 之后就在这个位置） */
 const PACKAGED = join(HERE, '..', 'examples', 'floating-chat', 'window.py');
+/** 实验性：抓屏玻璃窗；需要 Pillow + numpy + mss，默认不开 */
+const PACKAGED_GLASS = join(HERE, '..', 'examples', 'floating-chat', 'glass_window.py');
 
 function dshHome() {
   return process.env.DSH_HOME || join(homedir(), '.dsh');
@@ -100,6 +103,7 @@ export function floatingWindowHidden() {
 function resolveWindowScript(cfg = readConfig()) {
   const explicit = process.env.DSH_FLOAT_WINDOW || cfg.script;
   if (explicit) return explicit;
+  if (process.env.DSH_GLASS_WINDOW === '1' || cfg.glass === true) return PACKAGED_GLASS;
   return PACKAGED;
 }
 
