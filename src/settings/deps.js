@@ -82,8 +82,15 @@ function voice(env) {
 /** @returns {Promise<Array<{id:string,label:string,ok:boolean,detail:string}>>} */
 export async function checkEnvironment(_ctx, env = process.env) {
   const python = await firstOf([['python', ['--version']], ['py', ['--version']]]);
-  const ffmpeg = await version('ffmpeg', ['-version']);
-  const ffprobe = await version('ffprobe', ['-version']);
+  let ffmpegCmd = 'ffmpeg';
+  let ffprobeCmd = 'ffprobe';
+  try {
+    const core = await import('dsh-video-storyboard/probe');
+    ffmpegCmd = core.DEFAULT_FFMPEG || ffmpegCmd;
+    ffprobeCmd = core.DEFAULT_FFPROBE || ffprobeCmd;
+  } catch { /* 独立测试时可能没有核心包；退回 PATH */ }
+  const ffmpeg = await version(ffmpegCmd, ['-version']);
+  const ffprobe = await version(ffprobeCmd, ['-version']);
   const core = corePackage();
   const ext = extension();
   const win = floatingWindow();
