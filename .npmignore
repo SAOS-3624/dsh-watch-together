@@ -1,5 +1,7 @@
-# npm 打包**不读 .gitignore**（`files` 白名单命中就全收），所以 Python 字节码
-# 会跟着 examples/ 一起进包 —— 实测 +276kB，而且带着已经删掉源文件的 .pyc
-# （glass_window.pyc 就是这么混进去的）。
-**/__pycache__/
-**/*.pyc
+# npm 打包**不读 .gitignore**（`files` 白名单命中就整目录收），所以 Python 字节码
+# 会跟着 examples/ 一起进包 —— 实测 +43kB，而且会带着已删源文件的 .pyc。
+# 注意：**不要写 `**/__pycache__/`**，npm 用的 ignore 实现不认那个前导 `**/`；
+# 模式默认就是"任意层级"，写目录名/后缀就够。
+__pycache__/
+__pycache__
+*.pyc
