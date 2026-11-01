@@ -36,7 +36,11 @@ test('陪看把 detail 透传进管线，并按档位收紧清单预算', async 
     );
     assert.equal(seen.opts.detail, 'high', 'detail 必须传进 runStoryboard');
     assert.equal(seen.opts.ocr, true);
-    assert.equal(seen.opts.minGap, 0.5, '陪看的 minGap 仍由 dsh-video-storyboard/board 决定');
+    // 0.6.0 起管线不再收 `minGap`：切点近邻合并不是"拍脑袋定一个间隔"，
+    // 而是档位算法按密度自己压（见 storyboard 的 tiers.js）。陪看这边靠 maxFrames 兜住。
+    assert.equal(seen.opts.minGap, undefined, '管线已不收 minGap');
+    assert.equal(seen.opts.maxFrames, 5, '陪看一段默认 5 帧');
+    assert.equal(seen.opts.maxSheets, 1, '陪看一段只发一张图');
     assert.equal(seen.fmt.maxCellChars, 400, '清单每格字数跟着 detail 走');
     assert.equal(seen.fmt.maxChars, 6000, 'high 档位给更大的总预算');
   } finally {
