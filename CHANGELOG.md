@@ -3,6 +3,33 @@
 All notable changes to **dsh-watch-together** are documented here.
 This package starts its own version line at `0.0.7` — it is not a continuation of `dsh-video-storyboard`.
 
+## [0.2.1] - 2026-11-01
+
+两项都是从社区审计（#18 / #16）来的，各配了回归用例。
+
+### Fixed — 无音轨视频不再卡在"缺台词"门槛（fixes #18）
+
+`noListen` 之前只改了文案，**没有参与 `hasLines`** —— 无可等台词时 `segLines` 为空，
+`hasLines` 恒为 false，于是 `spoken` / `lastDelivered` 都不写，每次调用都落回同一段、
+永远带 `[DELIVERY INCOMPLETE]`。这不是"模型不肯写台词"，是状态机不推进。
+
+- `noLinesNeeded = Boolean(noListen)` 参与 `hasLines`：没音轨 / 没配 ASR / 连不上 / 这段真静音时，
+  画面这一半就算交付完成。
+- 没有台词可等时**不再提示"先取字幕"**（取了也不会有），也不说"本段台词已就绪"。
+- `[听音]` 段补一句"这一段也没有台词可等，用你看见的画面说一句即可，别编对白"。
+- **普通视频的台词门槛保持原样**：有声有字幕但没写台词，仍然 `complete=false`。
+
+### Fixed — 叫醒失败不再刷屏，确定性失败不再空等（fixes #16）
+
+`no-session-controller`（当前进程没有 DSH 会话控制器）和 `no-session-id` 是**确定性**失败，
+以前每次都要等 800ms 再重试，并且每次都往 `chat.jsonl` 写一条 `[一起看] 叫醒失败`；
+持续故障时悬浮窗会被几十条一样的 meta 刷满。
+
+- 这两类失败**不重试**；其他偶发失败仍重试一次。
+- 失败提示按 `(sessionId, reason)` 节流：**60 秒内只显示第一条**，静默期里折叠掉的次数
+  在下一次显示时带上（"同类失败另有 19 次已折叠"）。
+- `no-session-controller` 的提示补一句可行动的说明（从 DSH 里启动，或先关掉陪看循环）。
+
 ## [0.2.0] - 2026-11-01
 
 这一版把悬浮窗的玻璃重做了。三块独立玻璃、底色真正跟着背景走、静帧不空转、
