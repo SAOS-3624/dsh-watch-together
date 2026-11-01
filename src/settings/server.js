@@ -131,7 +131,7 @@ export function createSettingsPage({ ctx, env = process.env, log = () => {} } = 
     description: [
       'Open the local watch_together settings page: browser debugging port,',
       'chat service port, voice adapter path, and a read-only dependency check',
-      'with setup instructions for Python, the browser extension, and ffmpeg.',
+      'with official download links and setup instructions for Python, the browser extension, and ffmpeg.',
       'Returns a tokenized local URL.',
     ].join(' '),
     parameters: {},
