@@ -1,8 +1,8 @@
 /**
  * settings/server.js — 陪看插件自己的本机设置页与 API。
  *
- * 同分镜插件：页面本体是独立 HTML；另挂一个极小的 lazy-CJS 半侧，
- * 只把 tokenized URL 塞进 DSH 设置里的 iframe。工具也仍返回同一地址。
+ * 同分镜插件：页面本体是独立 HTML；DSH 里的设置页由 lib/client.js 用
+ * 原生 React 表单渲染，直接调用同一套 API，不再套 iframe。工具也仍返回同一地址。
  */
 
 import { randomBytes } from 'node:crypto';
@@ -146,8 +146,8 @@ export function createSettingsPage({ ctx, env = process.env, log = () => {} } = 
     description: [
       'Open the local watch_together settings page: browser debugging port,',
       'chat service port, voice adapter path, and a read-only dependency check',
-      'with official download links and setup instructions for Python, the browser extension, and ffmpeg.',
-      'Returns a tokenized local URL; the same page is a Settings > Built-in plugins tab in the Web GUI.',
+      'with official download buttons for Python, the browser extension, and ffmpeg.',
+      'Returns a tokenized local URL; the Web GUI also renders the same settings natively in the bundle detail page and Settings > Built-in plugins.',
     ].join(' '),
     parameters: {},
     output: {
