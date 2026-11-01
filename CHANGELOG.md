@@ -38,6 +38,138 @@ This package starts its own version line at `0.0.7` — it is not a continuation
 
 首个发布版本。要求 `dsh-video-storyboard@^0.5.11`（字幕轨用到它的 `./transcript-pass` 子路径）。
 
+## [0.1.1] - 2026-11-01
+
+**依赖升到 `dsh-video-storyboard@^0.6.0`。** 分镜从"固定宫格"改成"档位排布"——
+一格 = 一个镜头、格子大小跟切点密度走，`boardOptions()` 返回的参数从
+`cells / sheets / minGap` 换成 `maxFrames / maxSheets / minFrames`。旧的参数名在 0.6.0 里已经不存在，
+所以这一版**必须**配 0.6.0 及以上，不能和 0.5.x 混装。
+
+### 台词写完之后不再递整段清单（防剧透）
+
+用户反馈"老是剧透后面的"。根因不是提示词不够狠：写台词时必须把整段 5 分钟的清单交出去，
+写完它仍然留在上下文里，模型就会把它当成"我知道后面"的凭据 —— 光说"不许提"压不住真实内容。
+现在台词一就绪就换成一句简报（"台词已就绪，清单不再提供"），模型手里真的没有后面的信息。
+
+顺带在提示词里加了一句自问：「这句话是不是只有已经看过 xx 秒之后的人才写得出来？」
+不确定的事用"现在"而不是"接下来"。
+
+### Liquid glass, second pass — the window was still ugly (2026-11-01, later)
+
+Verbatim feedback: "看一下 watch-together 的悬浮窗设计，太丑了现在" — the first liquid-glass pass
+had the vocabulary right and the physics wrong. Five defects, all of them visible in a screenshot:
+
+**The corners were not round.** `round_rect` and `squircle_mask` both used a superellipse with
+`n = 5`, and at `n = 5` the curve is within 0.6% of the straight edge until the last few pixels —
+a 22px radius rendered as a near-square corner with a tiny fillet. `squircle_mask` had a second,
+independent bug: the row-solve was inverted (`x` grew from 0 instead of `r`), which cut the corners
+out as *squares*. Both now use `n ≈ 2.2` and solve each row's span directly (O(h) instead of O(w·h),
+and it buys 2× supersampling for free).
+
+**The chrome was opaque.** The header was a `tk.Frame` and the composer a second one; Tk widgets
+must have an opaque background, so the top and bottom strips of a "glass" window were dead black.
+Both are now drawn on the canvas (status dot, title, count, `▾`/`✕` as hit-tested canvas items,
+the input well as a rounded polygon). Only the `Entry` stays a real widget — it has to be opaque, so
+it lives inside a deliberate *inset* well.
+
+**Bubbles were paper.** Each one was filled with a flat `#3a4459`. They are now cut from the same
+blurred backdrop as the panel (`plate()`), with only a white/blue wash on top — they transmit what
+is behind them.
+
+**Tint was global and blue.** One tint for the whole window, and a blue-grey `#171a21`, which fights
+every colourful frame it sits on. Tint is now per-plate and *neutral*: measure that plate's mean
+luminance and solve for "how opaque does the ink need to be to land under 84" (`a = (L-84)/(L-12)`).
+Over a white page it darkens itself; over a dark scene it stays transparent.
+
+**The sheen was made of lines.** Diagonals stacked with a 3px step left a visible weave across the
+panel. Every gradient is now computed on a 16×16 canvas and upscaled bicubically.
+
+Also added: **dispersion** (warm outside, cool inside, full strength around the whole chamfer and
+stronger at the four corners, because a fillet has curvature everywhere but compound curvature at
+the corners), **edge fading** in the message list (rows fade in/out across a 30px band instead of
+popping at the clip boundary — suppressed on the side that has no more content, otherwise the newest
+message is permanently the faintest), a **200ms entrance** per new bubble (8 frames: 10px rise +
+alpha ramp + text colour lerp), and **smooth scrolling** (5 frames × 16ms) so the fade band has
+something to fade across. The scrollbar moved out into the margin beside the panel.
+
+Two long-standing bugs fell out of this: `Meta.paint` ended with a leftover `self.cv.tag_lower("bg")`
+from the pre-canvas version — `Meta` has no `cv`, so the exception aborted `_reflow` mid-list and only
+the newest message was ever visible; and the backdrop image was created after the messages without
+`tag_lower`, so any repaint buried them.
+
+### Performance — the glass was re-baked on every frame (2026-11-01, same session)
+
+"背景的模糊还是很卡" — measured, not guessed. One panel plate cost **520ms**, a slab 90ms,
+a bubble 28ms. The culprit was `_ring`: it built **two full-size fill masks and subtracted them**,
+and every plate needs five or six rings (rim, soft rim, bottom shade, warm, cool, edge weight), so
+a 665×594 panel spent ~100ms in that one function plus ~15ms per `squircle_mask`.
+
+Three fixes, in order of payoff:
+
+- **Ring solved per row, no intermediate images.** A ring's row is just two short segments — left
+  and right — so the inner and outer x are solved directly (`_ring`), and middle rows are skipped
+  entirely. O(h) instead of O(w·h), and no subtraction allocations. 100ms → 3.7ms.
+- **Everything smooth is computed at ¼ scale.** `_corner_weight`, `_edge_weight` and `refract`'s
+  bevel weight are soft blobs, not features: build them at 665/4 and upscale bilinearly. Gaussian
+  blur cost drops 16×, and the bevel mask (14 rectangle outlines over the full image) went from
+  ~20ms to ~1ms.
+- **Supersampled masks now downsample with `Image.BOX`** instead of LANCZOS. For an exact 2×
+  reduction BOX *is* the 2×2 average — same result, ~4× faster. `squircle_mask` 15ms → 4.9ms.
+
+Result: panel 520 → **50ms**, slab 90 → **6.8ms**, bubble 28 → **8ms**; `_paint` with a warm cache
+**1.3ms**, `_reflow` **0.5ms**, cold repaint (backdrop changed) **76ms**, window open **387ms**.
+
+Also: the R/B channel-scaled displacement (`chroma_edge`) is now **off by default**
+(`DSH_WATCH_CHROMA_EDGE=1` turns it back on). It cost two full-size channel resizes per plate
+(+18ms) and was invisible — the backdrop is already blurred and inked, so there is no contrast left
+at the rim to disperse. The visible dispersion is the warm-outside/cool-inside tint pair, which stays.
+
+Finally, resizing no longer re-bakes: while the resize grip is held the panel is a bilinear scale of
+the last baked plate (1.2ms instead of 50ms), and a precise re-bake happens 300ms after release.
+
+### Performance, second pass — the backdrop was recomputed on every mouse release (2026-11-01)
+
+"超级卡，绝对不止一两百毫秒" … "拖动根本不会刷新" … "碰到屏幕边缘松手百分百闪一下".
+
+Measured, the picture was different from the first pass: `_paint` was already fast (1.3ms warm),
+but **every time a drag or resize settled**, `_refresh_backdrop` cost **165ms** — and during the drag
+the backdrop never updated at all, because refresh was debounced to 420ms after release.
+
+What was actually slow, in order of payoff:
+
+- **`_ring` built two full-size fill masks and subtracted them**, and every plate needs five or six
+  rings. Rewritten to solve each row's inner and outer x directly and draw two short segments —
+  O(h), no intermediate allocations. 100ms → 3.7ms per plate. (While rewriting it I dropped the
+  `width` argument on the floor: the band came out as "from the edge to `inset`", which made a
+  1px highlight vanish entirely and pushed the inner shade line onto the rim, darkening it. The
+  tell was "the glass has no edge and looks grey". Fixed by solving both boundaries properly.)
+- **Everything smooth is now built at ¼ scale and upscaled**: curvature weight, dispersion weight,
+  and the bevel weight in `refract`. They are blobs, not detail. Gaussian cost drops 16×.
+- **The "light" layers are pure geometry** — sheen, rim, inner shade, warm/cool fringes do not
+  depend on the backdrop at all. They are composed once per size into `_light_overlay` and cached;
+  a re-bake now pays one `alpha_composite` instead of six.
+- Tint and wash are both flat colours over flat colours, so they are blended into a single colour
+  and applied once. Mean luminance is measured on a 48×48 copy (the mean does not care about
+  resolution). 2× supersampled masks downsample with `Image.BOX` instead of LANCZOS.
+- **The stage is now one full-screen capture at ¼ resolution**, taken at open while the window is
+  still withdrawn. Any later position is a *crop*, never a re-grab — the old "window + margin"
+  stage ran out of bounds whenever the widget was near a screen edge, and falling out of bounds
+  is exactly the "release → hitch → flash" the user was seeing.
+- **Dragging refreshes live**: `_live_backdrop()` crops from the stage and `_paint_glass_only()`
+  swaps only the panel and the two slabs — the header, bubbles and composer do not move relative
+  to the window and are not redrawn. Throttled to 30ms (the mouse is 120Hz). Two hidden costs fell
+  out of this: `_window_rect()` calls `update_idletasks()`, which silently ran a *full* repaint on
+  every frame (+17ms), and position-only `<Configure>` events repainted the entire window.
+- Bubble plates are invalidated by their own counter (`chat_glass_ver`), so a small drag no longer
+  re-bakes six bubbles per frame; only panel/slab caches are dropped.
+- Edge-of-screen windows now only need to *overlap* the stage, not sit inside it; the off-screen
+  part is cropped short and padded. And a settle within 8s of the last capture does not re-capture
+  at all — the stage is refreshed for free while the window is hidden.
+
+Numbers (665×594 panel, 150% DPI): a panel plate 520ms → **7.7ms**, slab 90 → **0.9ms**, bubble
+28 → **0.9ms**; `_paint` warm 1.3ms, `_reflow` 0.5ms; **dragging costs 24–28ms per frame (~38fps)
+where it used to be frozen**; window open 510ms including the full-screen stage.
+
 ### Fixed — optional services must go through `ctx.get()`
 
 `ctx?.attachments?.saveImage` looks like a runtime probe but throws in a real host: cordis's `ctx`

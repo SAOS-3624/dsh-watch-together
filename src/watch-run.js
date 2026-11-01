@@ -899,11 +899,24 @@ export async function runWatchPass(args, deps) {
     `**NO SPOILERS**: they are only at ${mmss(cursor)} — anything after that is still in your hands. `
       + 'Never say 接下来 / 下一分钟 / 后面会 / 正片才 / 等下注意看; write only about what is on their screen. '
       + 'The sheet covers the whole segment because you need it to write lines, not as permission to narrate ahead.',
+    '**先自问一句**：这句话是不是只有"已经看过 ' + mmss(cursor) + ' 之后"的人才写得出来？'
+      + '如果是，就别写 —— 用户会当场发现你偷看了，整个陪看就废了。'
+      + '不确定的事就用"现在"而不是"接下来"。',
     'Default: one sentence about what changed or what is worth noticing, then stop. '
       + 'Silence is a valid answer; there is no quota.',
     'Your normal reply is NOT visible in the floating window — only `say` is. To say something, '
       + 'pass it in the same call: watch_together({ segment: 60, say: "one sentence" }).',
   ].join('\n');
+
+  // **台词写完之后就不再递清单**（2026-11-01，用户反馈"老是剧透后面的"）。
+  // 清单里是整段 5 分钟的画面和句子，`cursor` 之后的全都在 —— 写台词时必须给，
+  // 但写完了就没用了，而模型会持续把它当成"我知道后面"的凭据：光靠提示词说
+  // "不许提"压不住真实内容。所以台词一就绪就换成一句简报。
+  const body = hasLines
+    ? `[本段台词已就绪] ${mmss(segStart)}–${mmss(segStart + size)} 的台词已经写好了，`
+      + `清单不再提供 —— 你手里没有后面的信息，也别假装有。\n`
+      + `现在在 ${mmss(cursor)}，只说此刻屏幕上正在发生的事。`
+    : entry.manifest;
 
   const latencyLine = await latencyNote({ record: true });
 
@@ -916,7 +929,7 @@ export async function runWatchPass(args, deps) {
     // 只报**还没念的**：`speech` 以前是整份稿子，连刚刚被 prune 掉的过期句都在里面，
     // 模型会以为那几句还会念（`upcoming` 才是真的会响的）。
     speech: upcoming,
-    text: `${gate}${materialLine}${linesNote}${owedNote}${head}${waitNote}\n${recapText}${guidance}${latencyLine}${bufferHint}\n\n${entry.manifest}`,
+    text: `${gate}${materialLine}${linesNote}${owedNote}${head}${waitNote}\n${recapText}${guidance}${latencyLine}${bufferHint}\n\n${body}`,
     images,
   });
 }
