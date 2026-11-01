@@ -160,7 +160,8 @@ export function createSettingsPage({ ctx, env = process.env, log = () => {} } = 
           '一起看设置页：',
           url,
           '在浏览器打开；页面里的 API 用这个 URL 的 token 校验，不要把它发给别人。',
-          '保存后下一场陪看开始时生效；台词/ASR 的 key 在视频分镜设置页配置。',
+          '语音适配器下一场开始时挂载；聊天端口在聊天服务启动时读取（服务已在跑需重启 DSH）。',
+          '台词/ASR 的 key 在视频分镜设置页配置。',
         ].join('\n'),
       };
     },

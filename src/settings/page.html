@@ -29,7 +29,7 @@ code{font:12px/1.5 ui-monospace,SFMono-Regular,Consolas,monospace;background:var
 </head>
 <body><main>
 <h1>一起看 · 设置</h1>
-<p>本页只写本机 JSON。端口与语音适配器在下一场陪看开始时生效；台词/ASR 的 key 在“视频分镜”设置页里配。</p>
+<p>本页只写本机 JSON。语音适配器在下一场陪看开始时挂载；聊天端口由聊天服务启动时读取，服务已在跑时需重启 DSH。台词/ASR 的 key 在“视频分镜”设置页里配。</p>
 
 <div class="card">
   <h2>位置与聊天</h2>
@@ -185,7 +185,7 @@ code{font:12px/1.5 ui-monospace,SFMono-Regular,Consolas,monospace;background:var
       const data = await api('/save', { video, watch, voice });
       state.video = data.video; state.watch = data.watch; state.voice = data.voice;
       render();
-      setStatus('已保存；下一场陪看开始时生效。', 'ok');
+      setStatus('已保存；语音下一场生效，聊天端口若服务已在跑需重启 DSH。', 'ok');
     } catch (e) { setStatus(e.message, 'bad'); }
   }
 
