@@ -29,6 +29,7 @@
   "main": "./src/index.js",
   "exports": {
     ".": "./src/index.js",
+    "./client": "./lib/client.js",
     "./register": "./src/register.js",
     "./tool-spec": "./src/tool-spec.js",
     "./watch": "./src/watch.js",
@@ -50,6 +51,7 @@
   },
   "files": [
     "src",
+    "lib",
     "bin",
     "examples",
     "extension",
@@ -90,6 +92,9 @@
   "dsh": {
     "bundle": {
       "patch": "./cordis.patch.yml"
+    },
+    "client": {
+      "platform": "web"
     }
   }
 }

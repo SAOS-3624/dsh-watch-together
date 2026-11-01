@@ -7,6 +7,16 @@ This package starts its own version line at `0.0.7` — it is not a continuation
 
 两项都是从社区审计（#18 / #16）来的，各配了回归用例。
 
+### Added — 插件设置页（合 PR #11, closes #10）
+
+设置直接渲染在 DSH 插件详情页（`plugins.bundle.config`），不再用 iframe / 内嵌滚动窗口；
+「设置 → 内置插件」的 tab 也还在。
+
+- 表单：`browserPort`（共享 `video.json`）、`chatPort`（`watch.json`）、语音适配器（`voice.json`）。
+- **依赖自检**：ffmpeg/ffprobe、Python、`dsh-video-storyboard`、浏览器扩展、悬浮窗脚本；
+  缺什么就直接给官方下载入口，已装的显示「已安装」。插件**不会**静默安装或替你执行下载。
+- 修核心包误报：`dsh-video-storyboard/package.json` 不在 `exports` 里，改成解析 `dist` 信息。
+
 ### Changed — 悬浮窗换成实时捕获管线，模块拆成接口（合 PR #20）
 
 - **窗口实现换代**：`examples/floating-chat/window.py` 以 PR #15 的实时捕获管线为底稿重写
