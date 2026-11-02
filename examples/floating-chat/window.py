@@ -756,6 +756,11 @@ class LiveGlass:
         gt = max(0, t - PAD)
         gr = min(self._sw, r + PAD)
         gb = min(self._sh, b + PAD)
+        # 防御：多显示器 / DPI 变化 / 被其他程序挪动时，窗口仍可能越界，
+        # 钳位后宽高会变成 0 或负数，mss 会抛 "Region has zero or negative size"；
+        # 那个异常在 _work() 里被吞掉只打一行日志，于是每帧刷一条、背景永远画不出来。
+        if gr - gl <= 0 or gb - gt <= 0:
+            return None
         shot = sct.grab({"left": gl, "top": gt,
                          "width": gr - gl, "height": gb - gt})
         im = Image.frombytes("RGB", shot.size, shot.rgb)
@@ -1425,7 +1430,13 @@ class LiveGlass:
                 self._preview_resize(nw, nh)
             return
         if self._drag:
-            self.root.geometry(f"+{e.x_root - self._drag[0]}+{e.y_root - self._drag[1]}")
+            # 和缩放分支一样必须钳位：拖到屏幕外时窗口坐标会变负，
+            # 抓屏区域随之越界（高度算出负数），背景永远画不出来 —— 表现为花屏。
+            nx = e.x_root - self._drag[0]
+            ny = e.y_root - self._drag[1]
+            nx = max(0, min(max(0, self._sw - self.root.winfo_width()), nx))
+            ny = max(0, min(max(0, self._sh - self.root.winfo_height()), ny))
+            self.root.geometry(f"+{nx}+{ny}")
 
     def _release(self, e):
         if self._resize:
