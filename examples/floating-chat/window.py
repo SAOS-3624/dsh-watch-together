@@ -411,9 +411,11 @@ class LiveGlass:
         self._frames = 0
         self._text_items = []
         self._text_colors = {}
+        self._text_pending = {}
         self._text_shadows = {}
         self._color_at = 0.0
         self._aux_at = 0.0
+        self._bar_color = "#b8cbe0"
         self._load_initial()
         self._build_ui()
         self._add_text_shadows()
@@ -1257,6 +1259,9 @@ class LiveGlass:
                                   w // 2 + self._bar_len // 2, BAR_Y,
                                   width=BAR_THICK, fill="#b8cbe0",
                                   capstyle="round")
+        # 新建的条是浅色，缓存也要跟着归位；否则折叠重建后旧色值还在，
+        # `bar_fill == cur` 会把这次同步直接跳过去，条和缓存就对不上了。
+        self._bar_color = "#b8cbe0"
 
         c.tag_bind("close", "<Button-1>", self._close)
         c.tag_bind("send", "<Button-1>", self._send)
@@ -1303,6 +1308,7 @@ class LiveGlass:
         self._bg = None
         self._text_items = []
         self._text_colors = {}
+        self._text_pending = {}
         self._text_shadows = {}
         self._build_ui()
         self._add_text_shadows()
@@ -1334,6 +1340,7 @@ class LiveGlass:
         self._collapsed_frame = None
         self._text_items = []
         self._text_colors = {}
+        self._text_pending = {}
         self._text_shadows = {}
         self._color_at = 0.0
         self._aux_at = 0.0
@@ -1367,7 +1374,17 @@ class LiveGlass:
         self._text_shadows = {}
 
     def _adapt_text(self, out):
-        """按文字背后的暗部/亮部比例选色，并同步描边颜色。"""
+        """按文字背后的暗部/亮部比例选色。
+
+        **必须带滞回**：气泡是透明的，背后就是桌面/视频/网页。画面一动，
+        这块背景的中位亮度就在 0.5 附近来回穿越，而原来这里是 `p50 < 0.50`
+        硬切、每 0.12 秒判一次 —— 结果字一秒能翻七八次黑白，肉眼就是"一直闪"。
+
+        现在两道闸：
+        1. **滞回**：白的要暗到 0.38 才翻深，深的要亮到 0.62 才翻白；
+           中间的 0.38~0.62 一律保持现状，不给抖动留门。
+        2. **连续两次同向才切**：单帧跳变忽略，最坏 0.24 秒才换一次色。
+        """
         now = time.time()
         if now - self._color_at < 0.12:
             return
@@ -1385,21 +1402,29 @@ class LiveGlass:
             p50 = float(np.percentile(gray, 50)) / 255.0
             dark = float(np.mean(gray < 107))
             light = float(np.mean(gray > 158))
-            # 先看这块背景是偏暗还是偏亮，混合区域再退回中位亮度
+            cur = self._text_colors.get(item)
+            # 先看这块背景是偏暗还是偏亮（这两支自带 0.08 余量，本身不抖）
             if dark > light + 0.08:
-                color = "#f2f8ff"
+                want = "#f2f8ff"
             elif light > dark + 0.08:
-                color = "#07111d"
-            elif p50 < 0.50:
-                color = "#f2f8ff"
+                want = "#07111d"
+            elif cur == "#07111d":
+                want = "#f2f8ff" if p50 < 0.38 else cur
             else:
-                color = "#07111d"
-            if color != self._text_colors.get(item):
-                self.canvas.itemconfigure(item, fill=color)
-                self._text_colors[item] = color
+                # 还没定色时先给白字；之后要亮过 0.62 才敢翻深
+                want = "#07111d" if (cur is not None and p50 > 0.62) else (cur or "#f2f8ff")
+            if want == cur:
+                self._text_pending.pop(item, None)
+                continue
+            if self._text_pending.get(item) != want:
+                self._text_pending[item] = want       # 第一次：只记下，不换
+                continue
+            self._text_pending.pop(item, None)
+            self.canvas.itemconfigure(item, fill=want)
+            self._text_colors[item] = want
 
     def _adapt_aux(self, out):
-        """最上面细条随背景切换深浅。"""
+        """最上面细条随背景切换深浅（同样要滞回，理由见 `_adapt_text`）。"""
         now = time.time()
         if now - self._aux_at < 0.25:
             return
@@ -1409,8 +1434,15 @@ class LiveGlass:
         bar = np.asarray(out.crop(
             (mid - half, BAR_Y - 6, mid + half, BAR_Y + 12)).convert("L"))
         p50 = float(np.median(bar)) / 255.0
-        bar_fill = "#b8cbe0" if p50 < 0.48 else "#4e6278"
-        self.canvas.itemconfigure(self._bar, fill=bar_fill)
+        cur = self._bar_color
+        if cur == "#4e6278":
+            # 已经很深了：要暗到 0.36 才翻浅，避免在阈值附近来回跳
+            bar_fill = "#b8cbe0" if p50 < 0.36 else cur
+        else:
+            bar_fill = "#4e6278" if p50 > 0.60 else cur
+        if bar_fill != cur:
+            self._bar_color = bar_fill
+            self.canvas.itemconfigure(self._bar, fill=bar_fill)
 
 
 
