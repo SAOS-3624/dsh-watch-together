@@ -48,14 +48,15 @@ export async function runWatchAction(args, {
   if (args.window === 'hide' || args.window === 'show') {
     const want = args.window === 'hide';
     const r = want ? winPort.hide() : winPort.show();
-    if (!r.ok) {
+    // 接口实现可以返回 {ok,reason}（自带窗口），也可以只返回 boolean（简单 transport）。
+    if (r !== true && r?.ok !== true) {
       return {
         images: [],
-        text: `[window] ${r.reason === 'window-not-open'
+        text: `[window] ${r?.reason === 'window-not-open'
           ? '悬浮窗没开着，没什么可藏的'
-          : r.reason === 'disabled'
+          : r?.reason === 'disabled'
             ? '这台机器关掉了悬浮窗（DSH_WATCH_NO_WIDGET=1）'
-            : `切不过去（${r.reason}）`}。`,
+            : `切不过去（${r?.reason}）`}。`,
       };
     }
     // 藏起来之后用户看不见窗口，所以这句话只能靠 `say` 进流 —— 让它自己说一句
