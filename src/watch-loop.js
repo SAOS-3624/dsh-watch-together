@@ -991,7 +991,13 @@ export function startWatchLoop({
           const line = due ? String(due.text ?? due) : null;
           if (line) {
             const delivered = speak({
-              at: est.pos, text: line, input: loop.input, segment: segNow.from,
+              at: est.pos,
+              text: line,
+              input: loop.input,
+              // **这句自己的段，不是当前段**：`dueLine` 跨段挑 at 最小的那句，
+              // 上一段遗留的句子会在跨过边界后才会念到。预合成按 `line.from` 建 key，
+              // 这里报当前段的话两边对不上，缓存白做、首声又晚 0.6~2 秒。
+              segment: (due && Number.isFinite(due.from)) ? due.from : segNow.from,
             });
             if (delivered > 0) {
               loop.lastSpeechAt = tNow;

@@ -266,6 +266,9 @@ export async function upcomingLines(input, { after = -Infinity, before = Infinit
   for (const [key, slot] of Object.entries(lines)) {
     const from = Number(key);
     for (const item of slotItems(slot)) {
+      // `slotItems` 把"没写 at"归一成 `null`，而 `Number(null)` 是 0（有限数）——
+      // 不显式挡掉的话，进度还在开头时窗口会把它们当成 at=0 的句子发出去，白白合成一遍。
+      if (item.at === null) continue;
       const at = Number(item.at);
       if (!Number.isFinite(at)) continue;
       if (at >= lo && at <= hi) out.push({ from, at, text: item.text });
@@ -449,6 +452,9 @@ export async function dueLine(input, pos, {
     const planned = dueAt(best.at, best.text);
     return {
       text: best.text,
+      // **这句属于哪一段**（段首秒数）：跨段挑选时它可能不是当前段。
+      // 预合成的 key 带 segment，`due` 若报当前段，上一段遗留的句子就对不上缓存。
+      from: best.from,
       at: Number.isFinite(Number(best.at)) ? Number(best.at) : null,
       planned: Number.isFinite(planned) ? +Number(planned).toFixed(2) : null,
       late: Number.isFinite(planned) ? +(now - planned).toFixed(1) : null,
