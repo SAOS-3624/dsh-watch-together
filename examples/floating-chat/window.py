@@ -849,6 +849,11 @@ class LiveGlass:
                 if self._pause.is_set():
                     time.sleep(0.03)
                     continue
+                if getattr(self, "_collapsed", False):
+                    # 折叠态只剩一条标题栏，玻璃遮罩仍是展开时的尺寸；继续抓会在
+                    # 合成时抛 images do not match（每帧一条，能把日志刷到几十 MB）。
+                    time.sleep(0.05)
+                    continue
                 t0 = time.perf_counter()
                 try:
                     with self._geo_lock:
@@ -1125,7 +1130,8 @@ class LiveGlass:
             self.canvas.config(width=w, height=h)
             c.tag_bind("close", "<Button-1>", self._close)
             c.tag_bind("collapse", "<Button-1>", self.toggle_collapse)
-            c.tag_bind("title", "<Button-1>", self._edit_title)
+            # 双击改名：单击要留给"按住标题拖动窗口"，两者不能抢同一个事件
+            c.tag_bind("title", "<Double-Button-1>", self._edit_title)
             self._bar_len = max(72, int(w * BAR_FRAC))
             self._bar = c.create_line(w // 2 - self._bar_len // 2, BAR_Y,
                                       w // 2 + self._bar_len // 2, BAR_Y,
@@ -1157,7 +1163,8 @@ class LiveGlass:
                 self._text(tx, ty + li * ls, line, anchor=ta,
                            fill="#edf6ff", font=body_font, tags=("feed",))
         if not shown:
-            self._text(w // 2, SHAPES[0][1] + bh // 2,
+            # 空态：`bh` 是旧代码的局部变量，这里只能从 SHAPES 反推第一格高度
+            self._text(w // 2, SHAPES[0][1] + (SHAPES[0][3] - SHAPES[0][1]) // 2,
                        "在这里跟它说话 · 滚轮翻历史", anchor="center",
                        fill="#8e9db2", font=f(12), tags=("feed",))
 
@@ -1207,7 +1214,8 @@ class LiveGlass:
         c.tag_bind("close", "<Button-1>", self._close)
         c.tag_bind("send", "<Button-1>", self._send)
         c.tag_bind("collapse", "<Button-1>", self.toggle_collapse)
-        c.tag_bind("title", "<Button-1>", self._edit_title)
+        # 同上：单击留给拖动，改名走双击
+        c.tag_bind("title", "<Double-Button-1>", self._edit_title)
         c.tag_bind("inputzone", "<Button-1>", self._focus_input)
         c.tag_raise("close")
         c.tag_raise("send")
