@@ -11,7 +11,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
 import { __resetSpeech, onSpeech } from '../src/voice.js';
-import { saveLines } from '../src/watch-lines.js';
+import { saveLines, upcomingLines } from '../src/watch-lines.js';
 import { startWatchLoop, stopWatchLoop } from '../src/watch-loop.js';
 
 import { createSim } from './helpers/sim.mjs';
@@ -55,6 +55,31 @@ test('写入未来台词后，循环广播一次 scheduled；不到点不发 due
     off();
   } finally {
     stopWatchLoop('test');
+    if (old === undefined) delete process.env.DSH_VIDEO_CACHE_DIR;
+    else process.env.DSH_VIDEO_CACHE_DIR = old;
+    await rm(dir, { recursive: true, force: true });
+  }
+});
+
+/**
+ * `slotItems` 把没写 `at` 的老台词归一成 `null`，而 `Number(null)` 是 0 —— 于是它们会被
+ * 当成"at=0，最早的一句"落进窗口。窗口一开在开头（刚起播时 `pos < 1`）就会命中：
+ * 白白合成一遍，还会发出一条 `at: 0` 的 `scheduled`，适配器照它的 at 排队。
+ */
+test('没写 at 的台词不进预取窗口', async () => {
+  const dir = await mkdtemp(join(tmpdir(), 'tts-prefetch-nullat-'));
+  const old = process.env.DSH_VIDEO_CACHE_DIR;
+  process.env.DSH_VIDEO_CACHE_DIR = dir;
+  try {
+    await saveLines('c.mp4', [
+      { from: 0, text: '没写 at 的老台词' },
+      { from: 0, at: 30, text: '写了 at 的台词' },
+    ]);
+    // 窗口开在 0 附近：不做判空的话这一条会被误当成 at=0 选中
+    assert.deepEqual(await upcomingLines('c.mp4', { after: -1, before: 10 }), []);
+    const later = await upcomingLines('c.mp4', { after: 20, before: 40 });
+    assert.deepEqual(later.map((x) => x.text), ['写了 at 的台词']);
+  } finally {
     if (old === undefined) delete process.env.DSH_VIDEO_CACHE_DIR;
     else process.env.DSH_VIDEO_CACHE_DIR = old;
     await rm(dir, { recursive: true, force: true });
