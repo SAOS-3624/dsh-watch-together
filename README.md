@@ -594,6 +594,14 @@ node scripts/install-dev.mjs           # 把本包同步进 DSH profile（副本
 
 改完代码要重启 DSH Desktop 才生效（插件树在进程启动时组合）。
 
+## 致谢
+
+社区提的改动按 PR 记在这里（storyboard 那边的完整名单在 `dsh-video-storyboard/CREDITS.md`）：
+
+- [@ggfgfgf-on](https://github.com/ggfgfgf-on) —— 插件设置页（[PR #11](https://github.com/SAOS-3624/dsh-watch-together/pull/11)，设置直接渲染在插件详情页）；
+  核心改走 runtime-ports、悬浮窗气泡与折叠重做（[PR #22](https://github.com/SAOS-3624/dsh-watch-together/pull/22)）
+- [@DreamDLYY](https://github.com/DreamDLYY) —— 悬浮窗拖出屏幕后抓屏越界、日志每帧刷错、背景永久花屏的复现与修复（[PR #23](https://github.com/SAOS-3624/dsh-watch-together/pull/23)）
+
 ## 许可
 
 Apache License 2.0 —— 见 [LICENSE](LICENSE)（全文）与 [NOTICE](NOTICE)（这个项目**不做什么**：不托管视频、不上传位置、不绕过 DRM、不内置 TTS 引擎）。
