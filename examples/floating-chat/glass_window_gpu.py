@@ -374,10 +374,17 @@ class GPULens:
                                               src_size=(float(bw), float(bh)))
             p.vao.render(moderngl.TRIANGLES)
 
+        # 单独拷一份 blur(1.45) 给边缘采样；直接把 small 的 render target
+        # 当 sampler 会触发驱动崩溃。
+        edgeblur = self._fbo("edgeblur", (bw, bh))
+        edgeblur.use(); self.ctx.viewport = (0, 0, bw, bh)
+        small.color_attachments[0].use(0)
+        p = self.progs["final"]; p["tex"] = 0; p.vao.render(moderngl.TRIANGLES)
+
         lens.use(); self.ctx.viewport = (0, 0, hw, hh)
         warped.color_attachments[0].use(0)
         strongw.color_attachments[0].use(1)
-        (small if self.native else box_raw).color_attachments[0].use(2)
+        edgeblur.color_attachments[0].use(2)
         self.texs["alpha"].use(3)
         self.texs["edge"].use(4)
         self.texs["coord"].use(5)
