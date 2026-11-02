@@ -599,7 +599,8 @@ node scripts/install-dev.mjs           # 把本包同步进 DSH profile（副本
 社区提的改动按 PR 记在这里（storyboard 那边的完整名单在 `dsh-video-storyboard/CREDITS.md`）：
 
 - [@ggfgfgf-on](https://github.com/ggfgfgf-on) —— 插件设置页（[PR #11](https://github.com/SAOS-3624/dsh-watch-together/pull/11)，设置直接渲染在插件详情页）；
-  核心改走 runtime-ports、悬浮窗气泡与折叠重做（[PR #22](https://github.com/SAOS-3624/dsh-watch-together/pull/22)）
+  核心改走 runtime-ports、悬浮窗气泡与折叠重做（[PR #22](https://github.com/SAOS-3624/dsh-watch-together/pull/22)）；
+  小框边缘模糊过渡、CPU 补色散与运动混合、麦克风回到玻璃帧合成（[PR #28](https://github.com/SAOS-3624/dsh-watch-together/pull/28)）
 - [@DreamDLYY](https://github.com/DreamDLYY) —— 悬浮窗拖出屏幕后抓屏越界、日志每帧刷错、背景永久花屏的复现与修复（[PR #23](https://github.com/SAOS-3624/dsh-watch-together/pull/23)）
 
 ## 许可
