@@ -87,6 +87,13 @@ CHAT_FILE = cache_dir() / "chat.jsonl"
 CONFIG = Path(os.environ.get("DSH_HOME") or os.path.expanduser("~/.dsh")) / "watch-window.json"
 MIC_SCRIPT = HERE / "mic.py"
 
+# **心跳**：插件侧靠它区分"进程还在"和"窗口真的在画"。
+# 只看 pid 不够 —— pid 会被系统复用，进程也可能活着但界面已经卡死、或者是一张空窗，
+# 那样宿主会永远认为"窗还开着"，于是**再也不重开**（dsh-see-now issue #2 第 3 条）。
+# 每秒最多写一次，别把磁盘当草稿纸。
+HEARTBEAT = cache_dir() / "window-heartbeat"
+HEARTBEAT_EVERY = 1.0
+
 
 def read_config():
     try:
@@ -1631,7 +1638,25 @@ class LiveGlass:
         if self._excluded:
             self._set_exclude(False)
 
+    def _beat(self):
+        """写心跳（每秒最多一次）。插件侧 `windowAlive()` 读它的 mtime。
+
+        为什么不是"进程活着就算活着"：pid 会被系统复用，进程也可能活着但界面卡死、
+        或者是一张全透明的空窗。那种情况下宿主一直认为窗还开着，于是**再也不重开** ——
+        用户体感就是"点了没反应"。
+        """
+        now = time.time()
+        if now - getattr(self, "_beat_at", 0.0) < HEARTBEAT_EVERY:
+            return
+        self._beat_at = now
+        try:
+            HEARTBEAT.parent.mkdir(parents=True, exist_ok=True)
+            HEARTBEAT.write_bytes(b"")
+        except Exception:
+            pass
+
     def _tick(self):
+        self._beat()
         # 截图模式：worker 已暂停，保持 WDA 关闭；否则下一拍会重新开 WDA，
         # 窗口再次从截图/录屏里消失，_snapshot_mode 等于没做。
         if SNAPSHOT and getattr(self, "_snapshot_done", False):
