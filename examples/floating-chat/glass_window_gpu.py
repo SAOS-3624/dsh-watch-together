@@ -110,7 +110,9 @@ void main() {
     ivec2 ep = clamp(ivec2(floor(ec + 0.5)), ivec2(0), ivec2(src_size) - 1);
     // 边缘从小框自己的原始帧取，避免 warped 在贴边小框上采到黑边。
     vec3 edgep = texelFetch(raw, ep, 0).rgb;
-    vec3 patch = mix(strong, edgep, e);
+    // CPU 里 edge_w=0 是边缘（取折射样本），=1 是中心（取强模糊）；
+    // 这里方向必须一致，否则内框边缘反而没有扭曲。
+    vec3 patch = mix(edgep, strong, e);
     frag = vec4(mix(base, patch, a), 1.0);
 }
 """
