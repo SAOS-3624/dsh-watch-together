@@ -118,6 +118,8 @@ export function readVoiceSettings(env = process.env) {
     exists: raw.exists,
     error: raw.error,
     adapter: typeof raw.data.adapter === 'string' ? raw.data.adapter : '',
+    envOverrides: ['DSH_VOICE_ADAPTER']
+      .filter((k) => env[k] !== undefined && env[k] !== ''),
   };
 }
 
