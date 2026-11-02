@@ -24,7 +24,7 @@ import { getTtsPort, getWindowPort } from './runtime-ports.js';
 import { readPositionOrNull } from './watch-browser.js';
 
 import { speechSeconds } from './speech.js';
-import { consumeLine, dueLine, hasLine, loadLine, WATCH_LEAD } from './watch.js';
+import { consumeLine, dueLine, hasLine, loadLine, upcomingLines, WATCH_LEAD } from './watch.js';
 import { mmss } from './time.js';
 import { appendChat } from './chat-store.js';
 import { markHungUp, sessionKey } from './watch-state.js';
@@ -347,6 +347,35 @@ export function startWatchLoop({
   const listeners = () => tts.subscribers();
   loop.voiceListeners = listeners;
   const speak = (event) => tts.due(event);
+  /**
+   * 预合成广播：把已经写好、还没到点的台词提前交给声音适配器。
+   *
+   * 以前只有 `due`，适配器到点才开始跑 edge-tts（CLI 冷启动 + 网络往返 + 完整 MP3），
+   * 第一声总比画面晚 0.6~2 秒。`scheduled` 不参与"该不该念"的判断，只让适配器
+   * 有时间先把音频合成好；真正播放仍由 `due` 触发（见 speech-bus.js 的四种 state）。
+   *
+   * 只报未来 60 秒内的：更远的台词可能被改写/拖动进度条，提前合成纯浪费；
+   * 留出窗口后，适配器队列满了也不会把"以后还会经过这里"的句子永久错过。
+   */
+  const SCHEDULED_AHEAD_SEC = 60;
+  const scheduledKeys = new Set();
+  async function announceScheduled(pos) {
+    if (listeners() === 0 || typeof tts.scheduled !== 'function' || !Number.isFinite(pos)) return;
+    const lines = await upcomingLines(loop.input, {
+      after: pos - 1,
+      before: pos + SCHEDULED_AHEAD_SEC,
+    }).catch(() => []);
+    for (const line of lines) {
+      const key = `${line.from}|${line.at}|${line.text}`;
+      if (scheduledKeys.has(key)) continue;
+      scheduledKeys.add(key);
+      try {
+        tts.scheduled({ at: line.at, text: line.text, input: loop.input, segment: line.from });
+      } catch { /* 预合成广播失败不影响到点播放 */ }
+    }
+    // 只留最近一批：拖动进度条后旧 key 不会再命中，不能让 Set 无限长。
+    while (scheduledKeys.size > 600) scheduledKeys.delete(scheduledKeys.values().next().value);
+  }
   const ticker = deps.ticker ?? startTicker;
   const readLatency = deps.loadLatency ?? loadLatency;
   // 读进度的间隔可注入：真机 15 秒够了（读一次 CDP 是毫秒级，主要是别太频繁）；
@@ -883,6 +912,13 @@ export function startWatchLoop({
         }
       }
 
+      // ---- 预合成广播：把未来台词交给声音适配器（不改变"到点才念"）
+      // 位置不可信时别报：未知位置上算出来的"未来"可能是错的。
+      {
+        const scan = estimate(loop.anchor, tNow);
+        if (scan.confidence !== 'unknown') await announceScheduled(scan.pos);
+      }
+
       // ---- 台词库存检查：余量不足就**叫醒模型去写**（这是唯一该叫它的理由）
       // 脚本自己不会写台词 —— 它只念。写作是模型的事，库存不够就得有人去补。
       if (loop.refillBelow > 0 && tNow - (loop.refillAskedAt || 0) > 300_000) {
@@ -955,7 +991,13 @@ export function startWatchLoop({
           const line = due ? String(due.text ?? due) : null;
           if (line) {
             const delivered = speak({
-              at: est.pos, text: line, input: loop.input, segment: segNow.from,
+              at: est.pos,
+              text: line,
+              input: loop.input,
+              // **这句自己的段，不是当前段**：`dueLine` 跨段挑 at 最小的那句，
+              // 上一段遗留的句子会在跨过边界后才会念到。预合成按 `line.from` 建 key，
+              // 这里报当前段的话两边对不上，缓存白做、首声又晚 0.6~2 秒。
+              segment: (due && Number.isFinite(due.from)) ? due.from : segNow.from,
             });
             if (delivered > 0) {
               loop.lastSpeechAt = tNow;

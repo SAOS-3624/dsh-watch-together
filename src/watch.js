@@ -40,4 +40,5 @@ export {
   pruneSlot,
   readSlot,
   saveLines,
+  upcomingLines,
 } from './watch-lines.js';

@@ -3,6 +3,32 @@
 All notable changes to **dsh-watch-together** are documented here.
 This package starts its own version line at `0.0.7` — it is not a continuation of `dsh-video-storyboard`.
 
+## [Unreleased]
+
+> 陪看的声音还差最后一步：到点才开始合成。这一轮把"合成"从关键路径上挪开。
+
+### Added — `scheduled` 事件（合 PR #36，作者 @ggfgfgf-on）
+
+- 循环每一拍把**未来 60 秒内、已经写好且带 `at`** 的台词以 `scheduled` 广播一次（每句一次；
+  只在有会出声的订阅者时发）。它不参与"该不该念"的判断，只给适配器时间预合成。
+- `upcomingLines(input, { after, before })`：只读的"未来台词"查询，不消费稿件。
+
+### Changed — 示例适配器预合成
+
+- `examples/voice-edge-tts`：`speakEdge` 拆成 `synthEdge`（只合成）+ `playEdge`（播放并删临时文件）；
+  `scheduled` 到达即合成，按 `input|segment|text` 缓存（上限 6 条，满时踢 `at` 最远的一条），
+  `due` 优先播缓存。日志多出 `prefetched` / `synth`、`ready Nms`、`wait Nms`。
+- `MAX_QUEUE_LAG_MS` 的计时从 `due` **到达**起算，合成时间本来就算在里面 ——
+  预取因此还降低了"排队太久被丢弃"的概率，不只是首声早一点。
+
+### Fixed — 评审补丁（`5fa1307`、`bd5b3c7`）
+
+- **跨段时缓存 key 对不上**：`dueLine` 跨段挑 `at` 最小的一句，选中上一段的句子时 `due` 报的却是
+  当前段，和 `scheduled` 的 `segment` 不一致 → 缓存白做、首声又晚回 0.6~2 秒。
+  `dueLine({ meta: true })` 现在多返回 `from`，`speak()` 用它。
+- **`Number(null) === 0`**：没写 `at` 的台词会被当成"at=0"挤进预取窗口；适配器 `prefetch()` 同理，
+  6 个槽位被 at=0 占满后永久失效。两处都改成显式判空。
+
 ## [0.2.5] - 2026-11-02
 
 > 0.2.4 里 PR #28 留下的两个 GPU 尾巴，作者当天补了 PR #29 收掉，外加气泡留白微调。

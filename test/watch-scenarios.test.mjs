@@ -302,7 +302,8 @@ test('⑰ 有声音订阅者时，到点的台词交给它念，不叫醒模型'
   const sim = createSim({ duration: 900 });
   let woken = 0;
   const heard = [];
-  const off = onSpeech((e) => heard.push(e.text));
+  // scheduled 只是让适配器预合成的清单，不是"到点该念"；这里只数 due。
+  const off = onSpeech((e) => { if (e.state === 'due') heard.push(e.text); });
   try {
     await saveLines('voice.mp4', [
       { from: 0, at: 16, text: '第一句' },
