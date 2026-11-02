@@ -1255,7 +1255,7 @@ class LiveGlass:
         left, right = base[0][0], base[0][2]
         max_bubble = min(right - left, max(240, int((right - left) * 0.72)))
         min_bubble = min(110, max_bubble)
-        pad = 14
+        pad = 18
         body_font = f(11)
         stamp_font = f(9)
         fbody = tkfont.Font(root=self.root, font=body_font)
@@ -1279,7 +1279,8 @@ class LiveGlass:
                                     content_max, body_avail)
             inner = max([0] + [fbody.measure(line) for line in lines])
             bw = min(max_bubble, max(min_bubble, inner + 2 * pad))
-            bh = min(body_avail, max(ls + 4, len(lines) * ls + 4))
+            # 上下留白比原来多一圈；正文垂直居中，气泡不会贴着字。
+            bh = min(body_avail, max(ls + 16, len(lines) * ls + 16))
             by0 = y0 + stamp_h
             by1 = min(y1, by0 + bh)
             if is_user:
@@ -1295,7 +1296,8 @@ class LiveGlass:
             infos.append({
                 "shape": shape, "is_user": is_user, "stamp": stamp,
                 "tx": tx, "ta": ta, "lines": lines,
-                "body_font": body_font, "ty": by0 + 2,
+                "body_font": body_font,
+                "ty": by0 + max(4, (bh - len(lines) * ls) // 2),
                 "stamp_y": y0, "ls": ls,
             })
         shapes.extend(base[4:])
