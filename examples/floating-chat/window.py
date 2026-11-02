@@ -323,6 +323,7 @@ def rebuild_geometry(w, h):
     """窗口尺寸变化后重建所有和 W/H 绑定的贴图/遮罩。"""
     global W, H, SHAPES, MASK, MASK_HARD, OVERLAY, OVERLAY_2X
     global WARP_X, WARP_Y, EDGE_MASK, BOX_MAPS, HW, HH, BOX_UNION_2X, MIC_POS
+    _CHROMA_CACHE.clear()  # 旧尺寸的索引图不再用，避免每次缩放都攒一份
     W, H = w, h
     SHAPES = shapes_for(w, h)
     MASK = rounded_mask()
