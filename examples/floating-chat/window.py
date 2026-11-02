@@ -279,16 +279,18 @@ def build_box_maps():
         gy, gx = np.gradient(sdf)
         n = np.maximum(np.hypot(gx, gy), 1e-6)
         d = -sdf
-        inside = d >= 0
         alpha = np.clip((d + 0.6) / 1.2, 0.0, 1.0).astype(np.float32)
-        edge = inside & (d <= BOX_BAND)
         t = np.clip(1.0 - d / BOX_BAND, 0.0, 1.0)
         mag = BOX_AMP * t * t
         sx = np.rint(qx0 + xx + gx / n * mag).astype(np.int32)
         sy = np.rint(qy0 + yy + gy / n * mag).astype(np.int32)
         np.clip(sx, 0, W // 4 - 1, out=sx)
         np.clip(sy, 0, H // 4 - 1, out=sy)
-        out.append((qx0, qy0, qw, qh, alpha, edge, sx, sy))
+        # 边缘到中心用平滑权重过渡，不再用二值 edge 在“原始帧”和
+        # “强模糊帧”之间硬切；系数不一致会看到一圈割裂。
+        w = np.clip(d / BOX_BAND, 0.0, 1.0).astype(np.float32)
+        w = (w * w * (3.0 - 2.0 * w)).astype(np.float32)
+        out.append((qx0, qy0, qw, qh, alpha, w, sx, sy))
     return out
 
 
@@ -334,6 +336,43 @@ def finish(panel):
     out = Image.new("RGB", (W, H), KEY)
     out.paste(panel.convert("RGB"), (0, 0), MASK_HARD)
     return out
+
+
+def _smoothstep(a, b, x):
+    t = np.clip((x - a) / (b - a), 0.0, 1.0)
+    return t * t * (3.0 - 2.0 * t)
+
+
+def apply_chroma(im, strength=1.7):
+    """外框径向色散：R 向外、B 向内错一位，和 GPU 后处理同一思路。
+
+    只在圆角外缘的窄带里做，且按 edge 权重混回原图；否则整张图会变成
+    红蓝重影。CPU 版在 2x 合成图上做，成本远低于全分辨率逐像素采样。
+    """
+    arr = np.asarray(im.convert("RGB"), dtype=np.float32)
+    h, w = arr.shape[:2]
+    yy, xx = np.mgrid[0:h, 0:w].astype(np.float32)
+    dx = (xx + 0.5) / w - 0.5
+    dy = (yy + 0.5) / h - 0.5
+    r = np.hypot(dx, dy) + 1e-6
+    edge = _smoothstep(0.38, 0.48, r) * (1.0 - _smoothstep(0.52, 0.585, r))
+    if not np.any(edge > 0.001):
+        return im
+    k = strength * edge
+    ox = np.rint(dx / r * k).astype(np.int32)
+    oy = np.rint(dy / r * k).astype(np.int32)
+    xi = xx.astype(np.int32)
+    yi = yy.astype(np.int32)
+    xr = np.clip(xi + ox, 0, w - 1)
+    yr = np.clip(yi + oy, 0, h - 1)
+    xb = np.clip(xi - ox, 0, w - 1)
+    yb = np.clip(yi - oy, 0, h - 1)
+    rr = arr[yr, xr, 0]
+    bb = arr[yb, xb, 2]
+    out = arr.copy()
+    out[:, :, 0] = arr[:, :, 0] * (1.0 - edge) + rr * edge
+    out[:, :, 2] = arr[:, :, 2] * (1.0 - edge) + bb * edge
+    return Image.fromarray(np.clip(out, 0, 255).astype(np.uint8))
 
 
 class RECT(ctypes.Structure):
@@ -854,12 +893,15 @@ class LiveGlass:
         # 内部框：边缘折射 + 中心强模糊仍在 1/4 分辨率完成
         strong_panel = arr_strong[sy, sx]
         out_panel = warped.copy()
-        for qx0, qy0, qw, qh, alpha, edge, bsx, bsy in BOX_MAPS:
+        for qx0, qy0, qw, qh, alpha, edge_w, bsx, bsy in BOX_MAPS:
             base_patch = warped[qy0:qy0 + qh, qx0:qx0 + qw]
-            edge_patch = arr_raw[np.clip(bsy + py, 0, arr_raw.shape[0] - 1),
-                                 np.clip(bsx + px, 0, arr_raw.shape[1] - 1)]
+            # 边缘也用和主玻璃相同的 1.45 模糊，不再直接拿未模糊的
+            # arr_raw；中心再平滑过渡到 2.6 的强模糊。
+            edge_patch = arr[np.clip(bsy + py, 0, arr.shape[0] - 1),
+                             np.clip(bsx + px, 0, arr.shape[1] - 1)]
             strong_patch = strong_panel[qy0:qy0 + qh, qx0:qx0 + qw]
-            patch = np.where(edge[..., None], edge_patch, strong_patch)
+            we = edge_w[..., None]
+            patch = edge_patch * (1.0 - we) + strong_patch * we
             a = alpha[..., None]
             out_panel[qy0:qy0 + qh, qx0:qx0 + qw] = (
                 base_patch * (1.0 - a) + patch * a)
@@ -873,6 +915,8 @@ class LiveGlass:
         panel = Image.composite(lens_2x, base_2x, BOX_UNION_2X)
         panel = Image.alpha_composite(
             panel.convert("RGBA"), OVERLAY_2X).convert("RGB")
+        # 2x 上做一次显式 R/B 错位；全分辨率逐像素做会把这个 60fps 管线拖慢。
+        panel = apply_chroma(panel, 1.7)
         out = panel.convert("RGB").resize((W, H), Image.Resampling.BILINEAR)
         # 麦克风由 Canvas 矢量绘制（_build_ui），这里不再叠位图，避免两层图标。
         return finish(out)
