@@ -1050,7 +1050,7 @@ class LiveGlass:
         self._title_entry.insert(0, self.name)
         if self._title_item is not None:
             self.canvas.delete(self._title_item)
-        self._title_item = self.canvas.create_window(72, 54, anchor="w",
+        self._title_item = self.canvas.create_window(66, 54, anchor="w",
                                                      window=self._title_entry, width=180)
         self._title_entry.focus_set()
         self._title_entry.select_range(0, "end")
@@ -1146,18 +1146,22 @@ class LiveGlass:
         # 带一圈环才像状态灯；录音时变红。
         dot = "#e05a5a" if (self._mic_proc is not None and self._mic_proc.poll() is None) else "#0a84ff"
         cy = 54
-        c.create_oval(44 - 7, cy - 7, 44 + 7, cy + 7,
+        # 仓库标题栏是"点 → 名字 → 状态"紧挨着的一组，不是点放最左、
+        # 名字和状态各占一个固定 x。当前这版之前把三者拉得太开，观感就散了。
+        dot_x = 58
+        title_x = 66
+        c.create_oval(dot_x - 7, cy - 7, dot_x + 7, cy + 7,
                       outline="#2b4d73" if dot == "#0a84ff" else "#6b3030", width=1)
-        c.create_oval(44 - 3, cy - 3, 44 + 3, cy + 3, fill=dot, outline="")
+        c.create_oval(dot_x - 3, cy - 3, dot_x + 3, cy + 3, fill=dot, outline="")
         name = self.name[:10]
-        self._text(76, 54, name, anchor="w", fill="#f7fbff",
+        self._text(title_x, cy, name, anchor="w", fill="#f7fbff",
                    font=f(21, True), tags=("title",))
         count = self._status or f"{len(self.messages)} 条"
         try:
-            nx = 76 + tkfont.Font(root=self.root, font=f(21, True)).measure(name) + 10
+            nx = title_x + tkfont.Font(root=self.root, font=f(21, True)).measure(name) + 12
         except Exception:
-            nx = 176
-        self._text(max(176, nx), 54, count, anchor="w",
+            nx = title_x + 102
+        self._text(nx, cy, count, anchor="w",
                    fill="#ffb4b4" if self._status else "#dbe6f5",
                    font=f(11))
         # 右上角按钮跟随窗口宽度内收
