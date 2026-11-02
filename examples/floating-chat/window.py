@@ -39,6 +39,11 @@ import mss
 import numpy as np
 from PIL import Image, ImageDraw, ImageEnhance, ImageFilter, ImageStat, ImageTk
 
+try:
+    import cv2 as _cv2
+except Exception:  # OpenCV 只是加速，缺了仍走 PIL
+    _cv2 = None
+
 # 悬浮窗接口：插件写 window-events.jsonl，窗口回 window-outbox.jsonl。
 # 读不到就继续读 chat.jsonl，旧版插件不受影响。
 try:
@@ -343,6 +348,36 @@ def _smoothstep(a, b, x):
     return t * t * (3.0 - 2.0 * t)
 
 
+_CHROMA_CACHE = {}
+
+
+def _chroma_maps(w, h, strength):
+    """2x 色散索引图只跟尺寸/强度走，缓存后每帧只做 gather。"""
+    key = (w, h, round(float(strength), 2))
+    hit = _CHROMA_CACHE.get(key)
+    if hit is not None:
+        return hit
+    yy, xx = np.mgrid[0:h, 0:w].astype(np.float32)
+    dx = (xx + 0.5) / w - 0.5
+    dy = (yy + 0.5) / h - 0.5
+    r = np.hypot(dx, dy) + 1e-6
+    edge = _smoothstep(0.38, 0.48, r) * (1.0 - _smoothstep(0.52, 0.585, r))
+    k = strength * edge
+    ox = np.rint(dx / r * k).astype(np.int32)
+    oy = np.rint(dy / r * k).astype(np.int32)
+    xi = xx.astype(np.int32)
+    yi = yy.astype(np.int32)
+    hit = (
+        edge.astype(np.float32),
+        np.clip(xi + ox, 0, w - 1),
+        np.clip(yi + oy, 0, h - 1),
+        np.clip(xi - ox, 0, w - 1),
+        np.clip(yi - oy, 0, h - 1),
+    )
+    _CHROMA_CACHE[key] = hit
+    return hit
+
+
 def apply_chroma(im, strength=1.7):
     """外框径向色散：R 向外、B 向内错一位，和 GPU 后处理同一思路。
 
@@ -351,22 +386,9 @@ def apply_chroma(im, strength=1.7):
     """
     arr = np.asarray(im.convert("RGB"), dtype=np.float32)
     h, w = arr.shape[:2]
-    yy, xx = np.mgrid[0:h, 0:w].astype(np.float32)
-    dx = (xx + 0.5) / w - 0.5
-    dy = (yy + 0.5) / h - 0.5
-    r = np.hypot(dx, dy) + 1e-6
-    edge = _smoothstep(0.38, 0.48, r) * (1.0 - _smoothstep(0.52, 0.585, r))
+    edge, xr, yr, xb, yb = _chroma_maps(w, h, strength)
     if not np.any(edge > 0.001):
         return im
-    k = strength * edge
-    ox = np.rint(dx / r * k).astype(np.int32)
-    oy = np.rint(dy / r * k).astype(np.int32)
-    xi = xx.astype(np.int32)
-    yi = yy.astype(np.int32)
-    xr = np.clip(xi + ox, 0, w - 1)
-    yr = np.clip(yi + oy, 0, h - 1)
-    xb = np.clip(xi - ox, 0, w - 1)
-    yb = np.clip(yi - oy, 0, h - 1)
     rr = arr[yr, xr, 0]
     bb = arr[yb, xb, 2]
     out = arr.copy()
@@ -431,7 +453,7 @@ class LiveGlass:
         self._img = None
         self._last_frame = None
         self._prev_out = None
-        self._motion = 0.0
+        self._motion_blur = 0.0
         self._collapsed_frame = None
         self._bg = None
         self._hwnd = None
@@ -860,9 +882,15 @@ class LiveGlass:
                          "width": gr - gl, "height": gb - gt})
         im = Image.frombytes("RGB", shot.size, shot.rgb)
         sw4, sh4 = max(2, (gr - gl) // 4), max(2, (gb - gt) // 4)
-        # 60fps 路径：只在 1/4 分辨率做一次模糊和折射，再放大
-        small_raw = im.resize((sw4, sh4), Image.Resampling.BILINEAR)
-        arr_raw = np.asarray(small_raw)
+        # 60fps 路径：只在 1/4 分辨率做一次模糊和折射，再放大。
+        # cv2 的 resize 比 PIL 快一个数量级；没有 OpenCV 时无感回退。
+        if _cv2 is not None:
+            arr_raw = _cv2.resize(np.asarray(im), (sw4, sh4),
+                                  interpolation=_cv2.INTER_LINEAR)
+            small_raw = Image.fromarray(arr_raw)
+        else:
+            small_raw = im.resize((sw4, sh4), Image.Resampling.BILINEAR)
+            arr_raw = np.asarray(small_raw)
         # 静态跳帧：先用未模糊的 raw 判断，静止时连模糊都不用做。
         # 采样 4px、均值 0.01 + 最大差 0.5、运动后保持 0.3s；比原来的
         # 8px / 0.18 更早触发，慢速滚动不会先停一两帧再动。
@@ -875,12 +903,15 @@ class LiveGlass:
             moved = bool(float(d.mean()) > 0.01 or float(d.max()) > 0.5)
         if moved:
             self._last_motion = now
-            self._motion = min(1.0, getattr(self, "_motion", 0.0) * 0.60 + 0.40)
+            self._motion_blur = min(1.0, getattr(self, "_motion_blur", 0.0) * 0.50 + 0.50)
         else:
-            self._motion = getattr(self, "_motion", 0.0) * 0.80
+            self._motion_blur = getattr(self, "_motion_blur", 0.0) * 0.55
         if (not FORCE and not moved and box == self._sig_bbox
                 and now - getattr(self, "_last_motion", 0.0) > 0.30):
             self._sig = sig
+            # 静态跳帧期间不更新画面；上一帧若带着运动模糊，绝不能在
+            # 很久以后重新移动时再被混进来，否则就是“淡淡的旧画面”。
+            self._prev_out = None
             return None
         self._sig = sig
         self._sig_bbox = box
@@ -913,20 +944,37 @@ class LiveGlass:
         # 1/4 透镜结果放大后，用全分辨率联合圆角遮罩贴回；
         # 边界是 PIL 4x 超采样遮罩，不再有 1/4 放大的像素台阶。
         # 2x 合成：比全分辨率轻，比 1/4 明显平滑，兼顾帧率和圆角
-        base_2x = Image.fromarray(warped).resize(
-            (HW, HH), Image.Resampling.BILINEAR)
-        lens_2x = Image.fromarray(out_panel).resize(
-            (HW, HH), Image.Resampling.BILINEAR)
+        if _cv2 is not None:
+            base_2x = Image.fromarray(_cv2.resize(
+                warped, (HW, HH), interpolation=_cv2.INTER_LINEAR))
+            lens_2x = Image.fromarray(_cv2.resize(
+                out_panel, (HW, HH), interpolation=_cv2.INTER_LINEAR))
+        else:
+            base_2x = Image.fromarray(warped).resize(
+                (HW, HH), Image.Resampling.BILINEAR)
+            lens_2x = Image.fromarray(out_panel).resize(
+                (HW, HH), Image.Resampling.BILINEAR)
         panel = Image.composite(lens_2x, base_2x, BOX_UNION_2X)
         panel = Image.alpha_composite(
             panel.convert("RGBA"), OVERLAY_2X).convert("RGB")
         # 2x 上做一次显式 R/B 错位；全分辨率逐像素做会把这个 60fps 管线拖慢。
-        panel = apply_chroma(panel, 1.7)
-        out = panel.convert("RGB").resize((W, H), Image.Resampling.BILINEAR)
-        # CPU 也补上 GPU 的上一帧混合；0.55 是 GPU 的系数，motion 相同。
+        # 移动中跳过色散（约 3.5ms/帧），优先保证拖动/滚动响应；停下后
+        # 的静止帧再补上，最终观感不变。
+        if not moved:
+            panel = apply_chroma(panel, 1.7)
+        if _cv2 is not None:
+            out = Image.fromarray(_cv2.resize(
+                np.asarray(panel.convert("RGB")), (W, H),
+                interpolation=_cv2.INTER_LINEAR))
+        else:
+            out = panel.convert("RGB").resize((W, H), Image.Resampling.BILINEAR)
+        # CPU 也做上一帧混合，但比 GPU 的 0.55 轻、且只在检测到移动时混：
+        # 拖动停下后立刻恢复清晰，不会留下淡淡的旧画面。
         # 先混再贴麦克风，避免把上一帧的麦克风位置糊到这一帧。
-        if self._prev_out is not None and self._prev_out.size == out.size:
-            blend = 0.55 * max(0.0, min(1.0, getattr(self, "_motion", 0.0)))
+        if moved and self._prev_out is not None and self._prev_out.size == out.size:
+            # 只在“这一帧确实检测到移动”时混上一帧；停下后下一帧
+            # 立刻干净，不会留下越拖越淡的残影。
+            blend = 0.35 * max(0.0, min(1.0, getattr(self, "_motion_blur", 0.0)))
             if blend > 0.01:
                 out = Image.blend(self._prev_out, out, blend)
         self._prev_out = out.copy()
@@ -1386,7 +1434,7 @@ class LiveGlass:
         self._img = None
         self._bg = None
         self._prev_out = None
-        self._motion = 0.0
+        self._motion_blur = 0.0
         self._collapsed_frame = None
         self._text_items = []
         self._text_colors = {}
@@ -1551,7 +1599,9 @@ class LiveGlass:
     # 边缘缩放 / 窗口拖动
     def _edge_at(self, x, y):
         w, h = self.root.winfo_width(), self.root.winfo_height()
-        edge, corner = 10, 26
+        # 圆角是透明的，鼠标落在最外侧时命中的是 DWM 非客户区；
+        # 命中带放宽到 20px，用户不必精确到 1px 也能拖边缘/四角。
+        edge, corner = 20, 32
         # 圆角区域是透明的，命中区要往内收够，才能点到可见的角
         if x <= corner and y <= corner:
             return "nw"
