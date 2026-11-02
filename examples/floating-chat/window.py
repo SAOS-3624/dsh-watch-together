@@ -361,6 +361,7 @@ class LiveGlass:
         self._seen = set()
         self._collapsed = False
         self._saved_h = H
+        self._snapshot_done = False
         # 只在双击标题时创建，平时不占画布
         self._title_entry = None
         self._title_item = None
@@ -1368,11 +1369,20 @@ class LiveGlass:
 
     def _snapshot_mode(self):
         """只给文档截图：停抓取、关 WDA，保留最后一帧（不改变正常路径）。"""
+        self._snapshot_done = True
         self._pause.set()
         if self._excluded:
             self._set_exclude(False)
 
     def _tick(self):
+        # 截图模式：worker 已暂停，保持 WDA 关闭；否则下一拍会重新开 WDA，
+        # 窗口再次从截图/录屏里消失，_snapshot_mode 等于没做。
+        if SNAPSHOT and getattr(self, "_snapshot_done", False):
+            self._pause.set()
+            if self._excluded:
+                self._set_exclude(False)
+            self.root.after(100, self._tick)
+            return
         if PREVIEW:
             self._pause.set()
             if self._excluded:
