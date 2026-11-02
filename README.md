@@ -286,15 +286,28 @@ watch_together({ browserPort: 9333 })   // 或者单次传参
 ```
 
 后台循环里某句到点时，会把同一条推给你，`state` 变成 `"due"`。
+另外，循环每一拍还会把**未来 1 分钟内、已经写好且带 `at` 的台词**提前推成 `scheduled`（每句一次）——
+这不是让你现在念，而是给适配器时间**预合成**；真正播放仍然只认 `due`。
 
 ### 同进程：订阅
 
 ```js
 import { onSpeech } from 'dsh-watch-together/voice';
 
-const off = onSpeech(async ({ state, text }) => {
-  if (state !== 'due') return;      // scheduled 只是清单，不是"现在念"
-  await mySpeak(text);              // ← 你自己的引擎
+const pending = new Map();          // key -> 预合成 Promise
+const keyOf = ({ input, segment, text }) => `${input ?? ''}|${segment ?? ''}|${text ?? ''}`;
+
+const off = onSpeech(async (event) => {
+  const { state, text } = event;
+  const key = keyOf(event);
+  if (state === 'scheduled') {       // 还没到点：先合成，不播放
+    if (!pending.has(key)) pending.set(key, mySynth(text));
+    return;
+  }
+  if (state !== 'due') return;      // spoken / skipped 不是"该念了"
+  const audio = pending.get(key) ? await pending.get(key) : await mySynth(text);
+  pending.delete(key);
+  await myPlay(audio);              // ← 你自己的播放器
 });
 ```
 

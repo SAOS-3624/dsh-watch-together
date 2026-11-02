@@ -7,8 +7,9 @@
  *
  * ## 两件事，别混
  *
- *   收到 `due`   = 该念了（核心按播放位置发的）
- *   发 `spoken`  = **真的出声了**（本文件在合成完成、开始播放那一瞬发）
+ *   收到 `scheduled` = 还没到点，可以**预合成**（本文件按台词缓存 mp3，不播放）
+ *   收到 `due`       = 该念了（核心按播放位置发的）
+ *   发 `spoken`      = **真的出声了**（本文件在开始播放那一瞬发）
  *
  * 悬浮窗认的是 `spoken`：不然字会先摆出来、声音一两秒后才到（`due` → 合成是一次网络往返
  * 加一个 ffplay 启动）。上报晚了就等于又回到旧毛病，所以上报点选在**播放之前**。
@@ -81,21 +82,35 @@ function edgeBin(cfg) {
   return null;
 }
 
-async function speakEdge(text, { bin, voice, rate, onStart = null }) {
+/** 只合成，不播放。预取和"到点没赶上预取"两条路共用。 */
+async function synthEdge(text, { bin, voice, rate }) {
   const out = join(tmpdir(), `voice-${Date.now()}-${Math.random().toString(36).slice(2, 7)}.mp3`);
   const pct = Math.round(Math.max(-10, Math.min(10, Number(rate) || 0)) * 3);
   const args = ['--voice', voice, '--text', text, '--write-media', out];
   if (pct) args.push(`--rate=${pct > 0 ? '+' : ''}${pct}%`);
-  if (!(await run(bin, args))) return { ok: false, reason: 'synth-failed' };
+  if (!(await run(bin, args))) {
+    try { unlinkSync(out); } catch { /* 没有文件正常 */ }
+    return { ok: false, reason: 'synth-failed' };
+  }
   try {
-    if (statSync(out).size < 800) return { ok: false, reason: 'empty-audio' };
-  } catch { return { ok: false, reason: 'stat-failed' }; }
-  // **就在这里上报"要出声了"**：合成已经完成，ffplay 一启动就有声 ——
-  // 悬浮窗收到才把字摆出来，于是"字出现"和"张嘴"几乎是同一刻（见 src/chat-store.js）。
+    if (statSync(out).size < 800) {
+      try { unlinkSync(out); } catch { /* 空文件删不掉也不影响 */ }
+      return { ok: false, reason: 'empty-audio' };
+    }
+  } catch {
+    return { ok: false, reason: 'stat-failed' };
+  }
+  return { ok: true, path: out, engine: 'edge-tts' };
+}
+
+/** 播放一个已经合成好的 mp3；返回时无论成败都删掉临时文件。 */
+async function playEdge(path, onStart = null) {
+  // **就在这里上报"要出声了"**：ffplay 一启动就有声 —— 悬浮窗收到才把字摆出来，
+  // 于是"字出现"和"张嘴"几乎是同一刻（见 src/chat-store.js）。
   try { onStart?.(); } catch { /* 上报失败不影响念 */ }
-  const played = await run('ffplay', ['-nodisp', '-autoexit', '-loglevel', 'quiet', out], 90_000);
-  try { unlinkSync(out); } catch { /* 删不掉就留着 */ }
-  return played ? { ok: true, engine: 'edge-tts' } : { ok: false, reason: 'play-failed' };
+  const played = await run('ffplay', ['-nodisp', '-autoexit', '-loglevel', 'quiet', path], 90_000);
+  try { unlinkSync(path); } catch { /* 删不掉就留着 */ }
+  return played;
 }
 
 /** Windows 系统声音。Linux/macOS 会失败，失败就当没这个引擎。 */
@@ -133,14 +148,57 @@ export function attach(api) {
     + '想用晓萱等音色请在该文件加 "voice": "zh-CN-XiaoxuanNeural"');
   const rate = Number(cfg.rate) || 0;
   const bin = edgeBin(cfg);
-  let chain = Promise.resolve();            // 串行：两句绝不重叠着念
+  let chain = Promise.resolve();            // 播放串行：两句绝不重叠着念
+
+  // **预合成**：核心在台词写好、还没到点时发 `scheduled`。这里趁这段时间把 mp3 合成好，
+  // 到点只播放；否则 due 才开始跑 edge-tts（CLI 冷启动 + 网络往返 + 完整 mp3），
+  // 第一声会晚 0.6~2 秒。没有 prefetch 的旧宿主仍然走 due 现场合成，不破坏兼容。
+  const MAX_PREFETCH = 6;
+  const prefetched = new Map();             // key -> { task, path, at }
+  let prefetchTail = Promise.resolve();
+  const keyOf = (e) => `${e.input ?? ''}|${e.segment ?? ''}|${String(e.text ?? '')}`;
+  const discard = (entry) => {
+    entry.task.then((r) => {
+      if (r?.ok && r.path) { try { unlinkSync(r.path); } catch { /* 已删 */ } }
+    }).catch(() => {});
+  };
+  const prefetch = (e) => {
+    if (!bin || !e.text || !Number.isFinite(Number(e.at))) return;
+    const key = keyOf(e);
+    if (prefetched.has(key)) return;
+    if (prefetched.size >= MAX_PREFETCH) {
+      // 队列满时只留更近的：远处的合成完了也大概率赶不上，别把近处的挤掉。
+      let farthestKey = null;
+      let farthestAt = -Infinity;
+      for (const [k, v] of prefetched) {
+        if (v.at > farthestAt) { farthestAt = v.at; farthestKey = k; }
+      }
+      if (!(Number(e.at) < farthestAt)) return;
+      const old = prefetched.get(farthestKey);
+      prefetched.delete(farthestKey);
+      if (old) discard(old);
+    }
+    const task = prefetchTail.then(() => synthEdge(e.text, { bin, voice, rate }));
+    prefetchTail = task.then(() => {}, () => {});
+    const entry = { task, at: Number(e.at) };
+    prefetched.set(key, entry);
+    task.then((r) => {
+      if (!r?.ok) {
+        if (prefetched.get(key) === entry) prefetched.delete(key);
+        return;
+      }
+      entry.path = r.path;
+    }).catch(() => {});
+  };
 
   if (!bin) console.error('[voice] edge-tts 没找到，退回系统声音');
 
   const off = api.onSpeech((e) => {
+    if (e.state === 'scheduled') {
+      prefetch(e);
+      return;
+    }
     if (e.state !== 'due') return;
-    // **先打日志再念**：调试时关心的是"它什么时候吐字"，不是"有没有声"
-    console.error(`[voice ${mmss(e.at)}] ${e.text}`);
     // 「真的出声了」只报一次：edge 成功之后就不该再由 SAPI 兜底那条报第二遍。
     // 展示层（悬浮窗）等的就是这个上报 —— 不是 `due`（见 src/chat-store.js）。
     let reported = false;
@@ -168,17 +226,37 @@ export function attach(api) {
         } catch { /* 上报失败不影响后面的话 */ }
         return;
       }
+      const key = keyOf(e);
+      const ready = prefetched.get(key);
+      if (ready) prefetched.delete(key);
+      const t0 = Date.now();
+      let audio = null;
       if (bin) {
-        const r = await speakEdge(e.text, { bin, voice, rate, onStart });
-        if (r.ok) return;
-        console.error(`[voice] edge-tts 失败（${r.reason}），退回系统声音`);
+        if (ready) {
+          audio = await ready.task.catch(() => ({ ok: false, reason: 'prefetch-failed' }));
+        } else {
+          audio = await synthEdge(e.text, { bin, voice, rate });
+        }
+        if (audio?.ok) {
+          console.error(`[voice ${mmss(e.at)}] ${ready ? 'prefetched' : 'synth'} `
+            + `ready ${Date.now() - t0}ms (wait ${waited}ms): ${e.text}`);
+          if (await playEdge(audio.path, onStart)) return;
+          console.error('[voice] ffplay 失败，继续兜底');
+        } else {
+          console.error(`[voice] edge-tts 失败（${audio?.reason ?? 'unknown'}），退回系统声音`);
+        }
       }
+      console.error(`[voice ${mmss(e.at)}] sapi ${Date.now() - t0}ms (wait ${waited}ms): ${e.text}`);
       if (!(await speakSapi(e.text, rate, onStart))) console.error('[voice] 系统声音也不可用，只打日志');
     }).catch((err) => console.error(`[voice] ${err?.message ?? err}`));
   });
 
   console.error(`[voice] 已接上（engine=${bin ? 'edge-tts' : 'sapi'}，voice=${voice}）`);
-  return () => off();
+  return () => {
+    off();
+    for (const entry of prefetched.values()) discard(entry);
+    prefetched.clear();
+  };
 }
 
 export default attach;

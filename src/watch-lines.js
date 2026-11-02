@@ -246,6 +246,35 @@ export async function consumeLine(input, from, { env = process.env, notAfter = I
 }
 
 /**
+ * 未来会念的台词（只读，不消费）。给声音适配器做**预合成**用：
+ * 核心按 `due` 到时才发，适配器收到时再合成已经晚了一个网络往返；
+ * 这里把已经写好、带 `at` 的句子提前交出去。
+ *
+ * 只返回 `at` 是有限数的项：没写 at 的老台词还没钉到时间轴，没法安全预合成。
+ *
+ * @param {string} input
+ * @param {{after?: number, before?: number, env?: object}} [o]
+ * @returns {Promise<Array<{from:number, at:number, text:string}>>} 按 at 升序
+ */
+export async function upcomingLines(input, { after = -Infinity, before = Infinity, env = process.env } = {}) {
+  const st = await loadWatch(env);
+  const lines = st[sessionKey(input)]?.lines;
+  if (!lines) return [];
+  const lo = Number(after);
+  const hi = Number(before);
+  const out = [];
+  for (const [key, slot] of Object.entries(lines)) {
+    const from = Number(key);
+    for (const item of slotItems(slot)) {
+      const at = Number(item.at);
+      if (!Number.isFinite(at)) continue;
+      if (at >= lo && at <= hi) out.push({ from, at, text: item.text });
+    }
+  }
+  return out.sort((a, b) => a.at - b.at);
+}
+
+/**
  * **到点的那一句**：在所有已写好的台词里，找 `at` 最小且已经到点的那一条，念掉它。
  *
  * 为什么需要它：剧本是按"段"写的，但说话的时刻是**位置**上的一个点。
