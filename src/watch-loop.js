@@ -20,9 +20,9 @@ import { startTicker, wakeSession } from './timer.js';
 import { DEFAULT_LOOKAHEAD, DEFAULT_SEGMENT, describePlan, makePlan, windowFor } from './batches.js';
 import { readBrowserPosition, looksLikeVideoUrl } from 'dsh-video-storyboard/browser-time';
 import { readBridge } from './position-bridge.js';
-import { floatingWindowAlive } from './floating-window.js';
+import { getTtsPort, getWindowPort } from './runtime-ports.js';
 import { readPositionOrNull } from './watch-browser.js';
-import { emitSpeech, speechSubscribers } from './voice.js';
+
 import { speechSeconds } from './speech.js';
 import { consumeLine, dueLine, hasLine, loadLine, WATCH_LEAD } from './watch.js';
 import { mmss } from './time.js';
@@ -257,7 +257,7 @@ export function loopStatus() {
     },
     // 声音：核心只发事件。listeners = 0 表示"没人接声音"，到点的词会改走叫醒模型。
     voice: {
-      listeners: loop.voiceListeners ? loop.voiceListeners() : speechSubscribers(),
+      listeners: loop.voiceListeners ? loop.voiceListeners() : getTtsPort().subscribers(),
       lastAt: loop.lastSpeechAt ?? null,
     },
     pos: est ? +est.pos.toFixed(1) : null,
@@ -307,8 +307,10 @@ export function startWatchLoop({
   lead = WATCH_LEAD,
   // 段缓存（可选）：只用于 `statusOnly` 里报"缓存里已有几段"，不参与任何决策
   cache = null,
-  // TTS 接口可注入（handler 传 api.tts）；不传就走 deps.tts / 旧总线。
+  // TTS / 窗口接口可注入（handler 传 api.tts / api.window）；
+  // 不传时由 runtime-ports 提供默认适配器。
   tts: ttsOption = null,
+  window: windowOption = null,
   // 依赖可注入：进程内默认真实实现；测试/仿真用假的，于是"到点会不会说话"可以离线验证
   deps = {},
   // **到点是否往会话里投一条消息把人叫醒**。默认**关**。
@@ -339,12 +341,12 @@ export function startWatchLoop({
     // 关掉时给一个**不会报错**的空实现：所有调用点照旧，但什么都不发
     : async () => ({ ok: true, via: 'disabled' });
   const now = deps.now ?? (() => Date.now());
-  // TTS 走接口：循环只发事件，不 import 声音实现。没注入就退回旧的总线，
-  // 兼容 CLI/测试；宿主通过 handler 注入 api.tts 后这条 fallback 不会走到。
-  const tts = deps.tts ?? ttsOption ?? null;
-  const listeners = () => (tts?.subscribers ? tts.subscribers() : speechSubscribers());
+  // TTS 只走接口：没有注入时由 runtime-ports 提供默认适配器，
+  // 循环本身不再 import voice.js，也不再有第二条 fallback 路径。
+  const tts = deps.tts ?? ttsOption ?? getTtsPort();
+  const listeners = () => tts.subscribers();
   loop.voiceListeners = listeners;
-  const speak = (event) => (tts?.due ? tts.due(event) : emitSpeech(event));
+  const speak = (event) => tts.due(event);
   const ticker = deps.ticker ?? startTicker;
   const readLatency = deps.loadLatency ?? loadLatency;
   // 读进度的间隔可注入：真机 15 秒够了（读一次 CDP 是毫秒级，主要是别太频繁）；
@@ -377,7 +379,8 @@ export function startWatchLoop({
   // 扩展上报的位置（本地一个小 JSON）。可注入：测试里不该读到这台机器上真实的播放位置。
   const readPosBridge = deps.readBridge ?? ((o) => readBridge(o));
   // 窗口"还开着吗"也可注入：真机用 pid 判活，测试里给个假的
-  const windowAlive = deps.windowAlive ?? floatingWindowAlive;
+  const windowAlive = deps.windowAlive
+    ?? (() => (deps.window ?? windowOption ?? getWindowPort()).alive());
   // 插话唤醒走**真**的 followup（不受 `wake: false` 影响）；可注入便于测试
   const chatWatcher = deps.chatWatcher ?? (() => chatWatcherShared());
   const chatWake = deps.wakeChat ?? ((c, o) => wakeSession(c, o));

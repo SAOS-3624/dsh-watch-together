@@ -17,6 +17,7 @@ import { configuredPort } from 'dsh-video-storyboard/browser-time';
 import { createInputSurface } from './input-surface.js';
 import { createWatchInterfaces } from './interfaces.js';
 import { appendAssistantSay } from './chat.js';
+import { installPorts } from './runtime-ports.js';
 import { replyReminder } from './interject.js';
 import { pullLinesNear, pulledLinesNote } from './reply-guard.js';
 import { serviceOf } from './timer.js';
@@ -40,6 +41,9 @@ export async function execute(ctx, args, {
 } = {}) {
   // 识别 / TTS / 悬浮窗只从这里拿；测试和伴生插件可以注入自己的实现。
   const api = interfaces ?? createWatchInterfaces();
+  // 把接口装进 runtime-ports：chat-store / watch-loop 等核心模块只拿端口，
+  // 不再 import voice.js / floating-window.js。
+  installPorts({ tts: api.tts, window: api.window });
   const problems = validateWatchArgs(args);
   // 这一次调用看到的循环状态：说话要用它的位置，开窗要用它的源。只读一次。
   const st0 = loopStatus();
@@ -92,7 +96,9 @@ export async function execute(ctx, args, {
   // `waitForVideo` 会在主流程之外提前预铺一遍，那一遍要是少了 `input`/`reopen`，
   // 后面真正的调用就再也传不进去 —— 用户关过窗、模型调 `waitForVideo` 时，
   // 因为没有 `input` 就判不出 `hung`，窗口又被顶回来（"关了它自己弹出来"那个实报）。
-  const prepareInputSurface = createInputSurface({ windowService: api.window });
+  const prepareInputSurface = createInputSurface({
+    windowService: api.window, tts: api.tts,
+  });
   const known = typeof args.input === 'string' && args.input.trim()
     ? args.input
     : (typeof st0.input === 'string' && st0.input ? st0.input : null);
@@ -117,6 +123,7 @@ export async function execute(ctx, args, {
   // 单发命令（status / voices / speak / cookies / wake / stop）在这里分流
   const quick = await runWatchAction(args, {
     ctx, sessionId, browserPort: args.browserPort ?? configuredPort(),
+    tts: api.tts, window: api.window,
   });
   // **待回执也跟着单发命令走**：模型很可能先 statusOnly 看一眼再回话，
   // 那一步用户同样只会看到沉默 —— 提醒要挂在每一条返回上，不能只挂主流程。
@@ -173,6 +180,8 @@ export async function execute(ctx, args, {
     formatManifest: api.recognition.manifest,
     signal,
     prepareWait: prepareInputSurface,
+    // 窗口存活也只走接口；不再让 watch-run 直接 import floating-window
+    windowAlive: () => api.window.alive(),
     // 关窗即收工：只有这次真把窗口开起来了，才把"窗口没了"当作"不看了"
     expectWindow: surface?.windowOpen === true,
     // 宿主没有 attachments 服务时给可读错误，而不是 TypeError（也不能靠 inject 硬等，见 index.js）。
@@ -216,6 +225,7 @@ export async function execute(ctx, args, {
     startWatchLoop({
       ctx, sessionId, input: r.input,
       tts: api.tts,
+      window: api.window,
       cursor: r.cursor, status: r.status,
       // 段缓存只用来报"缓存里已有几段"（statusOnly），不参与决策
       cache,

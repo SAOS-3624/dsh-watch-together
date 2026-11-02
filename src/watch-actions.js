@@ -23,14 +23,17 @@ import { markMaterial, materialNote } from './watch-material.js';
 import { controllerOf, wakeSession } from './timer.js';
 import { loopStatus, stopWatchLoop } from './watch-loop.js';
 import { appendAssistantSay } from './chat.js';
-import { setWindowHidden } from './floating-window.js';
-import { lastSpeech } from './voice.js';
+import { getTtsPort, getWindowPort } from './runtime-ports.js';
 import { mmss } from './time.js';
 
-export async function runWatchAction(args, { ctx = null, sessionId = null, browserPort } = {}) {
+export async function runWatchAction(args, {
+  ctx = null, sessionId = null, browserPort, tts = null, window: windowService = null,
+} = {}) {
+  const ttsPort = tts ?? getTtsPort();
+  const winPort = windowService ?? getWindowPort();
   // 模型插话时说的那一句：写进统一流 + 交给声音。不占图片、不等位置，所以排在所有单发命令最前面。
   if (typeof args.say === 'string' && args.say.trim()) {
-    const entry = appendAssistantSay(args.say, { t: lastSpeech()?.at ?? null });
+    const entry = appendAssistantSay(args.say, { t: ttsPort.last()?.at ?? null });
     return { text: JSON.stringify({ ok: true, said: entry?.text ?? '', inChat: true }), images: [] };
   }
 
@@ -44,7 +47,7 @@ export async function runWatchAction(args, { ctx = null, sessionId = null, brows
   // 但并不想结束陪看。窗口进程不动，只写一个配置键，窗口自己每 200ms 读一次。
   if (args.window === 'hide' || args.window === 'show') {
     const want = args.window === 'hide';
-    const r = setWindowHidden(want);
+    const r = want ? winPort.hide() : winPort.show();
     if (!r.ok) {
       return {
         images: [],

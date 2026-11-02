@@ -23,10 +23,9 @@
 import {
   DEFAULT_CHAT_PORT, appendSpoken, chatAlive, chatPageUrl, ensureChatSession,
 } from './chat.js';
-import { floatingWindowAlive, openFloatingWindow } from './floating-window.js';
+import { getTtsPort, getWindowPort } from './runtime-ports.js';
 import { loopStatus, stopWatchLoop } from './watch-loop.js';
 import { clearHungUp, isHungUp, markHungUp } from './watch-state.js';
-import { attachConfiguredVoice, attachedAdapters, configuredVoiceAdapter } from './voice.js';
 
 /**
  * 造一个"准备输入面"的函数：**幂等**，同一个 execute 里调几次都只开一次窗。
@@ -36,7 +35,7 @@ import { attachConfiguredVoice, attachedAdapters, configuredVoiceAdapter } from 
  *
  * @returns {() => Promise<{note: string}>}
  */
-export function createInputSurface({ windowService = null } = {}) {
+export function createInputSurface({ windowService = null, tts = null } = {}) {
   let prepared = null;
   /**
    * @param {{start?: boolean}} [o]
@@ -47,7 +46,7 @@ export function createInputSurface({ windowService = null } = {}) {
    * "我不看了"的方式，下一次调用立刻又把窗口顶回来，等于把他的动作撤销了。
    */
   return ({ start = false, input = null, reopen = false } = {}) => {
-    prepared ??= open({ start, input, reopen, windowService });
+    prepared ??= open({ start, input, reopen, windowService, tts });
     return prepared;
   };
 }
@@ -56,25 +55,27 @@ export function createInputSurface({ windowService = null } = {}) {
 let announced = false;
 
 /** 声音适配器：没挂就挂上（挂过就直接复用）。返回一句给人看的状态。 */
-async function ensureVoice() {
+async function ensureVoice(tts) {
+  const bus = tts ?? getTtsPort();
   let spec = '';
   try {
-    spec = String(configuredVoiceAdapter() ?? '').trim();
+    spec = String(bus.configured?.() ?? '').trim();
   } catch { spec = ''; }
   if (!spec) return { ok: false, reason: 'voice.json 没配 adapter' };
-  if (attachedAdapters().includes(spec)) return { ok: true, name: tail(spec), cached: true };
-  const r = await attachConfiguredVoice({ log: () => {} })
+  if ((bus.attached?.() ?? []).includes(spec)) return { ok: true, name: tail(spec), cached: true };
+  const r = await Promise.resolve(bus.attachConfigured?.({ log: () => {} }))
     .catch((e) => ({ ok: false, reason: String(e?.message ?? e) }));
   return { ok: r?.ok === true, name: r?.name ?? tail(spec), reason: r?.reason };
 }
 
 const tail = (p) => String(p).split(/[\\/]/).filter(Boolean).pop() || String(p);
 
-async function open({ start = false, input = null, reopen = false, windowService = null } = {}) {
-  const winAlive = () => (windowService ? windowService.alive() : floatingWindowAlive());
-  const winOpen = (opts) => (windowService ? windowService.open(opts) : openFloatingWindow(opts));
+async function open({ start = false, input = null, reopen = false, windowService = null, tts = null } = {}) {
+  const winPort = windowService ?? getWindowPort();
+  const winAlive = () => winPort.alive();
+  const winOpen = (opts) => winPort.open(opts);
   // 0) 声音：每次开始陪看都确认一次 —— 不挂的话台词只会写进流、一句也不念
-  const voice = await ensureVoice();
+  const voice = await ensureVoice(tts);
   const voiceNote = voice.ok
     ? `声音：${voice.name}${voice.cached ? ' 已在' : ' 已挂上'}`
     : `声音：没挂（${voice.reason ?? '未知原因'}），台词只写不念`;

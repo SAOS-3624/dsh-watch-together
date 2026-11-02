@@ -417,7 +417,7 @@ pythonw examples/floating-chat/window.py     # 无控制台
 ```
 
 它长这样：三块分开的液态玻璃（标题 / 主体 / 输入栏），气泡圆角、半透明，
-你说的话靠右；标题栏可拖动、双击改名、▾ 折叠、✕ 关闭，底部有麦克风图标和发送。
+你说的话靠右；标题栏可拖动、点标题就地改名、▾ 折叠、✕ 关闭，底部有麦克风图标和发送。
 窗口底稿就是 PR #15 的 `glass_window.py`（现在叫 `window.py`），没有另写一套
 近似样式；GPU 伴生 `glass_window_gpu.py` 只把每帧合成搬到 moderngl，UI 和交互
 仍是同一份，所以 CPU/GPU 形式一致。
