@@ -391,6 +391,7 @@ class LiveGlass:
 
         self._img = None
         self._last_frame = None
+        self._collapsed_frame = None
         self._bg = None
         self._hwnd = None
         self._excluded = False
@@ -741,8 +742,42 @@ class LiveGlass:
                 pass
         self._refresh_feed()
 
+    def _make_collapsed_frame(self):
+        """折叠时只保留标题栏那一块玻璃，并补上圆角。
+
+        直接裁 _last_frame 会让底部变成一条硬切边（遮罩还是 560px 高），
+        看起来像渲染坏了；这里按 78px 重新贴一次圆角遮罩。
+        """
+        if self._last_frame is None:
+            return None
+        try:
+            w, h = W, H
+            crop = self._last_frame.convert("RGB").crop((0, 0, w, h))
+            mask = Image.new("L", (w, h), 0)
+            d = ImageDraw.Draw(mask)
+            d.rounded_rectangle((12, 12, w - 12, 66), radius=22, fill=255)
+            out = Image.new("RGB", (w, h), KEY)
+            out.paste(crop, (0, 0), mask)
+            return out
+        except Exception:
+            return None
+
+    def _sync_pos(self):
+        """把 Tk 当前左上角同步回 _x/_y。
+
+        拖动/缩放只改了 root.geometry，没有改这两个缓存；折叠时如果继续用
+        旧坐标，窗口会被拉回拖动前的位置（用户看到的就是"点收起位置跳回"）。
+        """
+        try:
+            self._x = int(self.root.winfo_x())
+            self._y = int(self.root.winfo_y())
+        except Exception:
+            pass
+
     def _save_geometry(self):
-        write_config({"geometry": f"{self.root.winfo_width()}x{self.root.winfo_height()}"
+        # 折叠态存回展开高度，否则下次启动会按 78px 的高度恢复。
+        h = getattr(self, "_saved_h", H) if getattr(self, "_collapsed", False) else self.root.winfo_height()
+        write_config({"geometry": f"{self.root.winfo_width()}x{h}"
                                   f"+{self.root.winfo_x()}+{self.root.winfo_y()}"})
 
     def _hwnd_root(self):
@@ -1007,7 +1042,7 @@ class LiveGlass:
             return "break"
         self._editing = True
         if self._title_entry is None:
-            self._title_entry = tk.Entry(self.root, font=f(18), relief="flat", bd=0,
+            self._title_entry = tk.Entry(self.root, font=f(15), relief="flat", bd=0,
                                          bg="#1b2330", fg="#f7fbff", insertbackground="#f7fbff")
             self._title_entry.bind("<Return>", self._commit_title)
             self._title_entry.bind("<Escape>", self._cancel_title)
@@ -1016,7 +1051,7 @@ class LiveGlass:
         self._title_entry.insert(0, self.name)
         if self._title_item is not None:
             self.canvas.delete(self._title_item)
-        self._title_item = self.canvas.create_window(72, 54, anchor="w",
+        self._title_item = self.canvas.create_window(68, 38, anchor="w",
                                                      window=self._title_entry, width=180)
         self._title_entry.focus_set()
         self._title_entry.select_range(0, "end")
@@ -1054,16 +1089,20 @@ class LiveGlass:
 
     def toggle_collapse(self, _event=None):
         global H
+        # 先读真实坐标再切高度：_x/_y 只是启动时的缓存，拖动/缩放后已过期。
+        self._sync_pos()
         self._collapsed = not getattr(self, "_collapsed", False)
         if self._collapsed:
             self._saved_h = H
             H = 2 * 12 + 54
+            self._collapsed_frame = self._make_collapsed_frame()
             # 折叠态只需要标题栏：不重建整窗几何，直接缩窗口 + 只画头。
             # 这样不会在小高度下生成负尺寸的输入框/主体玻璃。
             self.root.geometry(f"{W}x{H}+{self._x}+{self._y}")
             self._build_ui()
         else:
             H = getattr(self, "_saved_h", H)
+            self._collapsed_frame = None
             rebuild_geometry(W, H)
             self.root.geometry(f"{W}x{H}+{self._x}+{self._y}")
             self._rebuild(W, H)
@@ -1091,9 +1130,10 @@ class LiveGlass:
         c.delete("all")
         # 背景图 item 先建，后续文字都在它上面
         self._bg = c.create_image(0, 0, anchor="nw")
-        if self._last_frame is not None:
+        frame = self._collapsed_frame if getattr(self, "_collapsed", False) else self._last_frame
+        if frame is not None:
             try:
-                self._img = ImageTk.PhotoImage(self._last_frame, master=self.canvas)
+                self._img = ImageTk.PhotoImage(frame, master=self.canvas)
                 c.itemconfigure(self._bg, image=self._img)
             except Exception:
                 pass
@@ -1106,19 +1146,25 @@ class LiveGlass:
         # 状态点：仓库实现里的"亮着的蓝点 + 很淡的光环"。纯色圆点像贴纸，
         # 带一圈环才像状态灯；录音时变红。
         dot = "#e05a5a" if (self._mic_proc is not None and self._mic_proc.poll() is None) else "#0a84ff"
-        cy = 54
-        c.create_oval(44 - 7, cy - 7, 44 + 7, cy + 7,
+        # 标题栏玻璃是 y=12..66，中心 39；右边 ▾/✕ 也在 38。点、名字、
+        # 状态必须同一条水平中线，且字号要能完整落在条内，不能压到气泡区。
+        cy = 38
+        dot_x = 54
+        title_x = 68
+        # 点放大但保留光环；之前半径 3/7 在 54px 的标题条里太小。
+        c.create_oval(dot_x - 9, cy - 9, dot_x + 9, cy + 9,
                       outline="#2b4d73" if dot == "#0a84ff" else "#6b3030", width=1)
-        c.create_oval(44 - 3, cy - 3, 44 + 3, cy + 3, fill=dot, outline="")
+        c.create_oval(dot_x - 4, cy - 4, dot_x + 4, cy + 4, fill=dot, outline="")
         name = self.name[:10]
-        self._text(76, 54, name, anchor="w", fill="#f7fbff",
-                   font=f(21, True), tags=("title",))
+        title_font = f(16, True)
+        self._text(title_x, cy, name, anchor="w", fill="#f7fbff",
+                   font=title_font, tags=("title",))
         count = self._status or f"{len(self.messages)} 条"
         try:
-            nx = 76 + tkfont.Font(root=self.root, font=f(21, True)).measure(name) + 10
+            nx = title_x + tkfont.Font(root=self.root, font=title_font).measure(name) + 10
         except Exception:
-            nx = 176
-        self._text(max(176, nx), 54, count, anchor="w",
+            nx = title_x + 72
+        self._text(nx, cy, count, anchor="w",
                    fill="#ffb4b4" if self._status else "#dbe6f5",
                    font=f(11))
         # 右上角按钮跟随窗口宽度内收
@@ -1285,6 +1331,7 @@ class LiveGlass:
         self.canvas.delete("all")
         self._img = None
         self._bg = None
+        self._collapsed_frame = None
         self._text_items = []
         self._text_colors = {}
         self._text_shadows = {}
@@ -1391,6 +1438,12 @@ class LiveGlass:
             return
         # 缩放拖拽期间由 _preview_resize 负责画面，避免旧帧覆盖预览
         if self._resize:
+            self.root.after(INTERVAL_MS, self._tick)
+            return
+        if getattr(self, "_collapsed", False):
+            # 折叠态用 _make_collapsed_frame 的静态背景；_work 也停抓取。
+            # 若还让这里消费旧队列，会把 560px 的帧贴回 78px 的 Canvas，
+            # 底部圆角/暗边会闪一下，看起来像渲染错位。
             self.root.after(INTERVAL_MS, self._tick)
             return
         if not self._excluded and os.environ.get("DSH_GLASS_WDA") != "0":
@@ -1543,9 +1596,11 @@ class LiveGlass:
             w = max(MIN_W, self.root.winfo_width())
             h = max(MIN_H, self.root.winfo_height())
             self._rebuild(w, h)
+            self._sync_pos()
             self._hover(e)
             return
         self._drag = None
+        self._sync_pos()
 
     def run(self):
         self.root.bind("<Escape>", self._close)
