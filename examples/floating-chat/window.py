@@ -39,6 +39,11 @@ import mss
 import numpy as np
 from PIL import Image, ImageDraw, ImageEnhance, ImageFilter, ImageStat, ImageTk
 
+try:
+    import cv2 as _cv2
+except Exception:  # OpenCV 只是加速，缺了仍走 PIL
+    _cv2 = None
+
 # 悬浮窗接口：插件写 window-events.jsonl，窗口回 window-outbox.jsonl。
 # 读不到就继续读 chat.jsonl，旧版插件不受影响。
 try:
@@ -171,9 +176,9 @@ def chat_layout(h):
 
 
 def shapes_for(w, h):
-    """按窗口尺寸生成内部框位置；宽度横向伸展，底栏贴底。"""
+    """按窗口尺寸生成内部框位置；消息气泡的最终宽度由文字测量决定。"""
     ys, bh, input_top = chat_layout(h)
-    # 真实聊天流每条长度不可预测，四个气泡统一吃满内容宽度；输入/发送仍分开
+    # 这里只给消息区四个纵向槽位；_message_shapes() 会按文字收窄宽度和高度。
     return [
         (38, ys[0], w - 38, ys[0] + bh, 30),
         (38, ys[1], w - 38, ys[1] + bh, 30),
@@ -185,6 +190,7 @@ def shapes_for(w, h):
 
 
 SHAPES = shapes_for(W, H)
+SHAPES_VERSION = 0
 
 
 def rounded_mask():
@@ -266,6 +272,8 @@ BOX_AMP = 8       # 1/4 分辨率下的最大采样偏移
 def build_box_maps():
     out = []
     for x0, y0, x1, y1, r in SHAPES:
+        if x1 <= x0 or y1 <= y0:
+            continue
         qx0, qy0 = x0 // 4, y0 // 4
         qw, qh = max(2, (x1 - x0) // 4), max(2, (y1 - y0) // 4)
         xx, yy = np.meshgrid(np.arange(qw, dtype=np.float32),
@@ -279,16 +287,18 @@ def build_box_maps():
         gy, gx = np.gradient(sdf)
         n = np.maximum(np.hypot(gx, gy), 1e-6)
         d = -sdf
-        inside = d >= 0
         alpha = np.clip((d + 0.6) / 1.2, 0.0, 1.0).astype(np.float32)
-        edge = inside & (d <= BOX_BAND)
         t = np.clip(1.0 - d / BOX_BAND, 0.0, 1.0)
         mag = BOX_AMP * t * t
         sx = np.rint(qx0 + xx + gx / n * mag).astype(np.int32)
         sy = np.rint(qy0 + yy + gy / n * mag).astype(np.int32)
         np.clip(sx, 0, W // 4 - 1, out=sx)
         np.clip(sy, 0, H // 4 - 1, out=sy)
-        out.append((qx0, qy0, qw, qh, alpha, edge, sx, sy))
+        # 边缘到中心用平滑权重过渡，不再用二值 edge 在“原始帧”和
+        # “强模糊帧”之间硬切；系数不一致会看到一圈割裂。
+        w = np.clip(d / BOX_BAND, 0.0, 1.0).astype(np.float32)
+        w = (w * w * (3.0 - 2.0 * w)).astype(np.float32)
+        out.append((qx0, qy0, qw, qh, alpha, w, sx, sy))
     return out
 
 
@@ -316,6 +326,7 @@ def rebuild_geometry(w, h):
     """窗口尺寸变化后重建所有和 W/H 绑定的贴图/遮罩。"""
     global W, H, SHAPES, MASK, MASK_HARD, OVERLAY, OVERLAY_2X
     global WARP_X, WARP_Y, EDGE_MASK, BOX_MAPS, HW, HH, BOX_UNION_2X, MIC_POS
+    _CHROMA_CACHE.clear()  # 旧尺寸的索引图不再用，避免每次缩放都攒一份
     W, H = w, h
     SHAPES = shapes_for(w, h)
     MASK = rounded_mask()
@@ -329,11 +340,80 @@ def rebuild_geometry(w, h):
     BOX_UNION_2X = build_box_union(HW, HH)
 
 
+def apply_shapes(shapes):
+    """消息气泡宽度/高度变化后，只重建和内部框有关的贴图。
+
+    窗口尺寸不变，所以不用碰 WARP/MASK；只更新染色层、四分之一透镜
+    坐标和 2x 联合遮罩。调用方负责持有 _geo_lock。
+    """
+    global SHAPES, OVERLAY, OVERLAY_2X, BOX_MAPS, BOX_UNION_2X, SHAPES_VERSION
+    SHAPES = list(shapes)
+    OVERLAY = build_overlay()
+    OVERLAY_2X = OVERLAY.resize((W // 2, H // 2), Image.Resampling.BILINEAR)
+    BOX_MAPS = build_box_maps()
+    BOX_UNION_2X = build_box_union(HW, HH)
+    SHAPES_VERSION += 1
+
+
 def finish(panel):
     """只做圆角遮罩；染色已经在 1/4 分辨率合成过。"""
     out = Image.new("RGB", (W, H), KEY)
     out.paste(panel.convert("RGB"), (0, 0), MASK_HARD)
     return out
+
+
+def _smoothstep(a, b, x):
+    t = np.clip((x - a) / (b - a), 0.0, 1.0)
+    return t * t * (3.0 - 2.0 * t)
+
+
+_CHROMA_CACHE = {}
+
+
+def _chroma_maps(w, h, strength):
+    """2x 色散索引图只跟尺寸/强度走，缓存后每帧只做 gather。"""
+    key = (w, h, round(float(strength), 2))
+    hit = _CHROMA_CACHE.get(key)
+    if hit is not None:
+        return hit
+    yy, xx = np.mgrid[0:h, 0:w].astype(np.float32)
+    dx = (xx + 0.5) / w - 0.5
+    dy = (yy + 0.5) / h - 0.5
+    r = np.hypot(dx, dy) + 1e-6
+    edge = _smoothstep(0.38, 0.48, r) * (1.0 - _smoothstep(0.52, 0.585, r))
+    k = strength * edge
+    ox = np.rint(dx / r * k).astype(np.int32)
+    oy = np.rint(dy / r * k).astype(np.int32)
+    xi = xx.astype(np.int32)
+    yi = yy.astype(np.int32)
+    hit = (
+        edge.astype(np.float32),
+        np.clip(xi + ox, 0, w - 1),
+        np.clip(yi + oy, 0, h - 1),
+        np.clip(xi - ox, 0, w - 1),
+        np.clip(yi - oy, 0, h - 1),
+    )
+    _CHROMA_CACHE[key] = hit
+    return hit
+
+
+def apply_chroma(im, strength=1.7):
+    """外框径向色散：R 向外、B 向内错一位，和 GPU 后处理同一思路。
+
+    只在圆角外缘的窄带里做，且按 edge 权重混回原图；否则整张图会变成
+    红蓝重影。CPU 版在 2x 合成图上做，成本远低于全分辨率逐像素采样。
+    """
+    arr = np.asarray(im.convert("RGB"), dtype=np.float32)
+    h, w = arr.shape[:2]
+    edge, xr, yr, xb, yb = _chroma_maps(w, h, strength)
+    if not np.any(edge > 0.001):
+        return im
+    rr = arr[yr, xr, 0]
+    bb = arr[yb, xb, 2]
+    out = arr.copy()
+    out[:, :, 0] = arr[:, :, 0] * (1.0 - edge) + rr * edge
+    out[:, :, 2] = arr[:, :, 2] * (1.0 - edge) + bb * edge
+    return Image.fromarray(np.clip(out, 0, 255).astype(np.uint8))
 
 
 class RECT(ctypes.Structure):
@@ -391,6 +471,8 @@ class LiveGlass:
 
         self._img = None
         self._last_frame = None
+        self._prev_out = None
+        self._motion_blur = 0.0
         self._collapsed_frame = None
         self._bg = None
         self._hwnd = None
@@ -821,9 +903,15 @@ class LiveGlass:
                          "width": gr - gl, "height": gb - gt})
         im = Image.frombytes("RGB", shot.size, shot.rgb)
         sw4, sh4 = max(2, (gr - gl) // 4), max(2, (gb - gt) // 4)
-        # 60fps 路径：只在 1/4 分辨率做一次模糊和折射，再放大
-        small_raw = im.resize((sw4, sh4), Image.Resampling.BILINEAR)
-        arr_raw = np.asarray(small_raw)
+        # 60fps 路径：只在 1/4 分辨率做一次模糊和折射，再放大。
+        # cv2 的 resize 比 PIL 快一个数量级；没有 OpenCV 时无感回退。
+        if _cv2 is not None:
+            arr_raw = _cv2.resize(np.asarray(im), (sw4, sh4),
+                                  interpolation=_cv2.INTER_LINEAR)
+            small_raw = Image.fromarray(arr_raw)
+        else:
+            small_raw = im.resize((sw4, sh4), Image.Resampling.BILINEAR)
+            arr_raw = np.asarray(small_raw)
         # 静态跳帧：先用未模糊的 raw 判断，静止时连模糊都不用做。
         # 采样 4px、均值 0.01 + 最大差 0.5、运动后保持 0.3s；比原来的
         # 8px / 0.18 更早触发，慢速滚动不会先停一两帧再动。
@@ -836,9 +924,15 @@ class LiveGlass:
             moved = bool(float(d.mean()) > 0.01 or float(d.max()) > 0.5)
         if moved:
             self._last_motion = now
+            self._motion_blur = min(1.0, getattr(self, "_motion_blur", 0.0) * 0.50 + 0.50)
+        else:
+            self._motion_blur = getattr(self, "_motion_blur", 0.0) * 0.55
         if (not FORCE and not moved and box == self._sig_bbox
                 and now - getattr(self, "_last_motion", 0.0) > 0.30):
             self._sig = sig
+            # 静态跳帧期间不更新画面；上一帧若带着运动模糊，绝不能在
+            # 很久以后重新移动时再被混进来，否则就是“淡淡的旧画面”。
+            self._prev_out = None
             return None
         self._sig = sig
         self._sig_bbox = box
@@ -856,28 +950,64 @@ class LiveGlass:
         # 内部框：边缘折射 + 中心强模糊仍在 1/4 分辨率完成
         strong_panel = arr_strong[sy, sx]
         out_panel = warped.copy()
-        for qx0, qy0, qw, qh, alpha, edge, bsx, bsy in BOX_MAPS:
+        for qx0, qy0, qw, qh, alpha, edge_w, bsx, bsy in BOX_MAPS:
             base_patch = warped[qy0:qy0 + qh, qx0:qx0 + qw]
-            edge_patch = arr_raw[np.clip(bsy + py, 0, arr_raw.shape[0] - 1),
-                                 np.clip(bsx + px, 0, arr_raw.shape[1] - 1)]
+            # 边缘也用和主玻璃相同的 1.45 模糊，不再直接拿未模糊的
+            # arr_raw；中心再平滑过渡到 2.6 的强模糊。
+            edge_patch = arr[np.clip(bsy + py, 0, arr.shape[0] - 1),
+                             np.clip(bsx + px, 0, arr.shape[1] - 1)]
             strong_patch = strong_panel[qy0:qy0 + qh, qx0:qx0 + qw]
-            patch = np.where(edge[..., None], edge_patch, strong_patch)
+            we = edge_w[..., None]
+            patch = edge_patch * (1.0 - we) + strong_patch * we
             a = alpha[..., None]
             out_panel[qy0:qy0 + qh, qx0:qx0 + qw] = (
                 base_patch * (1.0 - a) + patch * a)
         # 1/4 透镜结果放大后，用全分辨率联合圆角遮罩贴回；
         # 边界是 PIL 4x 超采样遮罩，不再有 1/4 放大的像素台阶。
         # 2x 合成：比全分辨率轻，比 1/4 明显平滑，兼顾帧率和圆角
-        base_2x = Image.fromarray(warped).resize(
-            (HW, HH), Image.Resampling.BILINEAR)
-        lens_2x = Image.fromarray(out_panel).resize(
-            (HW, HH), Image.Resampling.BILINEAR)
+        if _cv2 is not None:
+            base_2x = Image.fromarray(_cv2.resize(
+                warped, (HW, HH), interpolation=_cv2.INTER_LINEAR))
+            lens_2x = Image.fromarray(_cv2.resize(
+                out_panel, (HW, HH), interpolation=_cv2.INTER_LINEAR))
+        else:
+            base_2x = Image.fromarray(warped).resize(
+                (HW, HH), Image.Resampling.BILINEAR)
+            lens_2x = Image.fromarray(out_panel).resize(
+                (HW, HH), Image.Resampling.BILINEAR)
         panel = Image.composite(lens_2x, base_2x, BOX_UNION_2X)
         panel = Image.alpha_composite(
             panel.convert("RGBA"), OVERLAY_2X).convert("RGB")
-        out = panel.convert("RGB").resize((W, H), Image.Resampling.BILINEAR)
-        # 麦克风由 Canvas 矢量绘制（_build_ui），这里不再叠位图，避免两层图标。
-        return finish(out)
+        # 2x 上做一次显式 R/B 错位；全分辨率逐像素做会把这个 60fps 管线拖慢。
+        # 移动中跳过色散（约 3.5ms/帧），优先保证拖动/滚动响应；停下后
+        # 的静止帧再补上，最终观感不变。
+        if not moved:
+            panel = apply_chroma(panel, 1.7)
+        if _cv2 is not None:
+            out = Image.fromarray(_cv2.resize(
+                np.asarray(panel.convert("RGB")), (W, H),
+                interpolation=_cv2.INTER_LINEAR))
+        else:
+            out = panel.convert("RGB").resize((W, H), Image.Resampling.BILINEAR)
+        # CPU 也做上一帧混合，但比 GPU 的 0.55 轻、且只在检测到移动时混：
+        # 拖动停下后立刻恢复清晰，不会留下淡淡的旧画面。
+        # 先混再贴麦克风，避免把上一帧的麦克风位置糊到这一帧。
+        if moved and self._prev_out is not None and self._prev_out.size == out.size:
+            # 只在“这一帧确实检测到移动”时混上一帧；停下后下一帧
+            # 立刻干净，不会留下越拖越淡的残影。
+            blend = 0.35 * max(0.0, min(1.0, getattr(self, "_motion_blur", 0.0)))
+            if blend > 0.01:
+                out = Image.blend(self._prev_out, out, blend)
+        self._prev_out = out.copy()
+        # 麦克风图标回到仓库的做法：贴进玻璃帧，按背后亮度选浅/深两版。
+        # 位置用 MIC_POS（左上角），不是 Canvas 坐标，缩放时一起重建。
+        mic_box = out.crop((MIC_POS[0], MIC_POS[1],
+                            MIC_POS[0] + 28, MIC_POS[1] + 28)).convert("L")
+        mic_bg = float(np.median(np.asarray(mic_box))) / 255.0
+        out = out.convert("RGBA")
+        icon = MIC_LIGHT if mic_bg < 0.48 else MIC_DARK
+        out.paste(icon, MIC_POS, icon)
+        return finish(out.convert("RGB"))
 
     def _work(self):
         """抓取 + 模糊 + 合成全在后台，主线程只负责显示最新一帧。"""
@@ -1114,6 +1244,63 @@ class LiveGlass:
         except Exception:
             pass
 
+    def _message_shapes(self, shown):
+        """把四个固定大框换成按正文文字测量的聊天气泡。
+
+        时间戳不再算进气泡：它贴在气泡上方，气泡只包正文。先按最大
+        可用宽度折行，再取实际最长行的宽度；短消息不会撑满整行。
+        """
+        w, h = W, H
+        base = shapes_for(w, h)
+        left, right = base[0][0], base[0][2]
+        max_bubble = min(right - left, max(240, int((right - left) * 0.72)))
+        min_bubble = min(110, max_bubble)
+        pad = 14
+        body_font = f(11)
+        stamp_font = f(9)
+        fbody = tkfont.Font(root=self.root, font=body_font)
+        fstamp = tkfont.Font(root=self.root, font=stamp_font)
+        ls = max(1, fbody.metrics("linespace"))
+        shapes, infos = [], []
+        for i in range(4):
+            if i >= len(shown):
+                # 没有第 5 条消息时留空，不要把固定大框继续画出来。
+                shapes.append((0, 0, 0, 0, 0))
+                continue
+            msg = shown[i]
+            x0, y0, x1, y1, _r = base[i]
+            slot_h = y1 - y0
+            is_user = str(msg.get("role") or "").lower() in ("user", "me", "human")
+            stamp = str(msg.get("stamp") or "")
+            stamp_h = fstamp.metrics("linespace") if stamp else 0
+            body_avail = max(12, slot_h - stamp_h)
+            content_max = max(80, max_bubble - 2 * pad)
+            lines = self._fit_lines(msg.get("text") or "", body_font,
+                                    content_max, body_avail)
+            inner = max([0] + [fbody.measure(line) for line in lines])
+            bw = min(max_bubble, max(min_bubble, inner + 2 * pad))
+            bh = min(body_avail, max(ls + 4, len(lines) * ls + 4))
+            by0 = y0 + stamp_h
+            by1 = min(y1, by0 + bh)
+            if is_user:
+                bx1 = right
+                bx0 = bx1 - bw
+                tx, ta = bx1 - pad, "ne"
+            else:
+                bx0 = left
+                bx1 = bx0 + bw
+                tx, ta = bx0 + pad, "nw"
+            shape = (bx0, by0, bx1, by1, min(26, max(16, bh // 3)))
+            shapes.append(shape)
+            infos.append({
+                "shape": shape, "is_user": is_user, "stamp": stamp,
+                "tx": tx, "ta": ta, "lines": lines,
+                "body_font": body_font, "ty": by0 + 2,
+                "stamp_y": y0, "ls": ls,
+            })
+        shapes.extend(base[4:])
+        return shapes, infos
+
     def _build_ui(self):
         c = self.canvas
         old_text, old_focus, old_cursor = "", False, 0
@@ -1189,28 +1376,24 @@ class LiveGlass:
             return
 
         shown = self._visible_messages()
-        # 每条消息的头部（时间戳）和正文都在自己的框里；正文按框高折行/截断，
-        # 不再用气泡中心当基线，否则两行以上会溢出框外（时间也会被顶到框上）。
-        for i, msg in enumerate(shown):
-            x0, y0, x1, y1, _r = SHAPES[i]
-            is_user = str(msg.get("role") or "").lower() in ("user", "me", "human")
-            tx = (x1 - 26) if is_user else (x0 + 26)
-            ta = "ne" if is_user else "nw"
-            stamp = str(msg.get("stamp") or "")
-            head_h = 26 if stamp else 4
-            if stamp:
-                self._text(tx, y0 + 2, stamp, anchor=ta,
-                           fill="#a8b7c9", font=f(9), tags=("feed",))
-            max_w = max(80, x1 - x0 - 52)
-            avail_h = max(12, (y1 - y0) - head_h - 2)
-            body_font = f(11)
-            lines = self._fit_lines(msg.get("text") or "", body_font, max_w, avail_h)
-            fobj = tkfont.Font(root=self.root, font=body_font)
-            ls = fobj.metrics("linespace")
-            ty = y0 + head_h + 2
-            for li, line in enumerate(lines):
-                self._text(tx, ty + li * ls, line, anchor=ta,
-                           fill="#edf6ff", font=body_font, tags=("feed",))
+        if shown:
+            shapes, infos = self._message_shapes(shown)
+        else:
+            shapes, infos = shapes_for(w, h), []
+        if shapes != SHAPES:
+            with self._geo_lock:
+                apply_shapes(shapes)
+        # 每条消息只按正文占一块；时间戳贴在气泡上方，不进框。
+        for info in infos:
+            bx0, by0, bx1, by1, _r = info["shape"]
+            if info["stamp"]:
+                self._text(info["tx"], info["stamp_y"], info["stamp"],
+                           anchor=info["ta"], fill="#a8b7c9",
+                           font=f(9), tags=("feed",))
+            for li, line in enumerate(info["lines"]):
+                self._text(info["tx"], info["ty"] + li * info["ls"], line,
+                           anchor=info["ta"], fill="#edf6ff",
+                           font=info["body_font"], tags=("feed",))
         if not shown:
             # 空态：`bh` 是旧代码的局部变量，这里只能从 SHAPES 反推第一格高度
             self._text(w // 2, SHAPES[0][1] + (SHAPES[0][3] - SHAPES[0][1]) // 2,
@@ -1241,18 +1424,8 @@ class LiveGlass:
         self._text((x0 + x1) // 2, y0 + 27, "发送", tags=("send", "feed"),
                    fill="#ffffff", font=f(12, True))
 
-        # 麦克风：直接用 PR #15 的 mic-dsh.png 图标（白色/录音红），
-        # 不再用几条线画一个像"i"的代替品；Canvas 图不依赖合成帧，预览也可见。
-        if not getattr(self, "_collapsed", False):
-            active = self._mic_proc is not None and self._mic_proc.poll() is None
-            color = (255, 128, 128, 0) if active else (224, 238, 255, 0)
-            icon_img = Image.new("RGBA", MIC_MASK.size, color)
-            icon_img.putalpha(MIC_MASK)
-            self._mic_icon = ImageTk.PhotoImage(icon_img, master=self.canvas)
-            c.create_image(67, H - 58, image=self._mic_icon,
-                           tags=("mic", "micart"))
-            c.tag_bind("mic", "<Button-1>", lambda _e: self._toggle_mic())
-
+        # 麦克风图标和仓库一样贴进玻璃帧（_capture 里按 MIC_POS 合成），
+        # 不在 Canvas 上单独建图；点击仍由 _press 在 MIC_POS 附近识别。
         # 最上面正中的细条，长度随窗口宽度走
         self._bar_len = max(72, int(w * BAR_FRAC))
         self._bar = c.create_line(w // 2 - self._bar_len // 2, BAR_Y,
@@ -1306,6 +1479,7 @@ class LiveGlass:
         self.canvas.delete("all")
         self._img = None
         self._bg = None
+        self._prev_out = None
         self._text_items = []
         self._text_colors = {}
         self._text_pending = {}
@@ -1337,6 +1511,8 @@ class LiveGlass:
         self.canvas.delete("all")
         self._img = None
         self._bg = None
+        self._prev_out = None
+        self._motion_blur = 0.0
         self._collapsed_frame = None
         self._text_items = []
         self._text_colors = {}
@@ -1527,7 +1703,9 @@ class LiveGlass:
     # 边缘缩放 / 窗口拖动
     def _edge_at(self, x, y):
         w, h = self.root.winfo_width(), self.root.winfo_height()
-        edge, corner = 10, 26
+        # 圆角是透明的，鼠标落在最外侧时命中的是 DWM 非客户区；
+        # 命中带放宽到 20px，用户不必精确到 1px 也能拖边缘/四角。
+        edge, corner = 20, 32
         # 圆角区域是透明的，命中区要往内收够，才能点到可见的角
         if x <= corner and y <= corner:
             return "nw"

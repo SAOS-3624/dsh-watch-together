@@ -108,6 +108,7 @@ void main() {
     float e = texelFetch(edge, p, 0).r;
     vec2 ec = texelFetch(coord, p, 0).rg + offset;
     ivec2 ep = clamp(ivec2(floor(ec + 0.5)), ivec2(0), ivec2(src_size) - 1);
+    // 边缘从小框自己的原始帧取，避免 warped 在贴边小框上采到黑边。
     vec3 edgep = texelFetch(raw, ep, 0).rgb;
     vec3 patch = mix(strong, edgep, e);
     frag = vec4(mix(base, patch, a), 1.0);
@@ -213,6 +214,7 @@ class GPULens:
         self._motion = 0.0
         self.src = None
         self.geo = None
+        self.geo_version = -1
         self.fbos = {}
         self.texs = {}
 
@@ -292,6 +294,7 @@ class GPULens:
         t = self._tex("union", (HW, HH), 1, "f1", union.tobytes())
         t.filter = (moderngl.LINEAR, moderngl.LINEAR)
         self.geo = (W, H, hw, hh, HW, HH)
+        self.geo_version = G.SHAPES_VERSION
         self.fbos.clear()
         self.texs = {k: v for k, v in self.texs.items()
                      if k in ("alpha", "edge", "coord", "warpcoord", "overlay", "union")}
@@ -306,8 +309,9 @@ class GPULens:
             self.src.repeat_y = False
         self.src.write(data)
 
-    def render(self, bgra, size, px, py, motion=0.0):
-        if self.geo is None or self.geo[:2] != (G.W, G.H):
+    def render(self, bgra, size, px, py, motion=0.0, moved=False):
+        if (self.geo is None or self.geo[:2] != (G.W, G.H)
+                or getattr(self, "geo_version", -1) != G.SHAPES_VERSION):
             self._build_geo()
         W, H, hw, hh, HW, HH = self.geo
         gw, gh = size
@@ -407,8 +411,11 @@ class GPULens:
         prev.color_attachments[0].use(1)
         p = self.progs["post"]
         p["texel"] = (1.0 / W, 1.0 / H)
-        p["blend"] = float(0.55 * max(0.0, min(1.0, motion)) if getattr(self, "_prev_valid", False) else 0.0)
-        p["chroma"] = 3.6 * (W / 900.0)
+        # 和 CPU 一致：只在“本帧检测到移动”时混上一帧，停下立刻干净；
+        # 移动帧跳过色散，先把拖动/滚动响应保住。
+        p["blend"] = float(0.35 * max(0.0, min(1.0, motion))
+                           if moved and getattr(self, "_prev_valid", False) else 0.0)
+        p["chroma"] = 0.0 if moved else 3.6 * (W / 900.0)
         self._set(p, curr=0, prev=1)
         p.vao.render(moderngl.TRIANGLES)
         self.ctx.copy_framebuffer(prev, out)
@@ -450,20 +457,28 @@ def capture_gpu(self, sct):
             moved = bool(float(d.mean()) > 0.01 or float(d.max()) > 0.5)
         if moved:
             self._last_motion = now
-            _gpu._motion = min(1.0, _gpu._motion * 0.60 + 0.40)
+            _gpu._motion = min(1.0, _gpu._motion * 0.50 + 0.50)
         else:
-            _gpu._motion *= 0.80
+            _gpu._motion *= 0.55
         if (not G.FORCE and not moved and box == self._sig_bbox
                 and now - getattr(self, "_last_motion", 0.0) > 0.30):
             self._sig = sig
             _gpu._motion = 0.0
+            _gpu._prev_valid = False
             return None
         self._sig = sig
         self._sig_bbox = box
 
-        panel = _gpu.render(shot.bgra, shot.size, px, py, motion=_gpu._motion)
-        # 麦克风由 window.py 的 Canvas 图标绘制，GPU 路径不再叠第二层。
-        return G.finish(panel.convert("RGB"))
+        panel = _gpu.render(shot.bgra, shot.size, px, py,
+                            motion=_gpu._motion, moved=moved)
+        out = panel.copy()
+        mic_box = out.crop((G.MIC_POS[0], G.MIC_POS[1],
+                            G.MIC_POS[0] + 28, G.MIC_POS[1] + 28)).convert("L")
+        mic_bg = float(np.median(np.asarray(mic_box))) / 255.0
+        out = out.convert("RGBA")
+        icon = G.MIC_LIGHT if mic_bg < 0.48 else G.MIC_DARK
+        out.paste(icon, G.MIC_POS, icon)
+        return G.finish(out.convert("RGB"))
     except Exception as exc:
         print("GPU capture failed, falling back to CPU:", repr(exc), flush=True)
         return _orig_capture(self, sct)
