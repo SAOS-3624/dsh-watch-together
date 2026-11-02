@@ -176,9 +176,9 @@ def chat_layout(h):
 
 
 def shapes_for(w, h):
-    """按窗口尺寸生成内部框位置；宽度横向伸展，底栏贴底。"""
+    """按窗口尺寸生成内部框位置；消息气泡的最终宽度由文字测量决定。"""
     ys, bh, input_top = chat_layout(h)
-    # 真实聊天流每条长度不可预测，四个气泡统一吃满内容宽度；输入/发送仍分开
+    # 这里只给消息区四个纵向槽位；_message_shapes() 会按文字收窄宽度和高度。
     return [
         (38, ys[0], w - 38, ys[0] + bh, 30),
         (38, ys[1], w - 38, ys[1] + bh, 30),
@@ -190,6 +190,7 @@ def shapes_for(w, h):
 
 
 SHAPES = shapes_for(W, H)
+SHAPES_VERSION = 0
 
 
 def rounded_mask():
@@ -271,6 +272,8 @@ BOX_AMP = 8       # 1/4 分辨率下的最大采样偏移
 def build_box_maps():
     out = []
     for x0, y0, x1, y1, r in SHAPES:
+        if x1 <= x0 or y1 <= y0:
+            continue
         qx0, qy0 = x0 // 4, y0 // 4
         qw, qh = max(2, (x1 - x0) // 4), max(2, (y1 - y0) // 4)
         xx, yy = np.meshgrid(np.arange(qw, dtype=np.float32),
@@ -335,6 +338,21 @@ def rebuild_geometry(w, h):
     BOX_MAPS = build_box_maps()
     HW, HH = W // 2, H // 2
     BOX_UNION_2X = build_box_union(HW, HH)
+
+
+def apply_shapes(shapes):
+    """消息气泡宽度/高度变化后，只重建和内部框有关的贴图。
+
+    窗口尺寸不变，所以不用碰 WARP/MASK；只更新染色层、四分之一透镜
+    坐标和 2x 联合遮罩。调用方负责持有 _geo_lock。
+    """
+    global SHAPES, OVERLAY, OVERLAY_2X, BOX_MAPS, BOX_UNION_2X, SHAPES_VERSION
+    SHAPES = list(shapes)
+    OVERLAY = build_overlay()
+    OVERLAY_2X = OVERLAY.resize((W // 2, H // 2), Image.Resampling.BILINEAR)
+    BOX_MAPS = build_box_maps()
+    BOX_UNION_2X = build_box_union(HW, HH)
+    SHAPES_VERSION += 1
 
 
 def finish(panel):
@@ -1224,6 +1242,65 @@ class LiveGlass:
         except Exception:
             pass
 
+    def _message_shapes(self, shown):
+        """把四个固定大框换成按文字测量的聊天气泡。
+
+        每条消息先按最大可用宽度折行，再取实际最长行的宽度；短消息
+        不会再把整条横向玻璃撑满。气泡保持左右分工（助手靠左、用户
+        靠右），高度也只包住时间头 + 正文。
+        """
+        w, h = W, H
+        base = shapes_for(w, h)
+        left, right = base[0][0], base[0][2]
+        max_bubble = min(right - left, max(240, int((right - left) * 0.72)))
+        min_bubble = min(180, max_bubble)
+        pad = 26
+        body_font = f(11)
+        stamp_font = f(9)
+        fbody = tkfont.Font(root=self.root, font=body_font)
+        fstamp = tkfont.Font(root=self.root, font=stamp_font)
+        ls = max(1, fbody.metrics("linespace"))
+        shapes, infos = [], []
+        for i in range(4):
+            if i >= len(shown):
+                # 没有第 5 条消息时留空，不要把固定大框继续画出来。
+                shapes.append((0, 0, 0, 0, 0))
+                continue
+            msg = shown[i]
+            x0, y0, x1, y1, _r = base[i]
+            slot_h = y1 - y0
+            is_user = str(msg.get("role") or "").lower() in ("user", "me", "human")
+            stamp = str(msg.get("stamp") or "")
+            head_h = 26 if stamp else 6
+            avail_h = max(12, slot_h - head_h - 2)
+            content_max = max(80, max_bubble - 2 * pad)
+            lines = self._fit_lines(msg.get("text") or "", body_font,
+                                    content_max, avail_h)
+            inner = max([0, fstamp.measure(stamp)]
+                        + [fbody.measure(line) for line in lines])
+            bw = min(max_bubble, max(min_bubble, inner + 2 * pad))
+            bh = min(slot_h, max(44, head_h + len(lines) * ls + 2))
+            by0 = y0 + max(0, (slot_h - bh) // 2)
+            by1 = by0 + bh
+            if is_user:
+                bx1 = right
+                bx0 = bx1 - bw
+                tx, ta = bx1 - pad, "ne"
+            else:
+                bx0 = left
+                bx1 = bx0 + bw
+                tx, ta = bx0 + pad, "nw"
+            shape = (bx0, by0, bx1, by1, min(28, max(18, bh // 3)))
+            shapes.append(shape)
+            infos.append({
+                "shape": shape, "is_user": is_user, "stamp": stamp,
+                "tx": tx, "ta": ta, "head_h": head_h, "lines": lines,
+                "body_font": body_font, "ty": by0 + head_h + 2,
+                "ls": ls,
+            })
+        shapes.extend(base[4:])
+        return shapes, infos
+
     def _build_ui(self):
         c = self.canvas
         old_text, old_focus, old_cursor = "", False, 0
@@ -1299,28 +1376,23 @@ class LiveGlass:
             return
 
         shown = self._visible_messages()
-        # 每条消息的头部（时间戳）和正文都在自己的框里；正文按框高折行/截断，
-        # 不再用气泡中心当基线，否则两行以上会溢出框外（时间也会被顶到框上）。
-        for i, msg in enumerate(shown):
-            x0, y0, x1, y1, _r = SHAPES[i]
-            is_user = str(msg.get("role") or "").lower() in ("user", "me", "human")
-            tx = (x1 - 26) if is_user else (x0 + 26)
-            ta = "ne" if is_user else "nw"
-            stamp = str(msg.get("stamp") or "")
-            head_h = 26 if stamp else 4
-            if stamp:
-                self._text(tx, y0 + 2, stamp, anchor=ta,
+        if shown:
+            shapes, infos = self._message_shapes(shown)
+        else:
+            shapes, infos = shapes_for(w, h), []
+        if shapes != SHAPES:
+            with self._geo_lock:
+                apply_shapes(shapes)
+        # 每条消息只按自己的文字占一块；时间头和正文都在气泡内。
+        for info in infos:
+            bx0, by0, bx1, by1, _r = info["shape"]
+            if info["stamp"]:
+                self._text(info["tx"], by0 + 2, info["stamp"], anchor=info["ta"],
                            fill="#a8b7c9", font=f(9), tags=("feed",))
-            max_w = max(80, x1 - x0 - 52)
-            avail_h = max(12, (y1 - y0) - head_h - 2)
-            body_font = f(11)
-            lines = self._fit_lines(msg.get("text") or "", body_font, max_w, avail_h)
-            fobj = tkfont.Font(root=self.root, font=body_font)
-            ls = fobj.metrics("linespace")
-            ty = y0 + head_h + 2
-            for li, line in enumerate(lines):
-                self._text(tx, ty + li * ls, line, anchor=ta,
-                           fill="#edf6ff", font=body_font, tags=("feed",))
+            for li, line in enumerate(info["lines"]):
+                self._text(info["tx"], info["ty"] + li * info["ls"], line,
+                           anchor=info["ta"], fill="#edf6ff",
+                           font=info["body_font"], tags=("feed",))
         if not shown:
             # 空态：`bh` 是旧代码的局部变量，这里只能从 SHAPES 反推第一格高度
             self._text(w // 2, SHAPES[0][1] + (SHAPES[0][3] - SHAPES[0][1]) // 2,

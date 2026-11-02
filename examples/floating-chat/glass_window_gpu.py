@@ -215,6 +215,7 @@ class GPULens:
         self._motion = 0.0
         self.src = None
         self.geo = None
+        self.geo_version = -1
         self.fbos = {}
         self.texs = {}
 
@@ -294,6 +295,7 @@ class GPULens:
         t = self._tex("union", (HW, HH), 1, "f1", union.tobytes())
         t.filter = (moderngl.LINEAR, moderngl.LINEAR)
         self.geo = (W, H, hw, hh, HW, HH)
+        self.geo_version = G.SHAPES_VERSION
         self.fbos.clear()
         self.texs = {k: v for k, v in self.texs.items()
                      if k in ("alpha", "edge", "coord", "warpcoord", "overlay", "union")}
@@ -309,7 +311,8 @@ class GPULens:
         self.src.write(data)
 
     def render(self, bgra, size, px, py, motion=0.0, moved=False):
-        if self.geo is None or self.geo[:2] != (G.W, G.H):
+        if (self.geo is None or self.geo[:2] != (G.W, G.H)
+                or getattr(self, "geo_version", -1) != G.SHAPES_VERSION):
             self._build_geo()
         W, H, hw, hh, HW, HH = self.geo
         gw, gh = size
