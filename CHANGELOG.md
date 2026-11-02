@@ -3,6 +3,57 @@
 All notable changes to **dsh-watch-together** are documented here.
 This package starts its own version line at `0.0.7` — it is not a continuation of `dsh-video-storyboard`.
 
+## [0.2.3] - 2026-11-02
+
+> 主题：**悬浮窗这一轮收口** —— 社区提的 #22 / #23 / #25 / #26 / #27 全部合进来，
+> 核心与 TTS / 悬浮窗之间的依赖收成 `runtime-ports`。
+> 播放位置、台词锚点、语音调度这些**一处没动**；变的只有窗口和它下面那层接口。
+
+### Added — 核心只认 runtime-ports（合 PR #22）
+
+- 新增 `src/runtime-ports.js`：**唯一**给出 TTS / 悬浮窗适配器的地方。
+  `chat-store` / `watch-loop` / `watch-actions` / `input-surface` 不再直接
+  `import` `voice.js` / `floating-window.js` / `window-protocol.js`。
+- `installPorts()` / `resetPorts()` / `getTtsPort()` / `getWindowPort()` 从 `public-api` 导出，
+  宿主或测试可以注入自己的实现；裸 `import` 仍拿历史默认（speech bus + 内置窗口），
+  CLI 和老测试照旧能跑。
+- `test/decoupling.test.mjs` 守这条线：核心模块一旦直接依赖实现就红。
+
+### Changed — 悬浮窗气泡与折叠重做（合 PR #22）
+
+- **气泡改成「时间头 + 正文折行」**：`_fit_lines()` 按框宽/框高折行，标点不落行首，
+  超长截断加省略号；四条气泡统一 88px 并吃满内容宽度，不再为了塞下文字把字号压到 9。
+- **折叠不再重建整窗几何**：只缩窗口 + 只画标题栏。原来 `rebuild_geometry(78)` 会在
+  `rounded_mask` 抛 `y1 must be >= y0`，**折叠直接异常**（main 上可复现）。
+- **每 1.8 秒重新置顶一次**：DSH 抢焦点后浮窗不再被压下去。
+- **麦克风改 Canvas 矢量图标**，不再往合成帧上贴第二层；GPU 路径同步去掉。
+- 补三处收尾：空态分支还在用已删掉的 `bh` → 清空 `chat.jsonl` 冷启动直接 `NameError`，
+  窗口起不来；标题改回**双击**改名（单击要留给按住拖动）；折叠态跳过抓屏，
+  否则遮罩尺寸不符会每帧刷一条 `images do not match`。
+
+### Fixed
+
+- **拖到屏幕外不再花屏**（合 PR #23）—— `_x` / `_y` 只在启动时读一次，拖动后已过期；
+  加上越界钳位后仍可能算出 0 或负的抓屏尺寸，`mss` 抛 `Region has zero or negative size`，
+  异常在 `_work()` 里被吞掉只打一行的结果是：每帧一条日志、背景永远画不出来。
+  现在拖动/缩放分支都钳位，并在抓屏前直接挡掉非正尺寸。
+- **`window` 接口的 hide/show 兼容只返回布尔的实现**（合 PR #25）—— 以前拿返回值当对象解构，
+  实现只回 `true` 时 `hide` 变成静默失败。
+- **snapshot 模式不再被 `_tick` 重新打开 WDA**（合 PR #26）—— worker 已暂停，
+  下一拍却把 WDA 开回来，窗口再次从截图/录屏里消失，`_snapshot_mode` 等于没做。
+- **折叠不再跳回原位、折叠背景有圆角、标题栏排版收紧**（合 PR #27）——
+  `_sync_pos()` 在 `_release` 与 `toggle_collapse` 前同步真实坐标（`_x/_y` 过期会让窗口弹回启动位置）；
+  折叠态按 78px 重新贴圆角遮罩，不再直接裁 `_last_frame` 留一条硬边；
+  `_save_geometry` 存**展开高度**，否则下次启动按 78px 恢复；折叠时 `_tick` 不再消费旧队列，
+  避免 560px 的帧贴回 78px 画布闪一下；状态点/名字/计数统一到 y=38 中线，字号 21→16。
+  实测对照 main：拖到 (300,220) 折叠后停在 (300,220)、配置写 `760x560+300+220`，
+  main 会跳回 (1720,480) 并写 `760x78`。
+
+### Docs
+
+- **README 挂上赞赏码**（微信，`docs/images/reward-qr.png`）。写法上明确一句：
+  打赏**不解锁任何东西**，也不影响这个项目以后的授权方式 —— 它仍然是 Apache-2.0。
+
 ## [0.2.2] - 2026-11-01
 
 只改元数据，不动行为。
