@@ -53,7 +53,6 @@
     "src",
     "lib",
     "bin",
-    "examples",
     "extension",
     "scripts",
     "docs",
@@ -62,7 +61,12 @@
     "README.md",
     "CHANGELOG.md",
     "LICENSE",
-    "NOTICE"
+    "NOTICE",
+    "examples/floating-chat/*.py",
+    "examples/floating-chat/*.cmd",
+    "examples/floating-chat/*.png",
+    "examples/floating-chat/*.txt",
+    "examples/voice-edge-tts/index.mjs"
   ],
   "engines": {
     "node": ">=20"

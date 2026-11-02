@@ -1,7 +1,12 @@
-# npm 打包**不读 .gitignore**（`files` 白名单命中就整目录收），所以 Python 字节码
-# 会跟着 examples/ 一起进包 —— 实测 +43kB，而且会带着已删源文件的 .pyc。
-# 注意：**不要写 `**/__pycache__/`**，npm 用的 ignore 实现不认那个前导 `**/`；
-# 模式默认就是"任意层级"，写目录名/后缀就够。
+# npm 打包**不读 .gitignore**，但更要注意 `files` 的语义：
+#
+# 只要 `files` 里写的是一个**目录**（`examples`），npm 会把该目录**递归整包收下**，
+# 这时的 `.npmignore` 规则**对已经被 files 命中的路径不生效** —— 实测这三条
+# （`__pycache__/`、`examples/**/__pycache__/`、`**/*.pyc`）写了也照样把
+# `examples/floating-chat/__pycache__/window.cpython-313.pyc`（97kB）打进去。
+#
+# 所以真正管用的是 `package.json` 的 `files`：把 `examples` 拆成精确的 glob
+# （`examples/floating-chat/*.py` 等）。下面的规则留作兜底 ——
+# 哪天有人把 `files` 改回目录写法时，至少这里的意图是写明的。
 __pycache__/
-__pycache__
 *.pyc
