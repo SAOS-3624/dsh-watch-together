@@ -3,7 +3,7 @@
 All notable changes to **dsh-watch-together** are documented here.
 This package starts its own version line at `0.0.7` — it is not a continuation of `dsh-video-storyboard`.
 
-## [Unreleased]
+## [0.2.6] - 2026-11-02
 
 > 陪看的声音还差最后一步：到点才开始合成。这一轮把"合成"从关键路径上挪开。
 
