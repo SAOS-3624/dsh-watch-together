@@ -918,8 +918,15 @@ class LiveGlass:
         # 2x 上做一次显式 R/B 错位；全分辨率逐像素做会把这个 60fps 管线拖慢。
         panel = apply_chroma(panel, 1.7)
         out = panel.convert("RGB").resize((W, H), Image.Resampling.BILINEAR)
-        # 麦克风由 Canvas 矢量绘制（_build_ui），这里不再叠位图，避免两层图标。
-        return finish(out)
+        # 麦克风图标回到仓库的做法：贴进玻璃帧，按背后亮度选浅/深两版。
+        # 位置用 MIC_POS（左上角），不是 Canvas 坐标，缩放时一起重建。
+        mic_box = out.crop((MIC_POS[0], MIC_POS[1],
+                            MIC_POS[0] + 28, MIC_POS[1] + 28)).convert("L")
+        mic_bg = float(np.median(np.asarray(mic_box))) / 255.0
+        out = out.convert("RGBA")
+        icon = MIC_LIGHT if mic_bg < 0.48 else MIC_DARK
+        out.paste(icon, MIC_POS, icon)
+        return finish(out.convert("RGB"))
 
     def _work(self):
         """抓取 + 模糊 + 合成全在后台，主线程只负责显示最新一帧。"""
@@ -1283,18 +1290,8 @@ class LiveGlass:
         self._text((x0 + x1) // 2, y0 + 27, "发送", tags=("send", "feed"),
                    fill="#ffffff", font=f(12, True))
 
-        # 麦克风：直接用 PR #15 的 mic-dsh.png 图标（白色/录音红），
-        # 不再用几条线画一个像"i"的代替品；Canvas 图不依赖合成帧，预览也可见。
-        if not getattr(self, "_collapsed", False):
-            active = self._mic_proc is not None and self._mic_proc.poll() is None
-            color = (255, 128, 128, 0) if active else (224, 238, 255, 0)
-            icon_img = Image.new("RGBA", MIC_MASK.size, color)
-            icon_img.putalpha(MIC_MASK)
-            self._mic_icon = ImageTk.PhotoImage(icon_img, master=self.canvas)
-            c.create_image(67, H - 58, image=self._mic_icon,
-                           tags=("mic", "micart"))
-            c.tag_bind("mic", "<Button-1>", lambda _e: self._toggle_mic())
-
+        # 麦克风图标和仓库一样贴进玻璃帧（_capture 里按 MIC_POS 合成），
+        # 不在 Canvas 上单独建图；点击仍由 _press 在 MIC_POS 附近识别。
         # 最上面正中的细条，长度随窗口宽度走
         self._bar_len = max(72, int(w * BAR_FRAC))
         self._bar = c.create_line(w // 2 - self._bar_len // 2, BAR_Y,
