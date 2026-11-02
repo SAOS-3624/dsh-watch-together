@@ -35,6 +35,7 @@ test('the default tts port still exposes the adapter loader', () => {
   resetPorts();
   const tts = getTtsPort();
   assert.equal(typeof tts.attachConfigured, 'function');
+  assert.equal(typeof tts.detachConfigured, 'function');
   assert.equal(typeof tts.configured, 'function');
   assert.equal(typeof tts.attached, 'function');
 });

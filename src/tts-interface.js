@@ -16,6 +16,7 @@ export const TTS_INTERFACE_VERSION = 1;
  *   speechSubscribers: Function,
  *   lastSpeech: Function,
  *   attachConfiguredVoice?: Function,
+ *   detachAdapters?: Function,
  *   attachedAdapters?: Function,
  *   configuredVoiceAdapter?: Function,
  * }} bus
@@ -23,7 +24,7 @@ export const TTS_INTERFACE_VERSION = 1;
 export function createTtsInterface(bus = {}) {
   const {
     onSpeech, emitSpeech, emitSpoken, speechSubscribers, lastSpeech,
-    attachConfiguredVoice, attachedAdapters, configuredVoiceAdapter,
+    attachConfiguredVoice, detachAdapters, attachedAdapters, configuredVoiceAdapter,
   } = bus;
   for (const [name, fn] of Object.entries({ onSpeech, emitSpeech, speechSubscribers, lastSpeech })) {
     if (typeof fn !== 'function') throw new TypeError(`tts: ${name}() is required`);
@@ -53,6 +54,7 @@ export function createTtsInterface(bus = {}) {
       return lastSpeech();
     },
     attachConfigured: typeof attachConfiguredVoice === 'function' ? attachConfiguredVoice : null,
+    detachConfigured: typeof detachAdapters === 'function' ? detachAdapters : null,
     attached: typeof attachedAdapters === 'function' ? attachedAdapters : () => [],
     configured: typeof configuredVoiceAdapter === 'function' ? configuredVoiceAdapter : () => null,
   });
