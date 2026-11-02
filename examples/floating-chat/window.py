@@ -1243,18 +1243,17 @@ class LiveGlass:
             pass
 
     def _message_shapes(self, shown):
-        """把四个固定大框换成按文字测量的聊天气泡。
+        """把四个固定大框换成按正文文字测量的聊天气泡。
 
-        每条消息先按最大可用宽度折行，再取实际最长行的宽度；短消息
-        不会再把整条横向玻璃撑满。气泡保持左右分工（助手靠左、用户
-        靠右），高度也只包住时间头 + 正文。
+        时间戳不再算进气泡：它贴在气泡上方，气泡只包正文。先按最大
+        可用宽度折行，再取实际最长行的宽度；短消息不会撑满整行。
         """
         w, h = W, H
         base = shapes_for(w, h)
         left, right = base[0][0], base[0][2]
         max_bubble = min(right - left, max(240, int((right - left) * 0.72)))
-        min_bubble = min(180, max_bubble)
-        pad = 26
+        min_bubble = min(110, max_bubble)
+        pad = 14
         body_font = f(11)
         stamp_font = f(9)
         fbody = tkfont.Font(root=self.root, font=body_font)
@@ -1271,17 +1270,16 @@ class LiveGlass:
             slot_h = y1 - y0
             is_user = str(msg.get("role") or "").lower() in ("user", "me", "human")
             stamp = str(msg.get("stamp") or "")
-            head_h = 26 if stamp else 6
-            avail_h = max(12, slot_h - head_h - 2)
+            stamp_h = fstamp.metrics("linespace") if stamp else 0
+            body_avail = max(12, slot_h - stamp_h)
             content_max = max(80, max_bubble - 2 * pad)
             lines = self._fit_lines(msg.get("text") or "", body_font,
-                                    content_max, avail_h)
-            inner = max([0, fstamp.measure(stamp)]
-                        + [fbody.measure(line) for line in lines])
+                                    content_max, body_avail)
+            inner = max([0] + [fbody.measure(line) for line in lines])
             bw = min(max_bubble, max(min_bubble, inner + 2 * pad))
-            bh = min(slot_h, max(44, head_h + len(lines) * ls + 2))
-            by0 = y0 + max(0, (slot_h - bh) // 2)
-            by1 = by0 + bh
+            bh = min(body_avail, max(ls + 4, len(lines) * ls + 4))
+            by0 = y0 + stamp_h
+            by1 = min(y1, by0 + bh)
             if is_user:
                 bx1 = right
                 bx0 = bx1 - bw
@@ -1290,13 +1288,13 @@ class LiveGlass:
                 bx0 = left
                 bx1 = bx0 + bw
                 tx, ta = bx0 + pad, "nw"
-            shape = (bx0, by0, bx1, by1, min(28, max(18, bh // 3)))
+            shape = (bx0, by0, bx1, by1, min(26, max(16, bh // 3)))
             shapes.append(shape)
             infos.append({
                 "shape": shape, "is_user": is_user, "stamp": stamp,
-                "tx": tx, "ta": ta, "head_h": head_h, "lines": lines,
-                "body_font": body_font, "ty": by0 + head_h + 2,
-                "ls": ls,
+                "tx": tx, "ta": ta, "lines": lines,
+                "body_font": body_font, "ty": by0 + 2,
+                "stamp_y": y0, "ls": ls,
             })
         shapes.extend(base[4:])
         return shapes, infos
@@ -1383,12 +1381,13 @@ class LiveGlass:
         if shapes != SHAPES:
             with self._geo_lock:
                 apply_shapes(shapes)
-        # 每条消息只按自己的文字占一块；时间头和正文都在气泡内。
+        # 每条消息只按正文占一块；时间戳贴在气泡上方，不进框。
         for info in infos:
             bx0, by0, bx1, by1, _r = info["shape"]
             if info["stamp"]:
-                self._text(info["tx"], by0 + 2, info["stamp"], anchor=info["ta"],
-                           fill="#a8b7c9", font=f(9), tags=("feed",))
+                self._text(info["tx"], info["stamp_y"], info["stamp"],
+                           anchor=info["ta"], fill="#a8b7c9",
+                           font=f(9), tags=("feed",))
             for li, line in enumerate(info["lines"]):
                 self._text(info["tx"], info["ty"] + li * info["ls"], line,
                            anchor=info["ta"], fill="#edf6ff",
