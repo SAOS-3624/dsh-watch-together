@@ -163,6 +163,11 @@ export function attach(api) {
     }).catch(() => {});
   };
   const prefetch = (e) => {
+    // **没有 `at` 的事件一律不预取**。适配器是陪看和看屏幕两个插件共用的，
+    // 那边（`see-now`）的事件是 `at: null`（它没有时间轴）。而 `Number(null)` 是 0、
+    // `Number.isFinite(0)` 为真 —— 放进来会被当成"最早的一句"占满队列，之后
+    // `Number(e.at) < farthestAt` 永远是 `0 < 0`（假），新句子再也进不来，预取静默失效。
+    if (e.at === null || e.at === undefined) return;
     if (!bin || !e.text || !Number.isFinite(Number(e.at))) return;
     const key = keyOf(e);
     if (prefetched.has(key)) return;
