@@ -605,3 +605,15 @@ node scripts/install-dev.mjs           # 把本包同步进 DSH profile（副本
 ## 许可
 
 Apache License 2.0 —— 见 [LICENSE](LICENSE)（全文）与 [NOTICE](NOTICE)（这个项目**不做什么**：不托管视频、不上传位置、不绕过 DRM、不内置 TTS 引擎）。
+
+## 赞赏
+
+免费、不锁功能、不需要授权 —— 就是 Apache-2.0，拿去用就行。
+
+如果它替你省了时间，欢迎扫码：
+
+<p align="center">
+  <img src="./docs/images/reward-qr.png" alt="赞赏码（微信 / 支付宝）" width="240">
+</p>
+
+打赏不解锁任何东西，也不影响这个项目以后的授权方式。
