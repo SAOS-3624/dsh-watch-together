@@ -430,6 +430,8 @@ class LiveGlass:
 
         self._img = None
         self._last_frame = None
+        self._prev_out = None
+        self._motion = 0.0
         self._collapsed_frame = None
         self._bg = None
         self._hwnd = None
@@ -873,6 +875,9 @@ class LiveGlass:
             moved = bool(float(d.mean()) > 0.01 or float(d.max()) > 0.5)
         if moved:
             self._last_motion = now
+            self._motion = min(1.0, getattr(self, "_motion", 0.0) * 0.60 + 0.40)
+        else:
+            self._motion = getattr(self, "_motion", 0.0) * 0.80
         if (not FORCE and not moved and box == self._sig_bbox
                 and now - getattr(self, "_last_motion", 0.0) > 0.30):
             self._sig = sig
@@ -918,6 +923,13 @@ class LiveGlass:
         # 2x 上做一次显式 R/B 错位；全分辨率逐像素做会把这个 60fps 管线拖慢。
         panel = apply_chroma(panel, 1.7)
         out = panel.convert("RGB").resize((W, H), Image.Resampling.BILINEAR)
+        # CPU 也补上 GPU 的上一帧混合；0.55 是 GPU 的系数，motion 相同。
+        # 先混再贴麦克风，避免把上一帧的麦克风位置糊到这一帧。
+        if self._prev_out is not None and self._prev_out.size == out.size:
+            blend = 0.55 * max(0.0, min(1.0, getattr(self, "_motion", 0.0)))
+            if blend > 0.01:
+                out = Image.blend(self._prev_out, out, blend)
+        self._prev_out = out.copy()
         # 麦克风图标回到仓库的做法：贴进玻璃帧，按背后亮度选浅/深两版。
         # 位置用 MIC_POS（左上角），不是 Canvas 坐标，缩放时一起重建。
         mic_box = out.crop((MIC_POS[0], MIC_POS[1],
@@ -1342,6 +1354,7 @@ class LiveGlass:
         self.canvas.delete("all")
         self._img = None
         self._bg = None
+        self._prev_out = None
         self._text_items = []
         self._text_colors = {}
         self._text_shadows = {}
@@ -1372,6 +1385,8 @@ class LiveGlass:
         self.canvas.delete("all")
         self._img = None
         self._bg = None
+        self._prev_out = None
+        self._motion = 0.0
         self._collapsed_frame = None
         self._text_items = []
         self._text_colors = {}

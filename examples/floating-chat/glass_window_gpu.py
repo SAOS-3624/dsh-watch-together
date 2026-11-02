@@ -108,7 +108,9 @@ void main() {
     float e = texelFetch(edge, p, 0).r;
     vec2 ec = texelFetch(coord, p, 0).rg + offset;
     ivec2 ep = clamp(ivec2(floor(ec + 0.5)), ivec2(0), ivec2(src_size) - 1);
-    vec3 edgep = texelFetch(raw, ep, 0).rgb;
+    // 和 CPU 一样从 blur(1.45) 的 warped 取边缘，不再直接取 raw；
+    // 否则 GPU 小框边缘会重新出现未模糊的硬切。
+    vec3 edgep = texelFetch(warped, ep, 0).rgb;
     vec3 patch = mix(strong, edgep, e);
     frag = vec4(mix(base, patch, a), 1.0);
 }
