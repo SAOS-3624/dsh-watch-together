@@ -308,7 +308,7 @@ class GPULens:
             self.src.repeat_y = False
         self.src.write(data)
 
-    def render(self, bgra, size, px, py, motion=0.0):
+    def render(self, bgra, size, px, py, motion=0.0, moved=False):
         if self.geo is None or self.geo[:2] != (G.W, G.H):
             self._build_geo()
         W, H, hw, hh, HW, HH = self.geo
@@ -409,8 +409,11 @@ class GPULens:
         prev.color_attachments[0].use(1)
         p = self.progs["post"]
         p["texel"] = (1.0 / W, 1.0 / H)
-        p["blend"] = float(0.55 * max(0.0, min(1.0, motion)) if getattr(self, "_prev_valid", False) else 0.0)
-        p["chroma"] = 3.6 * (W / 900.0)
+        # 和 CPU 一致：只在“本帧检测到移动”时混上一帧，停下立刻干净；
+        # 移动帧跳过色散，先把拖动/滚动响应保住。
+        p["blend"] = float(0.35 * max(0.0, min(1.0, motion))
+                           if moved and getattr(self, "_prev_valid", False) else 0.0)
+        p["chroma"] = 0.0 if moved else 3.6 * (W / 900.0)
         self._set(p, curr=0, prev=1)
         p.vao.render(moderngl.TRIANGLES)
         self.ctx.copy_framebuffer(prev, out)
@@ -452,18 +455,20 @@ def capture_gpu(self, sct):
             moved = bool(float(d.mean()) > 0.01 or float(d.max()) > 0.5)
         if moved:
             self._last_motion = now
-            _gpu._motion = min(1.0, _gpu._motion * 0.60 + 0.40)
+            _gpu._motion = min(1.0, _gpu._motion * 0.50 + 0.50)
         else:
-            _gpu._motion *= 0.80
+            _gpu._motion *= 0.55
         if (not G.FORCE and not moved and box == self._sig_bbox
                 and now - getattr(self, "_last_motion", 0.0) > 0.30):
             self._sig = sig
             _gpu._motion = 0.0
+            _gpu._prev_valid = False
             return None
         self._sig = sig
         self._sig_bbox = box
 
-        panel = _gpu.render(shot.bgra, shot.size, px, py, motion=_gpu._motion)
+        panel = _gpu.render(shot.bgra, shot.size, px, py,
+                            motion=_gpu._motion, moved=moved)
         out = panel.copy()
         mic_box = out.crop((G.MIC_POS[0], G.MIC_POS[1],
                             G.MIC_POS[0] + 28, G.MIC_POS[1] + 28)).convert("L")
