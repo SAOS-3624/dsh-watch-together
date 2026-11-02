@@ -3,6 +3,23 @@
 All notable changes to **dsh-watch-together** are documented here.
 This package starts its own version line at `0.0.7` — it is not a continuation of `dsh-video-storyboard`.
 
+## [0.2.5] - 2026-11-02
+
+> 0.2.4 里 PR #28 留下的两个 GPU 尾巴，作者当天补了 PR #29 收掉，外加气泡留白微调。
+
+### Fixed — GPU 内框边缘（合 PR #29，作者 @ggfgfgf-on）
+
+- **底部输入/发送框发黑**：内框边缘原来直接拿 `small` 的 render target 当 sampler，
+  贴边小框会采到边界外。现在单独拷一份 blur(1.45) 到 `edgeblur` FBO 再采样
+  （注释里写明「直接当 sampler 会触发驱动崩溃」，所以宁可多一次 copy）。
+- **内框边缘的折射/扭曲丢了**：CPU 里 `edge_w=0` 是边缘（取折射样本）、`=1` 是中心
+  （取强模糊），Shader 里方向是反的。改成 `mix(edgep, strong, e)` 后恢复。
+
+### Changed — 气泡留白
+
+- 横向 14→18，纵向 `+4`→`+16`，正文按 `(bh - lines*ls)/2` 垂直居中。
+  字不再贴着气泡边，短消息也不会挤成一条。
+
 ## [0.2.4] - 2026-11-02
 
 > 0.2.3 发出去 20 分钟就发了这个 —— 因为它带着一个肉眼可见的毛病：
