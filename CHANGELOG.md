@@ -34,6 +34,24 @@ OVERLAY_2X / WARP_X / WARP_Y / BOX_MAPS / HW / HH / BOX_UNION_2X / MIC_POS`
   贴图」；
 - `tkfont.Font(...)` 每帧新建几百个 Tcl 对象 → `Fonts` 按尺寸缓存。
 
+### Fixed — 录屏模式下桌面图标被沿上下方向拉成竖条
+
+`capturable: true` 时 mss 会抓到窗口自己，所以要把那块刷平。`fill_own_rect()`
+当时的做法是「取窗口上下各一行像素做纵向插值」：窗口上方紧挨着的那一行里如果
+正好有桌面图标或文字，**每个像素会被整列往下抹开** —— 用户看到的就是「东西被
+沿上下方向拉成长条」。0.2.7 的 CHANGELOG 写的是「周边均值」，代码里却是纵向
+插值，那次改动把方案退回去了。
+
+现在改成四条边各自分段抹平高频 + Coons patch 融合：边界贴合真实背景，内部只有
+大尺度色彩过渡，没有方向性条纹。填充区的列内/行内标准差从 **28.0 / 35.9**（有
+方向性）变成 **12.7 / 7.1**（各向同性）。
+
+算法本身要降到 1/8 粗网格再放大 —— 全分辨率算一次 **80 ms**，粗网格 **4.2 ms**，
+而这块最后还要被高斯糊一遍，8px 的色阶看不出来。
+
+同一个问题 GPU 侧本来没有（它压根没调 `fill_own_rect`），0.2.11 给 GPU 补上这
+一步之后两边一致。
+
 ### Fixed — GPU 版的 OpenGL context 建在错误的线程上（每帧 `cannot create texture`）
 
 `GpuRenderer` 原来在主线程构造。`moderngl.create_standalone_context()` 绑在创建
