@@ -38,18 +38,48 @@ export async function startChatServer({
 
   // 扩展从**网页的源**发请求，属于跨域；而且是从公网页面访问本地地址，
   // Chrome 的 Private Network Access 还要求预检里看到 allow-private-network。
-  // 我们只暴露"上报位置"和"读位置"，没有敏感信息，所以直接放开。
-  const cors = {
-    'access-control-allow-origin': '*',
-    'access-control-allow-methods': 'GET, POST, OPTIONS',
-    'access-control-allow-headers': 'content-type',
-    'access-control-allow-private-network': 'true',
-    'cache-control': 'no-store',
-  };
+  //
+  // **不能直接放开成 `*`**：否则用户随便打开一个网页，它就能向本机 9377 写假台词、
+  // 伪造播放位置。只放行扩展来源和同端口的本机页面；没有 Origin 的请求（CLI、Python
+  // 悬浮窗、curl）保持可用 —— 浏览器发起的跨域请求一定会带 Origin。
+  const EXTENSION_SCHEMES = new Set(['chrome-extension:', 'moz-extension:', 'safari-web-extension:']);
+  function isAllowedOrigin(origin, port) {
+    if (!origin) return true;
+    try {
+      const u = new URL(origin);
+      if (EXTENSION_SCHEMES.has(u.protocol)) return true;
+      if (u.protocol !== 'http:') return false;
+      const host = u.hostname;
+      if (host !== '127.0.0.1' && host !== 'localhost' && host !== '[::1]') return false;
+      const p = Number(u.port || 80);
+      return Number.isInteger(p) && p === Number(port);
+    } catch {
+      return false;
+    }
+  }
+  function corsFor(origin) {
+    return {
+      'access-control-allow-origin': origin || '*',
+      'access-control-allow-methods': 'GET, POST, OPTIONS',
+      'access-control-allow-headers': 'content-type',
+      'access-control-allow-private-network': 'true',
+      'cache-control': 'no-store',
+    };
+  }
 
   const server = createServer(async (req, res) => {
     let u;
     try { u = new URL(req.url, 'http://127.0.0.1'); } catch { res.writeHead(400); res.end(); return; }
+
+    const port = server.address()?.port ?? listenPort;
+    const origin = typeof req.headers.origin === 'string' && req.headers.origin
+      ? req.headers.origin : null;
+    if (!isAllowedOrigin(origin, port)) {
+      res.writeHead(403, { 'content-type': 'text/plain; charset=utf-8' });
+      res.end('origin not allowed');
+      return;
+    }
+    const cors = corsFor(origin);
 
     // 扩展直接 fetch（不经过 service worker）时会有这一趟预检
     if (req.method === 'OPTIONS') {
@@ -107,8 +137,16 @@ export async function startChatServer({
     if (u.pathname === '/api/messages') {
       const since = Math.max(0, Number(u.searchParams.get('since')) || 0);
       const all = readChat(env);
-      res.writeHead(200, { 'content-type': 'application/json; charset=utf-8', 'cache-control': 'no-store' });
-      res.end(JSON.stringify({ total: all.length, msgs: all.slice(since) }));
+      // 页面按"已读条数"轮询。chat.jsonl 被清空/重写后文件会比 since 短，
+      // 这时 slice(since) 永远是空的 —— 页面从此再也看不到新消息。让页面知道
+      // 该重置游标，而不是让它永远卡在旧条数上。
+      const reset = since > all.length;
+      res.writeHead(200, { ...cors, 'content-type': 'application/json; charset=utf-8', 'cache-control': 'no-store' });
+      res.end(JSON.stringify({
+        total: all.length,
+        msgs: reset ? all : all.slice(since),
+        ...(reset ? { reset: true } : {}),
+      }));
       return;
     }
     if (u.pathname === '/api/say' && req.method === 'POST') {
@@ -128,7 +166,7 @@ export async function startChatServer({
         } catch { /* 坏请求就算了 */ }
         // ok:false 让页面能把话回填进输入框 —— 之前一律 ok:true，
         // 服务端没写进去用户也不知道，字就丢了
-        res.writeHead(200, { 'content-type': 'application/json' });
+        res.writeHead(200, { ...cors, 'content-type': 'application/json' });
         res.end(JSON.stringify({ ok }));
       });
       return;

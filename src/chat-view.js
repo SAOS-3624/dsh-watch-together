@@ -56,6 +56,9 @@ input:focus{border-color:#4a7ab5}
   var n=0;
   function poll(){
     fetch(BASE+"/api/messages?since="+n+"&t="+Date.now()).then(function(r){return r.json();}).then(function(j){
+      // chat.jsonl 被清空/重写过：游标比文件长，服务端会回 reset。清屏重放，
+      // 否则页面会一直用旧条数 slice，新消息永远不出现。
+      if(j.reset){log.innerHTML="";n=0;}
       for(var k=0;k<j.msgs.length;k++)add(j.msgs[k]);
       n=j.total;setTimeout(poll,600);
     }).catch(function(){setTimeout(poll,1500);});
