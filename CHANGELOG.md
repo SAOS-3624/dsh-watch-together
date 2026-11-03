@@ -3,6 +3,59 @@
 All notable changes to **dsh-watch-together** are documented here.
 This package starts its own version line at `0.0.7` — it is not a continuation of `dsh-video-storyboard`.
 
+## [0.2.7] - 2026-11-03
+
+> 五个社区 PR 一起收（都是 @ggfgfgf-on 提的），外加录屏模式的两个真 bug。
+
+### Fixed — 录屏/截图根本拍不到窗口
+
+窗口一直开着 `WDA_EXCLUDEFROMCAPTURE`（防截图/直播泄露，这是对的），
+但社区贡献者要调玻璃管线就必须能录。原来只有环境变量 `DSH_GLASS_WDA=0` 一个入口，
+**而插件拉起窗口时不会传环境变量** —— 于是用户在 `~/.dsh/watch-window.json` 里写了
+`"capturable": true` 也没人读，录出来永远是空桌面。
+
+现在 `capturable()` 真的读配置：环境变量（临时）→ 配置项（持久）→ 默认排除。
+
+### Fixed — 录屏模式下"字一直在闪"、拖尾越滚越浓
+
+`capturable: true` 关掉 WDA 之后，**mss 抓背景时把窗口自己也抓进去了**。玻璃拿它当背景
+等于"透过自己看自己"，形成反馈回路：背景里带着上一帧的字 → 亮度判据一直抖 → 字色来回翻；
+背景一直在变 → `moved` 一直为真 → 一直混合上一帧 → 越滚越浓的假拖尾（静止画面也在"动"）。
+
+现在录屏模式下把窗口矩形用**周边均值**刷平（试过按上下边缘插值，相邻列颜色不同会变成
+一根根竖条，更难看）。窗口外 PAD 一圈仍是真背景，边缘透镜照常。
+实测同一位置连续 6 帧：帧差从"每次都在变"降到 **0.00**。
+
+### Added — 窗口心跳
+
+`<cache>/window-heartbeat`，`_tick` 里每秒最多写一次。宿主那侧靠它区分"进程还在"和
+"窗口真的在画"——只看 pid 的话，pid 被复用或界面卡死时永远认为窗还开着，于是再也不重开。
+
+### Fixed — GPU 抓屏越界（合 PR #40，作者 @ggfgfgf-on，fixes #39）
+
+GPU 路径的 `capture_gpu()` 有自己一份 `sct.grab()`，没做 `gr-gl/gb-gt` 守卫；
+窗口被拖出屏幕时每帧抛 `Region has zero or negative size`，被 `_work()` 吞掉后背景永久停在旧帧。
+补上和 CPU 路径一样的检查。
+
+### Fixed — 台词 `at: null` 被存成第 0 秒（合 PR #38，作者 @ggfgfgf-on）
+
+`Number(null) === 0`，显式写 `at: null` 的台词全被当成"第 0 秒"，回读时挤在片头。
+
+### Fixed — 本机 API 的 CORS 与聊天游标（合 PR #35，作者 @ggfgfgf-on，fixes #33 #34）
+
+- 聊天/位置 API 原来对**任意网页**放开 CORS，可被跨站写入；改成只认白名单。
+- `chat.jsonl` 被清短之后，聊天页的游标永久卡在越界位置；改成越界自动归零。
+- 新增 `test/chat-server-guards.test.mjs`。
+
+### Fixed — 卸载时没 detach voice adapter（合 PR #31，作者 @ggfgfgf-on，fixes #30）
+
+适配器订阅了 speech bus，插件卸载却没退订 —— `speechSubscribers()` 一直 > 0，
+重载后循环误以为"有人会念"，模型再也不会被叫醒。
+
+### Added — 设置页自动保存（合 PR #32，作者 @ggfgfgf-on）
+
+改一项存一项，不用再点保存；顺带补了声音环境变量提示与连接状态。
+
 ## [0.2.6] - 2026-11-02
 
 > 陪看的声音还差最后一步：到点才开始合成。这一轮把"合成"从关键路径上挪开。
