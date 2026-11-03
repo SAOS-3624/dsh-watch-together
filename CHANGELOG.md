@@ -3,6 +3,38 @@
 All notable changes to **dsh-watch-together** are documented here.
 This package starts its own version line at `0.0.7` — it is not a continuation of `dsh-video-storyboard`.
 
+## [0.2.8] - 2026-11-03
+
+> 三个社区 PR（都是 @ggfgfgf-on）+ 一批失效入口的清理。
+
+### Fixed — 多 P / 选集页面读错 `<video>`（合 PR #45，对应 #44）
+
+旧实现按 `duration` 挑播放器，遇到 B 站多语言版本这种页面，会挑中一个隐藏的 13 分钟长视频，
+上报的 `pos` 直接跳到 13:42，插件判定「换片了」，陪看中断。
+
+新逻辑：先排除不可见 / 零尺寸 / `opacity: 0` 的候选，再按在视口里占据的面积排序；
+播放中只加一档权重（不能压过更大的主播放器）；认画中画和全屏；整页都不可见才退回全部。
+
+### Fixed — 气泡形状变化后不重合成（合 PR #42）
+
+静态跳帧只看 `_sig_bbox`，只清 `_sig` 不够。气泡/内框形状变了之后，如果桌面本身静止，
+worker 会一直 `return None`，新遮罩和新色散要等用户动一下鼠标才出现。
+`FORCE` 模式下看不出来，只在真机静置时暴露。
+
+### Fixed — `_tick` 每 4ms 重读一次配置（合 PR #47，fixes #46）
+
+`not capturable()` 每拍读一次 `watch-window.json` —— `__init__` 早就把结果缓存在
+`self._cappable` 了，这里纯属白花。0.2.7 引入的疏漏，谢谢抓出来。
+
+### Fixed — 删掉失效的 `run-glass*.cmd`，并去掉里面的本机绝对路径（#43）
+
+玻璃渲染重写之后 `DSH_WATCH_GLASS_TTL/FPS/CHROMA/BLUR/SAT` 和 `DSH_GLASS_ACRYLIC`
+已经没有任何代码读取，但那几个脚本还在设置它们：双击 `run-glass-acrylic.cmd` 以为开了
+亚克力，实际还是普通软件模糊。静默失效比报错更糟。
+
+现在只留一个 `run-glass.cmd`，开头列清哪些变量废弃、哪些真正有效；解释器也不再写死
+本机路径（先找 PATH 上的 `pythonw`，再退 `py -3`）—— 这个仓库是公开的。
+
 ## [0.2.7] - 2026-11-03
 
 > 五个社区 PR 一起收（都是 @ggfgfgf-on 提的），外加录屏模式的两个真 bug。
