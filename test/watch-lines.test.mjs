@@ -10,7 +10,7 @@ import { mkdtemp, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
-import { dueLine, loadLine, linesOverview, saveLines, watchPath } from '../src/watch.js';
+import { dueLine, loadLine, linesOverview, readSlot, saveLines, watchPath } from '../src/watch.js';
 
 /**
  * 台词怎么"到点"是这一轮最贵的教训：
@@ -82,6 +82,20 @@ test('dueLine: 没写 at 的老台词，按段首算，并在段内均匀铺开'
     assert.equal(await dueLine('e.mp4', 135, { size: 60, lagSec: 0 }), '二');
     assert.equal(await dueLine('e.mp4', 151, { size: 60, lagSec: 0 }), '三');
     assert.equal(await dueLine('e.mp4', 165, { size: 60, lagSec: 0 }), '四');
+  } finally {
+    await rm(dir, { recursive: true, force: true });
+  }
+});
+
+test('at: null 与没写 at 同义，不能存成第 0 秒', async () => {
+  const dir = await mkdtemp(join(tmpdir(), 'due-null-'));
+  process.env.DSH_VIDEO_CACHE_DIR = dir;
+  try {
+    await saveLines('n.mp4', [{ from: 180, at: null, text: '段首这句' }]);
+    assert.deepEqual(await readSlot('n.mp4', 180), [{ text: '段首这句', at: null }],
+      'null 不能被 Number(null) 写成 0');
+    assert.equal(await dueLine('n.mp4', 181, { size: 60, lagSec: 0 }), '段首这句',
+      '没有 at 的句子要按段首铺，不能在第 181 秒被当成迟到 181 秒丢掉');
   } finally {
     await rm(dir, { recursive: true, force: true });
   }
