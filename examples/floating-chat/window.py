@@ -949,6 +949,13 @@ class LiveGlass:
         ctypes.windll.user32.GetWindowRect(hwnd, ctypes.byref(rc))
         return (rc.left, rc.top, rc.right, rc.bottom)
 
+    def _invalidate_glass(self):
+        """让下一帧必须重新合成（静态跳帧只看 _sig_bbox，单清 _sig 不够）。"""
+        with self._geo_lock:
+            self._sig = None
+            self._sig_bbox = None
+            self._prev_out = None
+
     def _capture(self, sct):
         l, t, r, b = self._bbox()
         if r <= l or b <= t:
@@ -1453,6 +1460,10 @@ class LiveGlass:
         if shapes != SHAPES:
             with self._geo_lock:
                 apply_shapes(shapes)
+            # 气泡/内框形状变了，合成的遮罩也变了；必须让上一帧的静态跳帧
+            # 失效，否则桌面静止时 worker 会一直 return None，新遮罩/色散
+            # 要等用户动一下鼠标或背景动一下才出现（调试 FORCE 模式下看不出）。
+            self._invalidate_glass()
         # 每条消息只按正文占一块；时间戳贴在气泡上方，不进框。
         for info in infos:
             bx0, by0, bx1, by1, _r = info["shape"]
