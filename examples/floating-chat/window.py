@@ -994,7 +994,13 @@ class LiveGlass:
         box = (gl, gt, gr, gb)
         now = time.perf_counter()
         moved = False
-        if self._sig is not None and box == self._sig_bbox and sig.shape == self._sig.shape:
+        # 窗口被拖动 / 跨屏移动时抓取区域每帧都在变，旧区域的像素不能直接做差；
+        # 但这仍然是运动。不标 moved 的话，拖动全程都走“无运动”分支：
+        # _motion_blur 一路衰减、混合永远不执行，只有 FORCE 强制多帧时才明显。
+        box_changed = self._sig_bbox is not None and box != self._sig_bbox
+        if box_changed:
+            moved = True
+        elif self._sig is not None and sig.shape == self._sig.shape:
             d = np.abs(sig - self._sig)
             moved = bool(float(d.mean()) > 0.01 or float(d.max()) > 0.5)
         if moved:
