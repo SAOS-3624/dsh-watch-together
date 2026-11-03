@@ -3,6 +3,40 @@
 All notable changes to **dsh-watch-together** are documented here.
 This package starts its own version line at `0.0.7` — it is not a continuation of `dsh-video-storyboard`.
 
+## [0.2.10] - 2026-11-03
+
+> GPU 路径其实一直是坏的，顺便量了一下它到底省不省。
+
+### Fixed — GPU 路径的 GLSL 用了保留字，着色器从来没编译成功过
+
+`glass_window_gpu.py` 的 FRAG 里有一行 `vec3 patch = mix(edgep, strong, e);`。
+`patch` 是 GLSL 1.5 起保留的 tessellation 关键字，编译直接失败：
+
+```
+GLSL Compiler failed
+ERROR: 0:24: 'patch' : syntax error
+```
+
+`_work()` 里那句 `except` 把异常吞掉、每帧打一行 `GPU capture failed, falling back to CPU`，
+然后继续走 CPU —— **所以 `glass_window_gpu.py` 从来没真正跑起来过**，用户能看到的最大线索
+就是一句每帧刷屏的日志。更糟的是它每帧重建一次 program/FBO 又失败，实测内存涨到 **2.3 GB**。
+
+改个名（`patch` → `tile`）。修完日志干净、内存 200 MB、画面和 CPU 版一致。
+
+### 实测 — GPU 不比 CPU 省（这台机器上）
+
+i9-12900HX / RTX 4060 Laptop / 窗口 700×665 / 150% DPI / 静态桌面：
+
+| 路径 | CPU（单核） | 内存 |
+|---|---|---|
+| CPU（正常模式） | **49.6%** | 100 MB |
+| GPU（`glass_window_gpu.py`） | 115.6% | 200 MB |
+| CPU（`GLASS_FORCE=1`，调试） | 146% | 111 MB |
+
+两边都有静态跳帧，GPU 多出来的是每帧把 BGRA 上传成纹理（约 2.6 MB/帧）+ moderngl 的
+Python 层调用开销；而 CPU 版在这么小的窗口上本来就够快。GPU 路径更适合「窗口很大 + CPU 较弱」，
+不是无脑更优 —— **默认继续用 CPU**。
+
 ## [0.2.9] - 2026-11-03
 
 > 一条根因修得很漂亮的 bug：拖动窗口时的动态模糊。
