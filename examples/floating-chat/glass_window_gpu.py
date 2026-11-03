@@ -448,6 +448,12 @@ def capture_gpu(self, sct):
         gt = max(0, t - G.PAD)
         gr = min(self._sw, r + G.PAD)
         gb = min(self._sh, b + G.PAD)
+        # 和 window.py 的 CPU 路径保持一致：多显示器 / DPI 变化 / 被别的程序
+        # 挪出屏幕时，钳位后的宽高可能 <= 0；mss 会抛
+        # "Region has zero or negative size"，而 _work() 会每帧吞掉它 ——
+        # 表现就是日志每帧刷一条、背景永久停在旧帧。没有可抓的区域就别抓。
+        if gr - gl <= 0 or gb - gt <= 0:
+            return None
         shot = sct.grab({"left": gl, "top": gt, "width": gr - gl, "height": gb - gt})
         factor = 1.0 if _gpu.native else 4.0
         px = int(round((l - gl) / factor))
