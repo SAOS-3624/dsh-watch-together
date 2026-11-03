@@ -186,22 +186,32 @@ class TextLayer:
         self.items: list[int] = []
         self._colors: dict = {}
         self._pending: dict = {}
+        self._fixed: set = set()     # 有底板的文字：颜色不跟背景走
         self._at = 0.0
 
     def refresh(self) -> None:
-        self.items = [i for i in self.canvas.find_all() if self.canvas.type(i) == "text"]
+        # 描边是另建的一层 item，翻色不能把它也算进去（会跟着一起变色）
+        shadow = set(self.canvas.find_withtag("tshadow"))
+        self.items = [i for i in self.canvas.find_all()
+                      if i not in shadow and self.canvas.type(i) == "text"]
 
     def reset(self) -> None:
         self.items = []
         self._colors.clear()
         self._pending.clear()
+        self._fixed.clear()
         self._at = 0.0
 
     # ---- 绘制 ----
 
     def draw(self, x, y, text, anchor="center", fill=COLOR_LIGHT,
-             size=11, bold=False, max_width=None, tags=()) -> None:
-        """按字符拆开建 item；anchor 支持 w/e/center 与 n/s 变体。"""
+             size=11, bold=False, max_width=None, tags=(), shadow=False,
+             adapt=True) -> None:
+        """按字符拆开建 item；anchor 支持 w/e/center 与 n/s 变体。
+
+        `shadow=True` 时每个字先落一层偏移 1px 的深色副本，给亮背景一条边界；
+        `adapt=False` 表示这块字有自己的底板，颜色固定、不参与 `adapt()` 采样。
+        """
         font = self.fonts.get(size, bold)
         measure = font.measure
         linespace = font.metrics("linespace")
@@ -221,6 +231,8 @@ class TextLayer:
         center = anchor in ("center", "n", "s")
         height = font.metrics("ascent") + font.metrics("descent")
         spec = self.fonts.spec(size, bold)
+        base_tags = tags if isinstance(tags, tuple) else ((tags,) if tags else ())
+        shadow_tags = base_tags + ("tshadow",) if shadow else ()
         for row, line in enumerate(lines):
             width = measure(line)
             lx = x - width if right else (x - width / 2 if center else x)
@@ -229,8 +241,14 @@ class TextLayer:
             # 累积宽度，别对每个字重新 measure 前缀（那是 O(n²) 次 Tcl 调用）
             cx = lx
             for ch in line:
-                self.canvas.create_text(cx, ly, text=ch, anchor="w",
-                                        fill=fill, font=spec, tags=tags)
+                if shadow:
+                    self.canvas.create_text(cx + 1, ly + 1, text=ch, anchor="w",
+                                            fill=self.COLOR_DARK, font=spec,
+                                            tags=shadow_tags)
+                item = self.canvas.create_text(cx, ly, text=ch, anchor="w",
+                                               fill=fill, font=spec, tags=tags)
+                if not adapt:
+                    self._fixed.add(item)
                 cx += measure(ch)
 
     # ---- 翻色 ----
@@ -255,6 +273,8 @@ class TextLayer:
         gray = np.asarray(frame.convert("L"))
         h, w = gray.shape[:2]
         for item in self.items:
+            if item in self._fixed:      # 有底板的字：颜色固定，别跟着画面翻
+                continue
             box = self.canvas.bbox(item)
             if not box:
                 continue

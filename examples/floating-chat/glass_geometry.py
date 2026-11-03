@@ -13,6 +13,7 @@
 """
 from __future__ import annotations
 
+import os
 from dataclasses import dataclass, field, replace
 from typing import Iterable
 
@@ -33,6 +34,13 @@ MESSAGE_SLOTS = 4
 SLAB_OUT, SLAB_TOP_H, SLAB_BOT_H = 12, 54, 70
 SLAB_GAP = 10
 SLAB_RADIUS = 22
+
+# 气泡底板：文字底下是实时视频，对比度每秒都在变；给每块气泡铺一层深色，
+# 文字的对比度就只由这层决定，不再跟着画面走。alpha 0.50（128/255）——
+# 白字压在纯白画面上也能到 4.2:1，达到正文可读的下限；再低（0.40）只有 2.9:1。
+# `DSH_GLASS_PLATE=0` 关掉（只用于新旧对比截图，正常别用）。
+PLATE = os.environ.get("DSH_GLASS_PLATE", "1") != "0"
+BUBBLE_PLATE = (7, 17, 29, 128) if PLATE else (0, 0, 0, 0)
 
 # 抓屏时向外扩一圈，边缘透镜才有「框外」的像素可采
 PAD = 40
@@ -101,15 +109,24 @@ def _rounded_mask(w: int, h: int, boxes: Iterable[Box]) -> Image.Image:
     return m.resize((w, h), Image.Resampling.LANCZOS)
 
 
-def _overlay(w: int, h: int, shapes: tuple[Box, ...]) -> Image.Image:
-    """只画内部框的轻微染色；窗口本体完全透明，靠背景模糊出玻璃感。"""
+def _overlay(w: int, h: int, shapes: tuple[Box, ...], plate: bool = True) -> Image.Image:
+    """内部框的染色。气泡铺底板（文字靠它稳住对比度），其余仍是极淡的冷色。
+
+    `plate=False` 用于没有消息的空态：那四个槽位只是占位，铺深色反而像四个空洞。
+    """
     layer = Image.new("RGBA", (w, h), (0, 0, 0, 0))
     d = ImageDraw.Draw(layer)
     tints = ((235, 242, 255, 5), (110, 175, 255, 14), (235, 242, 255, 4),
              (235, 242, 255, 4), (235, 242, 255, 5), (110, 175, 255, 12))
-    for (x0, y0, x1, y1, r), fill in zip(shapes, tints):
+    for i, ((x0, y0, x1, y1, r), fill) in enumerate(zip(shapes, tints)):
         if x1 > x0 and y1 > y0:
-            d.rounded_rectangle((x0, y0, x1, y1), radius=r, fill=fill)
+            if plate and PLATE and i < MESSAGE_SLOTS:
+                # 向外 1px：内框边缘有折射带，底板正好压在它上面，否则那圈
+                # 折射出来的背景色会变成一条彩色描边（亮背景上特别明显）
+                d.rounded_rectangle((x0 - 1, y0 - 1, x1 + 1, y1 + 1), radius=r + 1,
+                                    fill=BUBBLE_PLATE)
+            else:
+                d.rounded_rectangle((x0, y0, x1, y1), radius=r, fill=fill)
     return layer
 
 
@@ -199,6 +216,7 @@ class Geometry:
     shapes: tuple[Box, ...] = ()
     overlay: Image.Image | None = None
     overlay_half: Image.Image | None = None
+    plate: bool = False          # 当前 overlay 有没有气泡底板（空态为 False）
     box_maps: tuple[tuple, ...] = ()
     box_union_half: Image.Image | None = None
     _mic_pos: tuple[int, int] = field(default=(0, 0), repr=False)
@@ -217,18 +235,23 @@ class Geometry:
                    slabs=slabs_for(w, h), mask_hard=mask_hard,
                    warp_x=warp_x, warp_y=warp_y,
                    _mic_pos=(MIC_MARGIN[0], h - MIC_MARGIN[1]))
-        return base.with_shapes(shapes, version=version)
+        return base.with_shapes(shapes, version=version, plate=False)
 
-    def with_shapes(self, shapes: Iterable[Box], version: int | None = None) -> "Geometry":
+    def with_shapes(self, shapes: Iterable[Box], version: int | None = None,
+                    plate: bool = True) -> "Geometry":
         shapes = tuple(shapes)
-        overlay = _overlay(self.width, self.height, shapes)
+        overlay = _overlay(self.width, self.height, shapes, plate=plate)
         hw, hh = max(1, self.width // 2), max(1, self.height // 2)
+        # GPU 只按 (尺寸, version) 决定要不要重传纹理：形状没变、只多了底板时
+        # 也得换 version，否则会一直显示空态那张 overlay。
+        bump = version is None or plate != self.plate
         return replace(
             self,
-            version=(self.version + 1) if version is None else version,
+            version=(self.version + 1) if bump else self.version,
             shapes=shapes,
             overlay=overlay,
             overlay_half=overlay.resize((hw, hh), Image.Resampling.BILINEAR),
+            plate=plate,
             box_maps=_box_maps(shapes, self.width, self.height),
             box_union_half=_box_union(self.width, self.height, hw, hh, shapes),
         )

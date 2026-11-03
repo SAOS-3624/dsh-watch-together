@@ -3,6 +3,43 @@
 All notable changes to **dsh-watch-together** are documented here.
 This package starts its own version line at `0.0.7` — it is not a continuation of `dsh-video-storyboard`.
 
+## [0.2.12] - 2026-11-04
+
+> Issue #44 第 2 条：文字直接压在实时视频上，对比度每秒都在变，连看 5–10 分钟眼睛发酸。
+
+### Added — 气泡底板
+
+聊天气泡内部铺一层 `#07111d`、alpha 0.50 的圆角底板（`glass_geometry.BUBBLE_PLATE`），
+文字的对比度不再跟着画面走。底板在玻璃合成层做（`_overlay` 的 tint），CPU / GPU 两条
+路径共用同一份实现；气泡宽度变了跟着一起重算；空态不铺（四个占位框铺深色会像四个空洞）。
+
+实测：760×560、同一段消息、同一位置，只切 `DSH_GLASS_PLATE` 拍两版，取气泡内
+「底板中位灰度 / 文字笔画 p97」算 WCAG 对比度。
+
+| 背景 | 改动前 | 改动后 |
+|---|---|---|
+| 纯白（最坏情况） | 1.26–1.53:1 | 3.83–4.25:1 |
+| 深蓝黑 | 16.3–17.7:1 | 17.0–17.2:1 |
+
+alpha 0.40 时纯白背景只有 2.88–3.31:1（试过），0.50 才到 4.2。
+
+`TextLayer.draw(shadow=True)` 给每个字先落一层 `+1px` 的深色副本。Tk 的 text item 没有
+stroke / outline，只能多建一层 item；只在气泡正文开，`refresh()` 用 `tshadow` 标签把
+它排除在翻色之外（目前暂存）。
+
+### Changed — 气泡内文字颜色固定，不再逐字翻色
+
+有底板之后底色恒定，`TextLayer.adapt()` 对气泡正文已经没有意义，反而会在过渡帧翻错
+（白字被翻成深色，压在深色底板上更看不见）。给 `draw()` 加了 `adapt=False`：这些 item
+不参与采样。标题栏、输入框、空态提示仍走逐字翻色 —— 它们确实直接压在玻璃上。
+
+- 跟 `dsh-video-storyboard` 0.6.6 一起发。依赖范围 `^0.6.0` 不用改。
+  上游这次是排布与计费对齐（同素材 token -9.3%），**本包自己的代码没有改动**。
+
+### 调试开关
+
+`DSH_GLASS_PLATE=0` 关掉底板和描边，回到 0.2.11 的行为 —— 只用来拍新旧对比图。
+
 ## [0.2.11] - 2026-11-03
 
 > 悬浮窗从头拆了一遍（单文件 1931 行 → 五层），顺带修掉 GPU 路径三个真 bug。

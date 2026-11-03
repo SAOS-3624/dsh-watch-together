@@ -75,6 +75,9 @@ SNAPSHOT = os.environ.get("DSH_GLASS_SNAPSHOT") == "1"
 # GPU：native 表示全分辨率采样（边缘透镜没有 1/4 放大的像素感）
 NATIVE = os.environ.get("DSH_GLASS_NATIVE") == "1"
 USE_GPU = NATIVE or os.environ.get("DSH_GLASS_GPU") == "1"
+# 气泡底板（和 glass_geometry.BUBBLE_PLATE 同一个开关）：关掉 = 回到逐字翻色，
+# 只用来拍新旧对比图，正常别动。
+PLATE = os.environ.get("DSH_GLASS_PLATE", "1") != "0"
 
 HERE = Path(__file__).resolve().parent
 
@@ -796,15 +799,17 @@ class LiveGlass:
             shapes, infos = shapes_for(w, self._geo.height), []
         if shapes != self._geo.shapes:
             with self._geo_lock:
-                self._set_geometry(self._geo.with_shapes(shapes))
+                self._set_geometry(self._geo.with_shapes(shapes, plate=bool(shown)))
         # 每条消息只按正文占一块；时间戳贴在气泡上方，不进框
         for info in infos:
             if info["stamp"]:
                 self.text.draw(info["tx"], info["stamp_y"], info["stamp"],
                                anchor=info["ta"], fill="#a8b7c9", size=9, tags=("feed",))
             for li, line in enumerate(info["lines"]):
+                # 气泡里有底板，文字颜色固定、再补一层 1px 深色偏移当描边
                 self.text.draw(info["tx"], info["ty"] + li * info["ls"], line,
-                               anchor=info["ta"], fill="#edf6ff", size=11, tags=("feed",))
+                               anchor=info["ta"], fill="#edf6ff", size=11, tags=("feed",),
+                               shadow=PLATE, adapt=not PLATE)
         if not shown:
             slot = self._geo.shapes[0]
             self.text.draw(w // 2, slot[1] + (slot[3] - slot[1]) // 2,
