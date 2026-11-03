@@ -102,6 +102,28 @@ def read_config():
         return {}
 
 
+def capturable():
+    """录屏 / 截图能不能拍到窗口。
+
+    默认**不能** —— 走 `WDA_EXCLUDEFROMCAPTURE`，窗口不会出现在截图、直播、共享屏幕里。
+    要给别人看效果、或者自己录一段发出来，就打开：
+
+    ```json
+    // ~/.dsh/watch-window.json
+    { "capturable": true }
+    ```
+
+    环境变量 `DSH_GLASS_WDA=0` 也能打开，但它只对**这一次启动**有效（插件拉起窗口时不会传它），
+    所以配置项才是那个"开关"。改完要重启窗口才生效。
+    """
+    if os.environ.get("DSH_GLASS_WDA") == "0":
+        return True
+    try:
+        return read_config().get("capturable") is True
+    except Exception:
+        return False
+
+
 def write_config(patch):
     cfg = read_config()
     cfg.update(patch or {})
@@ -515,7 +537,7 @@ class LiveGlass:
         self._text_items = [i for i in self.canvas.find_all()
                             if self.canvas.type(i) == "text"
                             and i not in shadow_ids]
-        self._set_exclude(os.environ.get("DSH_GLASS_WDA") != "0")
+        self._set_exclude(not capturable())
         self._worker.start()
         self.root.lift()
         self.root.after(80, self.root.lift)
@@ -1681,7 +1703,7 @@ class LiveGlass:
             # 底部圆角/暗边会闪一下，看起来像渲染错位。
             self.root.after(INTERVAL_MS, self._tick)
             return
-        if not self._excluded and os.environ.get("DSH_GLASS_WDA") != "0":
+        if not self._excluded and not capturable():
             self._set_exclude(True)
         self._pause.clear()
 
