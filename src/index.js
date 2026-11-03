@@ -102,9 +102,17 @@ async function registerAll(ctx) {
   // 声音适配器（可选）：只通过 tts 接口挂，不 import voice.js。
   // 这里也保留启动时挂载，这样第一次只调 `say`（还没开窗）也有声音。
   try {
-    const v = await getTtsPort().attachConfigured?.({ log: (m) => ctx?.logger?.info?.(m) });
+    const tts = getTtsPort();
+    const v = await tts.attachConfigured?.({ log: (m) => ctx?.logger?.info?.(m) });
     if (v && !v.ok && v.reason !== 'not-configured') {
       ctx?.logger?.warn?.(`[dsh-watch-together] voice adapter not loaded: ${v.reason}`);
+    }
+    // 适配器订阅了 speech bus；插件卸载必须退订，否则 speechSubscribers()
+    // 会一直 > 0，重载后循环误以为"有人会念"，模型就再也不会被叫醒。
+    if (v?.ok && typeof tts.detachConfigured === 'function') {
+      disposers.push(() => {
+        try { void tts.detachConfigured(); } catch { /* 卸载失败不能影响其他 disposer */ }
+      });
     }
   } catch (e) {
     ctx?.logger?.warn?.(`[dsh-watch-together] voice adapter crashed: ${e?.message ?? e}`);
