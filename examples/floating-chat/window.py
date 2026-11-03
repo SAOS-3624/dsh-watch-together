@@ -1742,7 +1742,7 @@ class LiveGlass:
             # 底部圆角/暗边会闪一下，看起来像渲染错位。
             self.root.after(INTERVAL_MS, self._tick)
             return
-        if not self._excluded and not capturable():
+        if not self._excluded and not self._cappable:
             self._set_exclude(True)
         self._pause.clear()
 
