@@ -66,7 +66,10 @@
     "examples/floating-chat/*.cmd",
     "examples/floating-chat/*.png",
     "examples/floating-chat/*.txt",
-    "examples/voice-edge-tts/index.mjs"
+    "examples/voice-edge-tts/index.mjs",
+    "examples/voice-edge-tts/stream/*.mjs",
+    "examples/voice-edge-tts/stream/*.py",
+    "examples/voice-edge-tts/stream/*.mp3"
   ],
   "engines": {
     "node": ">=20"

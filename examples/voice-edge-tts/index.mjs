@@ -43,7 +43,10 @@
 import { execFile } from 'node:child_process';
 import { existsSync, readFileSync, statSync, unlinkSync } from 'node:fs';
 import { homedir, tmpdir } from 'node:os';
-import { join } from 'node:path';
+import { dirname, join } from 'node:path';
+import { fileURLToPath } from 'node:url';
+
+import { pythonFor, startStream } from './stream/client.mjs';
 
 const run = (bin, args, timeoutMs = 60_000) => new Promise((resolve) => {
   execFile(bin, args, { timeout: timeoutMs, windowsHide: true }, (err) => resolve(!err));
@@ -80,6 +83,41 @@ function edgeBin(cfg) {
     }
   }
   return null;
+}
+
+/**
+ * 起常驻合成器（`stream/daemon.py`）。**任何一步失败都返回 null**。
+ *
+ * 声音是可选能力：这里出问题只能退回"每句一个 CLI 进程"的老路，
+ * 不能让陪看因为守护进程起不来就整个没声音。所以没有一行 throw。
+ *
+ * 收益（实测，Win11）：每句 2.4~3.0s → **170~200ms**；预取命中时 **0ms**。
+ * 老路每一句都要重付 python 启动 + import + 建连 + ffplay 启动，那是四笔固定开销。
+ *
+ * `DSH_TTS_STREAM=0` 可以用来强制走老路（排查"到底是不是它的问题"）。
+ */
+function openStream(bin) {
+  if (String(process.env.DSH_TTS_STREAM ?? '1') === '0') return null;
+  const python = pythonFor(bin);
+  if (!python) return null;
+  let script;
+  try {
+    script = join(dirname(fileURLToPath(import.meta.url)), 'stream', 'daemon.py');
+  } catch {
+    return null;
+  }
+  if (!existsSync(script)) return null;
+  try {
+    return startStream({
+      python,
+      script,
+      log: (m) => console.error(m),
+      onError: (reason) => console.error(`[voice] 常驻合成器停了（${reason}），下一句起退回逐句合成`),
+    });
+  } catch (e) {
+    console.error(`[voice] 常驻合成器起不来：${e?.message ?? e}`);
+    return null;
+  }
 }
 
 /** 只合成，不播放。预取和"到点没赶上预取"两条路共用。 */
@@ -148,6 +186,8 @@ export function attach(api) {
     + '想用晓萱等音色请在该文件加 "voice": "zh-CN-XiaoxuanNeural"');
   const rate = Number(cfg.rate) || 0;
   const bin = edgeBin(cfg);
+  // 常驻合成器：能起就用它（首声 170~200ms），起不来就是 null，全部逻辑退回老路。
+  const stream = openStream(bin);
   let chain = Promise.resolve();            // 播放串行：两句绝不重叠着念
 
   // **预合成**：核心在台词写好、还没到点时发 `scheduled`。这里趁这段时间把 mp3 合成好，
@@ -200,6 +240,12 @@ export function attach(api) {
 
   const off = api.onSpeech((e) => {
     if (e.state === 'scheduled') {
+      // 常驻通道不需要"排队 6 句"那套：它按 text 在内存里缓存，满了淘汰最老的。
+      // 老路的 `MAX_PREFETCH` 是文件缓存 + 串行 CLI 逼出来的，这里不用照抄。
+      if (stream?.alive && e.at !== null && e.at !== undefined && e.text) {
+        stream.prefetch(e.text);
+        return;
+      }
       prefetch(e);
       return;
     }
@@ -236,6 +282,22 @@ export function attach(api) {
       if (ready) prefetched.delete(key);
       const t0 = Date.now();
       let audio = null;
+      // **常驻通道优先**：音频边收边写进常驻 ffplay 的管道，首块就是出声
+      // （实测 170~200ms；预取命中时 0ms）。失败也只在**没出过声**时才往下兜底，
+      // 出过声再补一遍会变成一句话念两次。
+      if (stream?.alive) {
+        try {
+          const r = await stream.say(e.text, { onFirst: onStart });
+          if (!r?.skipped) {
+            console.error(`[voice ${mmss(e.at)}] stream first=${r?.first ?? '-'}ms `
+              + `done=${r?.done ?? '-'}ms (wait ${waited}ms): ${e.text}`);
+            return;
+          }
+        } catch (err) {
+          if (reported) return;
+          console.error(`[voice] 常驻通道失败（${err?.message ?? err}），本句退回逐句合成`);
+        }
+      }
       if (bin) {
         if (ready) {
           audio = await ready.task.catch(() => ({ ok: false, reason: 'prefetch-failed' }));
@@ -256,11 +318,12 @@ export function attach(api) {
     }).catch((err) => console.error(`[voice] ${err?.message ?? err}`));
   });
 
-  console.error(`[voice] 已接上（engine=${bin ? 'edge-tts' : 'sapi'}，voice=${voice}）`);
+  console.error(`[voice] 已接上（engine=${stream?.alive ? 'edge-tts/常驻' : bin ? 'edge-tts' : 'sapi'}，voice=${voice}）`);
   return () => {
     off();
     for (const entry of prefetched.values()) discard(entry);
     prefetched.clear();
+    try { stream?.stop(); } catch { /* 已经退出 */ }
   };
 }
 

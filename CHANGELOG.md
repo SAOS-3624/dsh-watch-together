@@ -5,8 +5,6 @@ This package starts its own version line at `0.0.7` — it is not a continuation
 
 ## [0.2.12] - 2026-11-04
 
-> Issue #44 第 2 条：文字直接压在实时视频上，对比度每秒都在变，连看 5–10 分钟眼睛发酸。
-
 ### Added — 气泡底板
 
 聊天气泡内部铺一层 `#07111d`、alpha 0.50 的圆角底板（`glass_geometry.BUBBLE_PLATE`），
@@ -27,7 +25,54 @@ alpha 0.40 时纯白背景只有 2.88–3.31:1（试过），0.50 才到 4.2。
 stroke / outline，只能多建一层 item；只在气泡正文开，`refresh()` 用 `tshadow` 标签把
 它排除在翻色之外（目前暂存）。
 
-### Changed — 气泡内文字颜色固定，不再逐字翻色
+### Changed — 声音延迟 2.4 秒 → 0.2 秒（常驻合成器）
+
+> 台词几分钟前就写好了，第一声却要等两秒多 —— 听起来不像它在说，像在等我念。
+
+老路是**每句起两个进程**：一个 `edge-tts.exe` 合成到临时 mp3，一个 `ffplay` 播放。
+实测（Win11 / i9-12900HX，短句与长句各三次取均值）端到端 **2.4~3.0 秒**，
+而且这四笔开销**每句都要重付一次**：
+
+| 段 | 耗时 |
+|---|---|
+| pip 的 exe shim 拉起 python | ~600ms |
+| python 解释器冷启动 | ~600ms |
+| `import edge_tts` | ~700ms |
+| WebSocket 建连（DNS+TCP+TLS+token） | 620~760ms |
+| 首块合成 | 200~300ms |
+| 剩余音频块 | 30~130ms |
+| ffplay 启动 + demuxer 探测 | 380~410ms |
+
+`examples/voice-edge-tts/stream/daemon.py` 把三件事搬进一个常驻进程：
+
+1. **常驻 python**：`import edge_tts` 只做一次。
+2. **长连接复用**：一条 WebSocket 上连发多个 SSML 请求（Azure 协议本来就支持）。
+   实测连续 20 句首块 **min 182 / avg 200 / max 235ms**，没有退化。
+   服务端在 `turn.end` 之后约 **30 秒**关连接（30s 还活着、35s 已死；发 ping 保不住），
+   所以空闲超 25s 主动断、下次用时重建（620~760ms）。
+3. **常驻 ffplay**：一个进程从 stdin 连续吃 mp3 帧。实测三段音频拼着写进去，
+   时间码一路涨到 7.3s、进程没退 —— 每句起进程要付 380ms 首声。
+
+同一条 `due` 事件、同一台机器上的对照：
+
+| 场景 | 老路 | 现在 |
+|---|---|---|
+| 预取命中（`scheduled` 已合成） | 1009~1674ms | **1ms** |
+| 没赶上预取（`see-now` 的 `at:null`） | 2485ms | **230ms** |
+| 连续第三句 | 排队 4.9s 后被丢弃 | 1ms |
+
+预取队列也不再"满 6 句就丢弃"：常驻通道按 text 在内存里缓存（上限 80 句），
+老路那个 `MAX_PREFETCH = 6` 是文件缓存 + 串行 CLI 逼出来的，这里不用照抄。
+
+**兜底**：python 找不到、`daemon.py` 不存在、进程起不来 —— 任何一步失败都退回老路
+（每句一个 CLI 进程），没有一行 throw。`DSH_TTS_STREAM=0` 可强制走老路排查。
+调试时 `DSH_TTS_FFPLAY_LOG=info` 会把 ffplay 的时间码放出来。
+
+`test/tts-stream.test.mjs` 覆盖协议（first/done 顺序、error 后通道继续可用、进程死掉后不挂在超时上），
+不依赖网络和 ffplay。
+
+
+> Issue #44 第 2 条：文字直接压在实时视频上，对比度每秒都在变，连看 5–10 分钟眼睛发酸。
 
 有底板之后底色恒定，`TextLayer.adapt()` 对气泡正文已经没有意义，反而会在过渡帧翻错
 （白字被翻成深色，压在深色底板上更看不见）。给 `draw()` 加了 `adapt=False`：这些 item
