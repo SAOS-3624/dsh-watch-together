@@ -5,6 +5,16 @@ This package starts its own version line at `0.0.7` — it is not a continuation
 
 ## [0.2.12] - 2026-11-04
 
+### Fixed
+
+- **在悬浮窗打字不再往宿主的「排队消息」里塞一条**（`wakeOnChat` 默认 `true` → `false`）。
+  每打一句话，输入框上方就多一条排队消息 —— 而窗口里明明已经有气泡显示过了，
+  队列里再来一条既是噪音、又占住输入框。根因是 `wakeSession` 走宿主的 `agent.followup()`，
+  而 DSH 的 QueueDock 不过滤来源，绕不开，只能不投。
+  **关掉不会丢话**：钟那一拍整个跳过、聊天通道不消费，消息留在里面，模型下次调
+  `watch_together` 时 poll 得到；真正的阻塞等待（`wait` / `nextLine`）走另一条路，
+  照旧能随时打断。
+
 ### Added — 气泡底板
 
 聊天气泡内部铺一层 `#07111d`、alpha 0.50 的圆角底板（`glass_geometry.BUBBLE_PLATE`），
