@@ -3,6 +3,42 @@
 All notable changes to **dsh-watch-together** are documented here.
 This package starts its own version line at `0.0.7` — it is not a continuation of `dsh-video-storyboard`.
 
+## [0.2.9] - 2026-11-03
+
+> 一条根因修得很漂亮的 bug：拖动窗口时的动态模糊。
+
+### Fixed — 拖动窗口没有动态模糊（合 PR #49，作者 @ggfgfgf-on，对应 #48）
+
+现象是「`GLASS_FORCE=1` 下能看到那种黏黏的拖尾，正常启动看不到」，我一开始以为是
+`_motion_blur` 的衰减公式问题 —— 猜错了。
+
+真正的原因在这行：
+
+```python
+if self._sig is not None and box == self._sig_bbox and sig.shape == self._sig.shape:
+```
+
+拖动窗口时抓取区域 `box = (gl, gt, gr, gb)` 每帧都在变，`box == self._sig_bbox` 永远不成立，
+`moved` 一直是 `False`。于是：
+
+- `_motion_blur` 一路乘 0.55 衰减到 0，混合那步一次都不执行；
+- 反而每帧都在做 `apply_chroma(panel, 1.7)`（那是「没在动」时的色散补偿）。
+
+`FORCE` 之所以看起来有效，只是因为它跳过静态跳帧、帧数更多，更容易凑出连续可混合的帧 ——
+它并没有修掉这个判断。
+
+现在 `_sig_bbox` 已存在且 `box` 变了，就把这一帧标成 `moved = True`：抓取区域变了，
+旧区域的像素本来也不能直接做差，但这确实是运动。静止窗口仍走原来的像素差判断，
+不会变成常驻拖影。和 #42 不冲突 —— `_invalidate_glass()` 会把 `_sig_bbox` 清成 `None`，
+形状变化后的第一帧不会误判成 `box_changed`。
+
+### 说明 — 静止画面下没有动态模糊是设计
+
+同一轮确认：`if moved` 这层是故意留的，运动模糊不是常驻滤镜。静止时混上一帧只会把文字和边缘
+永久糊一层，还会让 `_motion_blur` 维持在高位，停下后回不到清晰；CPU 每帧做一次 `Image.blend` 也不便宜。
+
+想要「低速拖尾」可以做配置项（类似 `motionBlurFloor`，默认 0），但不改默认行为。
+
 ## [0.2.8] - 2026-11-03
 
 > 三个社区 PR（都是 @ggfgfgf-on）+ 一批失效入口的清理。
