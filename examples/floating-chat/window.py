@@ -95,6 +95,38 @@ HEARTBEAT = cache_dir() / "window-heartbeat"
 HEARTBEAT_EVERY = 1.0
 
 
+def _fill_own_rect(im, box):
+    """把「窗口自己」在抓屏帧里占的那块填掉。
+
+    **为什么必须填**：`capturable: true` 关掉了 `WDA_EXCLUDEFROMCAPTURE`，于是 mss
+    抓背景时**把窗口自己也抓进去了**。玻璃再拿这张图当背景，就等于"透过自己看自己"：
+
+    - 背景里带着上一帧的字 → 亮度判据一直抖 → **字色来回翻**（看起来就是"字在闪"）；
+    - 背景一直在变 → `moved` 一直为真 → 一直混合上一帧 → **越滚越浓的拖尾**
+      （那种"黏黏的"感觉其实是自激，不是真的动态模糊）；
+    - 静止画面上也会出现"画面在自己动"。
+
+    填法是拿这块上、下各一行像素做纵向线性插值 —— 得到一片渐变，像磨砂玻璃透出的
+    环境色，不会有细节更不会有自己的内容。窗口外的 `PAD` 一圈仍然是真背景，
+    边缘透镜照常能取到框外的料。
+    """
+    x0, y0, x1, y1 = (int(v) for v in box)
+    arr = np.asarray(im)
+    h, w = arr.shape[:2]
+    x0, x1 = max(1, min(w - 1, x0)), max(1, min(w - 1, x1))
+    y0, y1 = max(1, min(h - 2, y0)), max(1, min(h - 2, y1))
+    n = y1 - y0
+    if x1 <= x0 or n <= 0:
+        return im
+    out = arr.copy()
+    top = arr[y0 - 1, x0:x1].astype(np.float32)
+    bot = arr[y1, x0:x1].astype(np.float32)
+    t = ((np.arange(n, dtype=np.float32) + 1.0) / (n + 1.0))[:, None, None]
+    grad = top[None, :, :] * (1.0 - t) + bot[None, :, :] * t
+    out[y0:y1, x0:x1] = np.clip(grad, 0, 255).astype(np.uint8)
+    return Image.fromarray(out)
+
+
 def read_config():
     try:
         return json.loads(CONFIG.read_text(encoding="utf-8")) or {}
@@ -506,6 +538,9 @@ class LiveGlass:
         self._bg = None
         self._hwnd = None
         self._excluded = False
+        # 录屏模式（capturable）下 mss 会抓到窗口自己，必须每帧挖掉，见 _fill_own_rect。
+        # 缓存起来：读配置是磁盘 IO，不能每帧做。
+        self._cappable = capturable()
         self._drag = None
         self._resize = None
         self._preview_at = 0.0
@@ -931,6 +966,10 @@ class LiveGlass:
         shot = sct.grab({"left": gl, "top": gt,
                          "width": gr - gl, "height": gb - gt})
         im = Image.frombytes("RGB", shot.size, shot.rgb)
+        # **录屏模式必须挖掉自己**：WDA 关了之后 mss 会把窗口也抓进来，
+        # 玻璃拿它当背景就变成自我反馈（字闪 / 假拖尾 / 静止画面在动）。
+        if self._cappable:
+            im = _fill_own_rect(im, (l - gl, t - gt, r - gl, b - gt))
         sw4, sh4 = max(2, (gr - gl) // 4), max(2, (gb - gt) // 4)
         # 60fps 路径：只在 1/4 分辨率做一次模糊和折射，再放大。
         # cv2 的 resize 比 PIL 快一个数量级；没有 OpenCV 时无感回退。
