@@ -166,9 +166,17 @@ export async function saveLines(input, lines, { env = process.env } = {}) {
     // `at` 除了秒数，还可以直接传**字幕原文片段**，这里去转写里查它的 from。
     // 为什么必须有这条路：模型凭印象写秒数会整段错 —— 实测把"1/4 螺口"挂在 189 秒，
     // 而字幕里它在 247 秒，提前了 58 秒，用户当场发现"台词对不上视频"。
-    let at = Number(l?.at);
-    if (typeof l?.at === 'string' && l.at.trim()) {
-      const q = l.at.trim();
+    //
+    // **null 和"没写 at"同义**：显式传 `at: null` 是合法输入（校验允许），
+    // 但 `Number(null) === 0` 会把它存成"第 0 秒"——第 180 段的那句从此永远
+    // 是"迟到 180 秒"被 dueLine 丢掉，用户看到的是"写了台词却没念"。
+    // 这里只接受数字或非空字符串；其余（null / undefined / 空串）都当没写。
+    const rawAt = l?.at;
+    let at = NaN;
+    if (typeof rawAt === 'number') {
+      at = rawAt;
+    } else if (typeof rawAt === 'string' && rawAt.trim()) {
+      const q = rawAt.trim();
       // **先查落盘的 `subs-<key>.json`，再查 locate 的进程内记忆**。
       // 后者只有 4 条、重启就空，而台词恰恰经常在另一个进程/另一轮里写 ——
       // 查不到就会被当成"没写 at"，落到段首：用户看到的就是"台词比画面早一大截"。
