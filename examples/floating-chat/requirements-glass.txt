@@ -14,3 +14,8 @@
 Pillow>=10          # 截图、模糊、色散、合成
 mss>=9              # 抓屏（比 ImageGrab 快约一倍：38ms vs 71ms）
 numpy>=1.24         # 模糊 / SDF 边缘折射 / 透镜采样都在数组上做
+
+# 可选：只有切 GPU 合成（DSH_GLASS_GPU=1 / DSH_GLASS_NATIVE=1）才需要。
+# 不装就走 CPU，窗口照常开；装了但显卡不支持 OpenGL 3.3 会自动回落 CPU。
+#   pip install moderngl
+# moderngl>=5.8       # OpenGL 3.3+ / Windows WGL、Linux EGL、macOS CGL

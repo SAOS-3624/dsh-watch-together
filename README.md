@@ -434,9 +434,17 @@ pythonw examples/floating-chat/window.py     # 无控制台
 
 它长这样：三块分开的液态玻璃（标题 / 主体 / 输入栏），气泡圆角、半透明，
 你说的话靠右；标题栏可拖动、双击标题改名、▾ 折叠、✕ 关闭，底部有麦克风图标和发送。
-窗口底稿就是 PR #15 的 `glass_window.py`（现在叫 `window.py`），没有另写一套
-近似样式；GPU 伴生 `glass_window_gpu.py` 只把每帧合成搬到 moderngl，UI 和交互
-仍是同一份，所以 CPU/GPU 形式一致。
+玻璃分成四层，各自不知道对方存在：
+
+| 文件 | 职责 |
+|---|---|
+| `glass_geometry.py` | 一套尺寸的全部贴图（遮罩 / 折射坐标 / 内框透镜）。不可变值对象，气泡变宽就换一个新对象，尺寸相关的图直接复用 |
+| `glass_capture.py` | 抓屏、静态跳帧与运动强度判定、麦克风贴图、圆角收尾 —— **CPU/GPU 共用一份** |
+| `glass_cpu.py` | CPU 合成：缩小 → 高斯 → 边缘折射 → 内框透镜 → 染色 → 色散 |
+| `glass_gpu.py` | 同一件事在 moderngl 上做（`DSH_GLASS_GPU=1` 或 `DSH_GLASS_NATIVE=1`） |
+| `window.py` | Tk 窗口、聊天流、拖动/缩放/折叠/改名 |
+
+CPU/GPU 输出是逐像素对齐的（同一背景均差 0.07，99% 像素差 ≤1），所以换后端看不出区别。
 
 几个有意为之的细节：
 
@@ -449,9 +457,11 @@ pythonw examples/floating-chat/window.py     # 无控制台
 | 增量读 `chat.jsonl`（开场只回放最后 60 条） | 以前每 200ms 全量解析，两小时一场几千条会越来越慢 |
 | 圆角外的像素用 `-transparentcolor` 抠掉 | tkinter 没有圆角窗口；取不到这个能力就老实退成直角 |
 | 窗口只读 `window-events.jsonl`，写 `window-outbox.jsonl` | 和插件解耦；旧版插件没有协议文件时仍增量读 `chat.jsonl` |
-| CPU/GPU 共用同一份 UI | GPU 只换每帧合成，不另写窗口 |
+| CPU/GPU 共用同一份 UI 和同一套抓屏/运动判定 | GPU 只换每帧合成，不另写窗口；历史上两边各写一份，同一个 bug 修两遍（#39、#48） |
 
-> 窗口默认要 Pillow + numpy + mss；GPU 额外要 moderngl/OpenGL 3.3。接口和
+> 窗口默认要 Pillow + numpy + mss；GPU 额外要 `pip install moderngl` 和 OpenGL 3.3。
+> CPU 在这台机器上更省（约 43% 单核 / 93 MB，GPU 32% / 195 MB —— 显存纹理和每帧
+> 读回要花内存），默认走 CPU；窗口很大或 CPU 较弱时再切 GPU。接口和
 > 线协议见 [`docs/INTERFACES.zh.md`](docs/INTERFACES.zh.md)。
 
 > **一定要用带 tkinter 的 Python**：Windows 商店版自带；python.org 官方安装包勾上 tcl/tk 也有。

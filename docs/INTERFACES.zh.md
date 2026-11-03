@@ -68,18 +68,35 @@ Node 侧：`src/window-protocol.js`（`appendWindowEvent` /
 ## 3. 悬浮窗样式
 
 `examples/floating-chat/window.py` 是交互外壳（位置/拖动/缩放、麦克风、
-改名、折叠、入场动画、气泡、meta、发送）。玻璃由独立模块渲染：
+改名、折叠、入场动画、气泡、meta、发送）。玻璃由独立模块渲染，各层不知道
+对方存在：
 
-底稿直接是 PR #15 的 `glass_window.py`（现名 `window.py`），没有另写一套
-近似样式。两条运行路径形式完全一致：
+| 文件 | 职责 |
+|---|---|
+| `glass_geometry.py` | 一套尺寸的全部贴图：玻璃遮罩、边缘折射坐标、内框透镜、染色层。`Geometry` 是不可变值对象；气泡变宽用 `with_shapes()` 换一个新对象，尺寸相关的图直接复用 |
+| `glass_capture.py` | 抓屏（外扩 PAD、零尺寸守卫、录屏模式挖掉自己）、`MotionTracker`（静态跳帧 + 运动强度，**拖动窗口也算动**）、麦克风图标、圆角收尾 |
+| `glass_cpu.py` | CPU 合成：1/4 缩小 → 高斯 → 边缘折射 → 内框透镜 → 2x 合成 → 染色 → 色散 → 残影 |
+| `glass_gpu.py` | 同一件事在 moderngl 上做；`native=True` 时走全分辨率采样 |
+| `window.py` | 上面的编排 + Tk 窗口、聊天流、交互 |
+| `window_widgets.py` | `Fonts`（字体缓存）、`ChatFeed`（chat.jsonl 增量视图）、`TextLayer`（逐字翻色） |
 
-| 入口 | 实现 | 说明 |
-|---|---|---|
-| `window.py` | PR #15 的 CPU 实时捕获/模糊/透镜 | 默认；三块玻璃、气泡、位置、麦克风都来自这份 |
-| `glass_window_gpu.py` | PR #15 的 GPU 伴生 | `import glass_window as G`，只把每帧捕获→模糊→折射→合成搬到 GPU；UI/交互仍是同一份 |
+两条运行路径输出逐像素一致（同一背景均差 0.07、99% 像素差 ≤1）。切后端：
 
-GPU 需要 `moderngl` 和 OpenGL 3.3；没有就继续用 CPU 入口。`DSH_GLASS_WDA=0`
-可关闭抓屏排除，方便录屏/截图；`DSH_GLASS_PREVIEW=1` 是纯预览模式。
+| 开关 | 效果 |
+|---|---|
+| 默认 | CPU |
+| `DSH_GLASS_GPU=1` | GPU（1/4 采样） |
+| `DSH_GLASS_NATIVE=1` | GPU + 全分辨率采样（边缘透镜没有 1/4 放大的像素感） |
+| `python glass_window_gpu.py` | 等价于 `DSH_GLASS_GPU=1` 起窗 |
+
+GPU 需要 `moderngl` 和 OpenGL 3.3；起不来时会打印一行原因并回落到 CPU，
+窗口照开。`DSH_GLASS_WDA=0` 可关闭抓屏排除，方便录屏/截图；
+`DSH_GLASS_PREVIEW=1` 是纯预览模式；`GLASS_FORCE=1` 每帧强制重合成（调试很费 CPU）。
+
+> 拆分前这里是单文件 1931 行，`W/H/SHAPES/MASK/OVERLAY/WARP_X/BOX_MAPS` 十几个
+> 模块级全局靠 `global` 在 `rebuild_geometry()` 里一起改写，GPU 还得
+> `import glass_window as G` 去读它们 —— 窗口一缩放就可能拿到上一帧的坐标。
+> 现在全部收进 `Geometry`，谁要什么就传进去。
 
 ## 4. 兼容性
 

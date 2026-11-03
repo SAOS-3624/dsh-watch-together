@@ -11,11 +11,15 @@ rem   DSH_GLASS_ACRYLIC                                    （不读，没有 ac
 rem
 rem 现在真正有效的开关：
 rem
-rem   DSH_GLASS_NATIVE=1     走 GPU 路径（D3D11）
+rem   DSH_GLASS_GPU=1        GPU 合成（需要 moderngl + OpenGL 3.3；起不来会回落 CPU）
+rem   DSH_GLASS_NATIVE=1     同上，且采样走全分辨率（边缘更干净，更吃显存）
 rem   GLASS_FORCE=1          每帧强制重合成（调试用，很费 CPU）
 rem   DSH_GLASS_PREVIEW=1    预览模式：不抓屏，只贴最后一帧
 rem   DSH_GLASS_SNAPSHOT=1   文档截图模式：跑 2.5 秒后冻结画面
 rem   DSH_GLASS_WDA=0        允许截图/录屏拍到窗口（等价于配置里的 capturable）
+rem
+rem 想开 GPU 的话把下面这行前面的 rem 去掉（或者用 glass_window_gpu.py 起窗）：
+rem set DSH_GLASS_GPU=1
 rem
 rem 尺寸、名字、capturable 这类持久设置写 ~/.dsh/watch-window.json。
 rem ---------------------------------------------------------------------------

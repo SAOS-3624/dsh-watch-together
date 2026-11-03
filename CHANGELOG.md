@@ -3,6 +3,98 @@
 All notable changes to **dsh-watch-together** are documented here.
 This package starts its own version line at `0.0.7` — it is not a continuation of `dsh-video-storyboard`.
 
+## [0.2.11] - 2026-11-03
+
+> 悬浮窗从头拆了一遍（单文件 1931 行 → 五层），顺带修掉 GPU 路径三个真 bug。
+
+### Changed — 玻璃拆成四层，去掉全部模块级可变全局
+
+`window.py` 原来 1931 行，`W / H / SHAPES / MASK / MASK_HARD / OVERLAY /
+OVERLAY_2X / WARP_X / WARP_Y / BOX_MAPS / HW / HH / BOX_UNION_2X / MIC_POS`
+十几个模块级全局靠 `global` 在 `rebuild_geometry()` 里一次性改写；GPU 伴生
+文件还得 `import glass_window as G` 去读它们，窗口一缩放就可能拿到上一帧的坐标。
+
+| 文件 | 职责 |
+|---|---|
+| `glass_geometry.py` | 一套尺寸的全部贴图。`Geometry` 是不可变值对象，气泡变宽用 `with_shapes()` 换新对象，尺寸相关的遮罩/折射图直接复用 |
+| `glass_capture.py` | 抓屏、`MotionTracker`、麦克风贴图、圆角收尾 —— CPU/GPU 共用一份 |
+| `glass_cpu.py` | CPU 合成管线 |
+| `glass_gpu.py` | 同一件事在 moderngl 上做 |
+| `window.py` | 编排 + Tk 窗口 + 交互 |
+| `window_widgets.py` | `Fonts` / `ChatFeed` / `TextLayer` |
+
+顺手清掉的死代码和重复逻辑：
+
+- `_add_text_shadows()` 是空实现，`_text_shadows` 有 11 处引用但永远是空的；
+- `_hide_window()` 定义了但没有任何调用点；`EDGE_MASK` 算出来没人用；
+- `_fit_lines` / `_text` 对每个字重新 `measure()` 一遍前缀 —— O(n²) 次 Tcl 调用，
+  改成累积宽度；
+- 每来一条消息就 `Entry.destroy()` 重建（丢输入法状态和光标），改成复用一个；
+- `_preview_resize` / `_rebuild` / `_refresh_feed` 三份几乎相同的「清状态 + 重排 +
+  贴图」；
+- `tkfont.Font(...)` 每帧新建几百个 Tcl 对象 → `Fonts` 按尺寸缓存。
+
+### Fixed — GPU 版的 OpenGL context 建在错误的线程上（每帧 `cannot create texture`）
+
+`GpuRenderer` 原来在主线程构造。`moderngl.create_standalone_context()` 绑在创建
+它的线程上，而 `render()` 跑在抓屏 worker 线程 —— 每帧抛 `cannot create texture`，
+被 `_work()` 吞掉后只打印一行、窗口始终没有玻璃（截图里只剩文字浮在桌面上）。
+
+改成首次 `render()` 时惰性创建（那时已经在 worker 线程）；真起不来就打印原因并
+回落 CPU，不刷屏。
+
+### Fixed — GPU 版在录屏模式下没挖掉自己（`moved` 恒真、永不跳帧）
+
+`CaptureSource.to_image()` 会 `fill_own_rect()`，但 GPU 直接吃 `shot.bgra`、
+绕过了那一步 —— 背景里永远带着本窗口，`moved` 每帧为真：静态跳帧一次都不触发，
+还叠出自我反馈的拖尾（0.2.7 修过同一个坑，只修了 CPU 侧）。补了数组版
+`fill_own_rect_array()`。
+
+实测 700×665 / 150% DPI / 同一桌面、同一条消息：
+
+| | CPU 版 | GPU 版（修前） | GPU 版（修后） |
+|---|---|---|---|
+| CPU | 43.2% 单核 | 87.9% | **32.1%** |
+| 内存 | 93 MB | 195 MB | 193 MB |
+
+### Fixed — `DSH_GLASS_NATIVE=1` 一直是个假开关
+
+`run-glass.cmd` 写着「走 GPU 路径」，但 `window.py` 从来没 import 过
+`glass_window_gpu` —— 设了只是让 CPU 路径去读一个没人用的变量。现在
+`DSH_GLASS_GPU=1` / `DSH_GLASS_NATIVE=1` 真的选后端；`glass_window_gpu.py`
+仍可单独起窗（等价于 `DSH_GLASS_GPU=1`）。
+
+### Fixed — GPU 版拖动窗口没有运动模糊、反而做静止才该做的色散
+
+0.2.9 修的 `box_changed → moved` 只落在 CPU 路径上，GPU 那份还是老判断。现在
+两条路径共用 `MotionTracker`，同一个判断只有一处实现。
+
+### Fixed — GPU 版形状变化后混入上一帧残影
+
+`_invalidate_glass()` 只清了 CPU 的 `_prev_out`，GPU 的 `_prev_valid` 还留着。
+现在几何一变统一走 `renderer.invalidate()`，两边一起清。
+
+### Fixed — 折叠时 `slabs_for()` 算出负高度矩形
+
+折叠后窗口只有 78px，`bot = (o, h-o-70, ...)` 的 y0 大于 y1，PIL 直接抛
+`y1 must be greater than or equal to y0` —— 点一下 ▾ 就 traceback。高度不够时
+只返回标题栏那一块。
+
+### Performance
+
+- 高斯从 PIL `ImageFilter.GaussianBlur` 换成 `cv2.GaussianBlur`（有 OpenCV 时）；
+- GPU 首次渲染 **1137 ms → 79 ms**（几何贴图改用 cv2 缩放，不再 PIL 逐通道）；
+- 静止时的探针从 60fps 降到 30fps —— 单次 `grab()` 就要 7ms，空转等于白烧
+  40% 单核；有变化时 `idle` 立刻归零、下一拍恢复全速；
+- 文字翻色从「每个字 `crop()` + `np.percentile`」改成整帧转一次灰度再切片。
+
+### 验证
+
+- 视觉：同一背景同一消息，新旧玻璃帧逐像素对比 **均差 0.068、99% 像素差 ≤1**；
+- 交互：折叠 / 展开 / 拖动 / 边缘缩放 / 滚轮 / 改名 / 发送 / 新消息增量 / 关闭
+  全部实跑通过（810×625 与 760×560、折叠 78px 三种尺寸）；
+- `node scripts/check-syntax.mjs` 56 files ok；`node --test` **317 pass / 0 fail**。
+
 ## [0.2.10] - 2026-11-03
 
 > GPU 路径其实一直是坏的，顺便量了一下它到底省不省。
