@@ -43,6 +43,10 @@ test('watch settings: video 端口与 voice adapter 写入', () => {
   writeVoiceSettings({ adapter: '' }, env);
   assert.equal(readVoiceSettings(env).adapter, '');
   assert.equal(Object.hasOwn(JSON.parse(readFileSync(join(dir, 'voice.json'), 'utf8')), 'adapter'), false);
+  assert.deepEqual(
+    readVoiceSettings({ ...env, DSH_VOICE_ADAPTER: 'D:/env/voice.mjs' }).envOverrides,
+    ['DSH_VOICE_ADAPTER'],
+  );
 });
 
 function fakeWeb() {

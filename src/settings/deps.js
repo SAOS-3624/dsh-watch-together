@@ -115,11 +115,12 @@ function floatingWindow() {
 
 function voice(env) {
   const cfg = readVoiceSettings(env);
-  if (!cfg.adapter) return { ok: false, detail: '未配置（可选；只影响念台词）' };
-  if (/^[a-zA-Z]:[\\/]|^\\\\|^\.{1,2}[\\/]|^\//.test(cfg.adapter)) {
-    return { ok: existsSync(cfg.adapter), detail: existsSync(cfg.adapter) ? cfg.adapter : '文件不存在：' + cfg.adapter };
+  const adapter = String(env.DSH_VOICE_ADAPTER || '').trim() || cfg.adapter;
+  if (!adapter) return { ok: false, detail: '未配置（可选；只影响念台词）' };
+  if (/^[a-zA-Z]:[\\/]|^\\\\|^\.{1,2}[\\/]|^\//.test(adapter)) {
+    return { ok: existsSync(adapter), detail: existsSync(adapter) ? adapter : '文件不存在：' + adapter };
   }
-  return { ok: true, detail: cfg.adapter + '（包名，挂载时才能校验）' };
+  return { ok: true, detail: adapter + '（包名，挂载时才能校验）' };
 }
 
 /** @returns {Promise<Array<{id:string,label:string,ok:boolean,detail:string}>>} */
