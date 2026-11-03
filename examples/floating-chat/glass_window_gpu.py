@@ -467,7 +467,12 @@ def capture_gpu(self, sct):
         box = (gl, gt, gr, gb)
         now = time.perf_counter()
         moved = False
-        if self._sig is not None and box == self._sig_bbox and sig.shape == self._sig.shape:
+        # 和 CPU 路径一致：窗口移动后抓取区域变了，旧区域像素不能直接做差，
+        # 但这也是运动；不标 moved 的话拖动时运动模糊永远不执行。
+        box_changed = self._sig_bbox is not None and box != self._sig_bbox
+        if box_changed:
+            moved = True
+        elif self._sig is not None and sig.shape == self._sig.shape:
             d = np.abs(sig - self._sig)
             moved = bool(float(d.mean()) > 0.01 or float(d.max()) > 0.5)
         if moved:
