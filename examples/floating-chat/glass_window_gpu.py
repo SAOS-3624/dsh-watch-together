@@ -112,8 +112,8 @@ void main() {
     vec3 edgep = texelFetch(raw, ep, 0).rgb;
     // CPU 里 edge_w=0 是边缘（取折射样本），=1 是中心（取强模糊）；
     // 这里方向必须一致，否则内框边缘反而没有扭曲。
-    vec3 patch = mix(edgep, strong, e);
-    frag = vec4(mix(base, patch, a), 1.0);
+    vec3 tile = mix(edgep, strong, e);
+    frag = vec4(mix(base, tile, a), 1.0);
 }
 """
 
