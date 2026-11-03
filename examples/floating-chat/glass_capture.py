@@ -21,7 +21,7 @@ from pathlib import Path
 import numpy as np
 from PIL import Image
 
-from glass_geometry import KEY, LPF, MIC_MARGIN, MIC_SIZE, PAD, Geometry
+from glass_geometry import KEY, LPF, MIC_SIZE, PAD, Geometry
 
 try:
     import cv2 as _cv2
