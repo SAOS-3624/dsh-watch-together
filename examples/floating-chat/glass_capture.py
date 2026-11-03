@@ -38,6 +38,50 @@ STALE_AFTER = 0.30                # 运动结束后多久允许跳帧
 
 FORCE = os.environ.get("GLASS_FORCE") == "1"
 
+# 抓屏连续失败时的替身底板颜色。取窗口本体那种深蓝黑：和气泡底板同一套色，
+# 失败时看起来像"玻璃后面是暗背景"，而不是一块死黑。
+SOLID_RGB = (18, 22, 30)
+_solid_cache: dict[tuple[int, int], "_SolidShot"] = {}
+_last_warn = [0.0]
+
+
+class _SolidShot:
+    """`mss` 截图的替身：只实现下游用到的 `.size` / `.rgb` / `.bgra`。
+
+    下游两条路都在这儿取像素：CPU 走 `Image.frombytes("RGB", size, rgb)`，
+    GPU 走 `np.frombuffer(shot.shot.bgra).reshape(h, w, 4)`。少给一个属性
+    就是「失败时 CPU 能兜、GPU 每帧抛」—— 而 GPU 那条正好是有问题的那台机器
+    更可能开的（`DSH_GLASS_GPU=1`）。
+    """
+    __slots__ = ("size", "rgb", "bgra")
+
+    def __init__(self, w: int, h: int, color: tuple[int, int, int] = SOLID_RGB):
+        self.size = (w, h)
+        r, g, b = color
+        self.rgb = bytes((r, g, b)) * (w * h)
+        self.bgra = bytes((b, g, r, 255)) * (w * h)
+
+
+def _solid_shot(w: int, h: int) -> "_SolidShot":
+    """同尺寸复用一份（失败时每帧都要一张，别一直分配 1MB+）。"""
+    key = (w, h)
+    shot = _solid_cache.get(key)
+    if shot is None:
+        shot = _SolidShot(w, h)
+        if len(_solid_cache) > 4:
+            _solid_cache.clear()
+        _solid_cache[key] = shot
+    return shot
+
+
+def _warn_grab(exc: Exception) -> None:
+    """抓屏失败**只喊一次**（30 秒内不重复）。每帧刷屏等于没有日志。"""
+    now = time.monotonic()
+    if now - _last_warn[0] < 30:
+        return
+    _last_warn[0] = now
+    print(f"capture failed, using solid plate: {type(exc).__name__}: {exc}", flush=True)
+
 
 def _load_mic() -> tuple[Image.Image, Image.Image]:
     """麦克风图标：去背景得到 alpha，再做浅色/深色两版（按背后亮度挑）。"""
@@ -243,7 +287,18 @@ class CaptureSource:
         # —— 表现就是日志刷屏、背景永久停在旧帧。没有可抓的区域就别抓。
         if gr - gl <= 0 or gb - gt <= 0:
             return None
-        shot = sct.grab({"left": gl, "top": gt, "width": gr - gl, "height": gb - gt})
+        try:
+            shot = sct.grab({"left": gl, "top": gt, "width": gr - gl, "height": gb - gt})
+        except Exception as exc:
+            # **抓不到就别把窗变成一块透明玻璃。**
+            # BitBlt 会在几种场景下失败：桌面锁屏 / UAC 安全桌面 / 远程桌面 /
+            # 某些 HDR 或全屏独占的机器。以前这里直接把异常抛给 `_work()`，
+            # 于是每帧一条 "capture error"、一帧都画不出来 —— 用户看到的是
+            # "背景变成透明的了，只剩字"（2026-11-03 社区反馈）。
+            # 现在退成一块**纯色底板**：不好看，但字读得清、窗看得见。
+            _warn_grab(exc)
+            return Shot(shot=_solid_shot(gr - gl, gb - gt), box=(gl, gt, gr, gb),
+                        offset=(int(round((l - gl) / LPF)), int(round((t - gt) / LPF))))
         return Shot(shot=shot, box=(gl, gt, gr, gb),
                     offset=(int(round((l - gl) / LPF)), int(round((t - gt) / LPF))))
 
