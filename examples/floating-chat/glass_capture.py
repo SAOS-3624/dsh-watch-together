@@ -65,72 +65,75 @@ def resample(arr_or_im, size):
     return np.asarray(im.resize(size, Image.Resampling.BILINEAR))
 
 
-def _strip_lowfreq(strip: np.ndarray, knots: int = 8) -> np.ndarray:
-    """把一条边缘像素压成 `knots` 段均值再插值回来，最后再抹一遍。
+CORNER_PROBE = 56      # 角块边长：从这个方块里取中位色
 
-    直接拿原始边缘插值会把「边缘上恰好有一个图标」整条抹成竖线 —— 分段均值
-    先把高频抹掉，只留下这一侧的环境色。段数越少越柔和，但和真实背景的边界
-    差得越多；8 段 + 一次平滑是实测下来的折中。
+
+def _median_color(arr: np.ndarray, y0: int, y1: int, x0: int, x1: int):
+    """一块区域的三通道中位数（没有像素返回 None）。
+
+    用中位数而不是均值：桌面图标、文字这类「少数像素」不会把整块颜色带跑，
+    均值会被一个白色图标顶到发白。
     """
-    n = strip.shape[0]
-    if n <= knots:
-        return strip.astype(np.float32)
-    edges = np.linspace(0, n, knots + 1).astype(int)
-    centers = ((edges[:-1] + edges[1:]) / 2.0).astype(np.float32)
-    means = np.stack([strip[a:b].mean(axis=0) for a, b in zip(edges[:-1], edges[1:])],
-                     axis=0).astype(np.float32)
-    t = np.arange(n, dtype=np.float32)
-    out = np.stack([np.interp(t, centers, means[:, c])
-                    for c in range(strip.shape[1])], axis=-1)
-    # 3 点盒滤波：把相邻段的台阶抹平，否则会看到一条条横向色带
-    return (np.roll(out, 1, axis=0) + out + np.roll(out, -1, axis=0)) / 3.0
+    h, w = arr.shape[:2]
+    y0, y1 = max(0, min(h, y0)), max(0, min(h, y1))
+    x0, x1 = max(0, min(w, x0)), max(0, min(w, x1))
+    patch = arr[y0:y1, x0:x1]
+    if patch.size == 0:
+        return None
+    return np.median(patch.reshape(-1, patch.shape[-1]), axis=0).astype(np.float32)
 
 
 def _fill_patch(arr: np.ndarray, box, step: int = 8) -> None:
-    """把窗口矩形填成「四周环境色」的二维低频渐变（原地）。
+    """把窗口矩形填成「四周环境色」的二维渐变（原地）。
 
-    **不能只用上下两行做纵向插值**：窗口上方紧挨着的那一行里如果正好有桌面
-    图标或文字，每个像素会被整列往下抹开 —— 用户看到的就是「东西被沿上下方向
-    拉成长条」。这里改成四条边各取一段、各自抹平高频，再用 Coons patch 融合：
-    边界贴合真实背景，内部只有大尺度色彩过渡，没有任何方向性条纹。
+    **不要拿边缘像素插值**。窗口上下左右紧挨着的那一圈里如果正好有桌面图标或
+    文字，插值会把它们沿某个方向整条抹开 —— 纵插值是竖条、横插值是横条，换哪种
+    都难看（用户两次都撞上了）。
 
-    渐变在 `step` 分之一的粗网格上算再放大。全分辨率算一次要 80ms，粗网格是
-    0.3ms —— 这块最后还要被高斯糊一遍，8px 的色阶完全看不出来。
+    现在只取窗口外**四个角块的中位色**，做双线性。角块完全在窗口外面，不含窗口
+    自己的内容；中位数又抹掉了图标这类少数像素；四角双线性只有大尺度过渡，
+    不存在任何「把东西拉长」的方向。
+
+    渐变在 `step` 分之一的粗网格上算再放大：这块最后还要被高斯糊一遍，
+    8px 的色阶看不出来。全分辨率算一次要 80ms，粗网格是 0.3ms。
     """
     h, w = arr.shape[:2]
     x0, y0, x1, y1 = (int(v) for v in box)
-    x0, x1 = max(1, min(w - 1, x0)), max(1, min(w - 1, x1))
-    y0, y1 = max(1, min(h - 2, y0)), max(1, min(h - 2, y1))
+    x0, x1 = max(0, min(w, x0)), max(0, min(w, x1))
+    y0, y1 = max(0, min(h, y0)), max(0, min(h, y1))
     bw, bh = x1 - x0, y1 - y0
     if bw <= 0 or bh <= 0:
         return
 
-    gw, gh = max(2, bw // step), max(2, bh // step)
-    top = _strip_lowfreq(arr[y0 - 1, x0:x1])          # (bw, 3)
-    bot = _strip_lowfreq(arr[y1, x0:x1])
-    left = _strip_lowfreq(arr[y0:y1, x0 - 1])         # (bh, 3)
-    right = _strip_lowfreq(arr[y0:y1, x1])
-    top, bot = _resample_curve(top, gw), _resample_curve(bot, gw)
-    left, right = _resample_curve(left, gh), _resample_curve(right, gh)
+    b = CORNER_PROBE
+    tl = _median_color(arr, y0 - b, y0, x0 - b, x0)
+    tr = _median_color(arr, y0 - b, y0, x1, x1 + b)
+    bl = _median_color(arr, y1, y1 + b, x0 - b, x0)
+    br = _median_color(arr, y1, y1 + b, x1, x1 + b)
+    # 窗口贴在屏幕边上时角块会缺 —— 用整圈外框的中位色兜底；
+    # 连外框都没有（窗口铺满屏幕）才退回窗口自己的中位色。
+    ring = _median_color(arr, y0 - b, y1 + b, x0 - b, x0) if x0 > 0 else None
+    if ring is None:
+        ring = _median_color(arr, y0 - b, y1 + b, x1, x1 + b) if x1 < w else None
+    if ring is None:
+        ring = _median_color(arr, y0 - b, y0, x0, x1) if y0 > 0 else None
+    if ring is None:
+        ring = _median_color(arr, y1, y1 + b, x0, x1) if y1 < h else None
+    if ring is None:
+        ring = _median_color(arr, y0, y1, x0, x1) or np.zeros(3, np.float32)
+    tl = ring if tl is None else tl
+    tr = ring if tr is None else tr
+    bl = ring if bl is None else bl
+    br = ring if br is None else br
 
+    gw, gh = max(2, bw // step), max(2, bh // step)
     ty = ((np.arange(gh, dtype=np.float32) + 0.5) / gh)[:, None, None]
     tx = ((np.arange(gw, dtype=np.float32) + 0.5) / gw)[None, :, None]
-    corners = (top[0] * (1 - tx) * (1 - ty) + top[-1] * tx * (1 - ty)
-               + bot[0] * (1 - tx) * ty + bot[-1] * tx * ty)
-    out = (top[None, :, :] * (1 - ty) + bot[None, :, :] * ty
-           + left[:, None, :] * (1 - tx) + right[:, None, :] * tx
-           - corners)
+    out = (tl * (1 - tx) * (1 - ty) + tr * tx * (1 - ty)
+           + bl * (1 - tx) * ty + br * tx * ty)
     out = np.clip(out, 0, 255)
     big = resample(out, (bw, bh)) if (gw, gh) != (bw, bh) else out
     arr[y0:y1, x0:x1] = big.astype(np.uint8)
-
-
-def _resample_curve(curve: np.ndarray, n: int) -> np.ndarray:
-    """把一条边缘曲线线性重采样到 n 个点。"""
-    src = np.arange(curve.shape[0], dtype=np.float32)
-    dst = np.linspace(0, curve.shape[0] - 1, n, dtype=np.float32)
-    return np.stack([np.interp(dst, src, curve[:, c])
-                     for c in range(curve.shape[1])], axis=-1).astype(np.float32)
 
 
 def fill_own_rect(im: Image.Image, box) -> Image.Image:
