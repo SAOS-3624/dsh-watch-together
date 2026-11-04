@@ -31,3 +31,12 @@ export {
   detachAdapters,
   loadVoiceAdapter,
 } from './voice-adapter.js';
+
+// 适配器"拉"的那两个只读方法。平时从 `attach(api)` 拿就行；
+// 导出是给测试和同进程的伴生插件直接用的（形状见 companion-api.js）。
+export {
+  DEFAULT_HORIZON_SEC,
+  MAX_HORIZON_SEC,
+  position,
+  upcoming,
+} from './companion-api.js';

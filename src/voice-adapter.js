@@ -11,8 +11,10 @@
  * ```
  *
  * 适配器模块导出 `attach(api)`（或 default 导出同名函数），`api` 是
- * `{ onSpeech, speechSubscribers, emitSpeech, emitSpoken, lastSpeech }` ——
+ * `{ onSpeech, speechSubscribers, emitSpeech, emitSpoken, lastSpeech, upcoming, position }` ——
  * 合成完真的要出声时调一次 `emitSpoken(e)`，展示层才知道"字可以出现了"（见 `speech-bus.js`）。
+ * `upcoming()` / `position()` 是**只读**的两个问题"接下来念什么 / 现在播到哪"
+ * （形状见 `companion-api.js`，issue #4 定的边界：核心不做合成）。
  * `attach` 可以返回一个 detach 函数；不返回也行，但要自己管好退订。
  *
  * 和 `speech-bus.js` 的分工：总线不认识"文件路径""import""配置文件"，
@@ -27,6 +29,7 @@ import { pathToFileURL } from 'node:url';
 import {
   emitSpeech, emitSpoken, lastSpeech, onSpeech, speechSubscribers,
 } from './speech-bus.js';
+import { companionApi } from './companion-api.js';
 
 /**
  * 已挂载的适配器：specifier → { detach, subscriptions }。
@@ -122,6 +125,10 @@ export async function loadVoiceAdapter(spec, { log = () => {} } = {}) {
     try {
       const detach = await attach(trackedApi({
         onSpeech, speechSubscribers, emitSpeech, emitSpoken, lastSpeech,
+        // 只读的两个问题：接下来念什么、现在播到哪。**不是**可选的装饰 ——
+        // 适配器靠它们决定预不预合成、seek 之后丢不丢已经合成好的音频。
+        upcoming: companionApi.upcoming,
+        position: companionApi.position,
       }, subscriptions));
       attached.set(raw, {
         detach: typeof detach === 'function' ? detach : null,

@@ -22,6 +22,7 @@ import { readBrowserPosition, looksLikeVideoUrl } from 'dsh-video-storyboard/bro
 import { readBridge } from './position-bridge.js';
 import { getTtsPort, getWindowPort } from './runtime-ports.js';
 import { readPositionOrNull } from './watch-browser.js';
+import { clearPlayhead, setPlayhead } from './playhead.js';
 
 import { speechSeconds } from './speech.js';
 import { consumeLine, dueLine, hasLine, loadLine, upcomingLines, WATCH_LEAD } from './watch.js';
@@ -277,7 +278,25 @@ export function stopWatchLoop(reason = 'stopped') {
   if (loop.active) loop.log(`[watch] loop stopped (${reason})`);
   loop.active = false;
   loop.lastReason = reason;
+  // 停表之后"现在播到哪"就没有意义了。留着的话，适配器会按上一支片子的位置
+  // 去丢音频 / 预合成，而且 `pos` 会一直外推到 60 秒上限才降级成 unknown。
+  clearPlayhead();
   return loopStatus();
+}
+
+/**
+ * 把当前锚点推给 `playhead.js`（声音适配器的 `api.position()` 读它）。
+ *
+ * **走 store 而不是让适配器 import 本模块**：`watch-loop → runtime-ports →
+ * voice-adapter → companion-api`，再反向 import 就成环了（见 playhead.js 文件头）。
+ *
+ * 每 2 秒一拍推一次理论上冗余，但这样"锚点变了"的每一条路径（扩展上报、CDP 探针、
+ * 用户自报 cursor）都自动覆盖到，不会漏掉某一条 —— 漏一条的表现是"适配器以为
+ * 没 seek，其实已经跳了"，很难从现象反推回来。
+ */
+function syncPlayhead() {
+  if (!loop.active) { clearPlayhead(); return; }
+  setPlayhead({ active: true, input: loop.input, dur: loop.dur, anchor: loop.anchor });
 }
 
 /**
@@ -491,6 +510,7 @@ export function startWatchLoop({
     if (Number.isFinite(cursor)) {
       loop.anchor = makeAnchor({ pos: cursor, dur: loop.dur, status, updated: Date.now() }, Date.now());
     }
+    syncPlayhead();
     note('resumed (same input + same batch plan)');
     return { ok: true, resumed: true, ...loopStatus() };
   }
@@ -562,6 +582,9 @@ export function startWatchLoop({
   loop.anchor = Number.isFinite(cursor)
     ? makeAnchor({ pos: cursor, dur: null, status, updated: Date.now() })
     : null;
+  // 新一场：哪怕还没有锚点也要先推一次 —— 适配器这时候问 `position()` 应该看到
+  // `active: true / pos: null`（"在陪看，但位置还不知道"），而不是上一支片子的残留值。
+  syncPlayhead();
 
   void readLatency().then((st) => { loop.aheadSec = aheadSeconds(st); });
 
@@ -747,6 +770,9 @@ export function startWatchLoop({
         const st = await readLatency();
         loop.aheadSec = aheadSeconds(st);
       }
+
+      // 这一拍的位置已经落定（桥上报 / CDP 探针都跑完了），推给适配器那边
+      syncPlayhead();
 
       if (!loop.anchor) {
         loop.lastReason = 'no-anchor';

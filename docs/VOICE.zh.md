@@ -248,6 +248,50 @@ api.onSpeech((e) => {
 收到 `skipped` 之后，悬浮窗会撤掉那句的兜底定时器，**屏幕上不会出现一句没出声的台词**。
 
 
+### 想知道"接下来念什么 / 现在播到哪"：`api.upcoming()` / `api.position()`
+
+`due` / `scheduled` 是核心**推**给你的；这两个是你自己**拉**的。都是只读：
+
+```js
+// 接下来 20 秒内会念的句子（按 at 升序；没写好 / 没写 at 的不在里面）
+const next = await api.upcoming({ horizonSec: 20 });
+// → [{ at: 205, text: '……', segment: 120 }]
+
+// 现在播到第几秒
+const p = api.position();
+// → { pos: 203.4, dur: 600, confidence: 'fresh', staleMs: 820 }
+```
+
+**`at` 和 `pos` 的单位都是播放秒**（不是墙钟毫秒）。`segment` 是这句所属段的段首秒数，
+和 `due` / `scheduled` 事件里的 `segment` 同一个口径 —— 做预合成缓存时按它对齐。
+
+`confidence` 三档，别忽略它：
+
+| 值 | 含义 | 该怎么用 |
+|---|---|---|
+| `fresh` | 刚读到（≤5 秒）或视频暂停中 | 直接信 |
+| `extrapolated` | 读数有点旧，按时钟往前推的 | 用来判断"这句过期没有"够用，**别算毫秒级同步** |
+| `unknown` | 太久没读到（>60 秒），连还在不在播都不知道 | `pos` 是 **`null`**，别拿它做差值 |
+
+> `unknown` 时 `pos` 给的是 `null` 而不是 `0`：`0` 会让"我合成的音频离当前位置晚了 300 秒"
+> 这种判断成立，然后默默把音频全丢掉 —— 表现就是"有时候不出声"，还没有任何报错。
+
+典型用法：预合成完之后记下当时的位置，播放前再问一次，差太多就丢掉（用户拖了进度条）：
+
+```js
+const atSynth = api.position();
+const audio = await synth(text);
+const now = api.position();
+if (now.confidence === 'unknown') return playAnywayOrSkip(audio);
+if (now.pos - atSynth.pos > 8 || now.pos < atSynth.pos - 1) return;   // 跳过了，这段音频已经过期
+play(audio);
+```
+
+**核心不替你做合成、不缓存音频，也不重试** —— 这条边界是有意的（core #27）：
+核心一旦管音频生命周期，就会出现第二个声音引擎跟它抢话；而且"这台机器合成慢要不要重试"
+核心根本没法知道。
+
+
 ---
 
 ## 7. 为什么延迟只有 0.2 秒（常驻合成器）

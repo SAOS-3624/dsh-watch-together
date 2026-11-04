@@ -24,6 +24,32 @@ This package starts its own version line at `0.0.7` — it is not a continuation
 **新增协议**：`{"op":"interrupt"}` → `{"ev":"interrupted"}`。
 它和 `stop` 不是一回事：`stop` 是 `SystemExit(0)`，整个常驻合成器没了，下一句要重新预热 1~2 秒。
 
+### Added — 适配器能"拉"了：`api.upcoming()` / `api.position()`
+
+此前核心只会**推**（`due` / `scheduled`），适配器想知道"再往后还有什么、现在播到哪"
+只能自己读 `watch.json` 和 `position.json` —— 那是两份内部格式，还各自带着一套
+"哪条位置可信"的判断，第三方适配器重写一遍必然走样。
+
+现在 `attach(api)` 多两个**只读**方法（issue #4 定下的形状，实现没偏离）：
+
+```js
+await api.upcoming({ horizonSec: 20 })   // → [{ at, text, segment }]，按 at 升序，不消费
+api.position()                          // → { pos, dur, confidence, staleMs }
+```
+
+- `upcoming()` 读同一份台词槽，**只给未来窗口内、带 `at` 的句子**；念掉的不在里面。
+  窗口 1~120 秒（越界钳住），没在陪看 / 位置不知道时是空数组。
+- `position()` 走 `position.js` 那套锚点逻辑（扩展上报 / CDP 探针 / 用户自报三条来路），
+  `confidence` 分 `fresh` / `extrapolated` / `unknown`。**`unknown` 时 `pos` 是 `null`，不是 0** ——
+  给 0 会让"我合成的音频晚了三百秒"这种判断成立，然后默默丢光音频，还没有任何报错。
+- 停表 / 换片即清空，不会让适配器拿着上一支片子的位置去丢音频。
+
+边界没变：核心**不做合成、不缓存音频、不重试**。给到"下一两句是什么、现在播到哪"就够了，
+预取几段、seek 之后丢哪些，全在适配器自己（core #27）。
+
+实现：新增 `src/playhead.js`（循环把锚点推过来，避免 `watch-loop → runtime-ports →
+voice-adapter → companion-api` 反向 import 成环）和 `src/companion-api.js`（纯读）。
+
 ## [0.2.12] - 2026-11-04
 
 ### Fixed

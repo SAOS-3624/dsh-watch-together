@@ -394,8 +394,12 @@ export function attach({ onSpeech }) {
 }
 ```
 
-`attach(api)` 收到 `{ onSpeech, speechSubscribers, emitSpeech, emitSpoken, lastSpeech }`，返回一个退订函数即可。
-想放弃某一句就发 `state: 'skipped'`（见 [docs/VOICE.zh.md](docs/VOICE.zh.md)）。
+`attach(api)` 收到 `{ onSpeech, speechSubscribers, emitSpeech, emitSpoken, lastSpeech, upcoming, position }`，
+返回一个退订函数即可。想放弃某一句就发 `state: 'skipped'`（见 [docs/VOICE.zh.md](docs/VOICE.zh.md)）。
+
+`api.upcoming({ horizonSec })` 和 `api.position()` 是给适配器**拉**的两个只读方法：
+前者给"接下来会念哪几句"，后者给"现在播到第几秒、这个数字有多可信"。
+核心不替适配器合成、不缓存音频 —— 预取几段、seek 之后丢哪些，全由适配器自己定。
 
 ## 聊天框 / 悬浮窗：一条统一的文本流
 

@@ -17,6 +17,13 @@ export { createRecognitionInterface } from './recognition-interface.js';
 export { createTtsInterface } from './tts-interface.js';
 export { createWindowInterface } from './window-interface.js';
 export {
+  DEFAULT_HORIZON_SEC,
+  MAX_HORIZON_SEC,
+  companionApi,
+  position,
+  upcoming,
+} from './companion-api.js';
+export {
   WINDOW_PROTOCOL_VERSION,
   WINDOW_EVENT_TYPES,
   WINDOW_ACTION_TYPES,
