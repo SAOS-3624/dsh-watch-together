@@ -14,6 +14,8 @@
 关键点：
 - Windows 10 2004+ 的 SetWindowDisplayAffinity(WDA_EXCLUDEFROMCAPTURE)：让本窗口
   从屏幕捕获里消失，于是抓自己所在区域时抓到的是「背后的桌面」，不会递归。
+  代价是远程桌面/录屏/截图里整窗也看不见；用 `glass: solid` 切纯色底板，
+  不抓屏、不设 WDA，任何捕获方式都能看到。
 - 抓到的背景按需重合成（静止时跳帧），所以是实时模糊，不是静态截图。
 - 这不是 DWM Acrylic；Acrylic 需要系统「透明效果」开启，这里是软件实时模糊。
 
@@ -144,6 +146,84 @@ def capturable() -> bool:
         return False
 
 
+# 远程控制软件不一定置 SM_REMOTESESSION；它们的窗口/类名是最稳的旁证。
+# 命中任意一个就按 remote 处理，用 solid 底板，保证对面能看到整窗。
+REMOTE_MARKS = (
+    "gameviewer", "todesk", "sunlogin", "anydesk", "teamviewer",
+    "rustdesk", "parsec", "uu远程", "向日葵",
+)
+
+
+def remote_capture_likely() -> bool:
+    """当前是不是远程/捕获环境：RDP 标志位 + 常见远程软件窗口。"""
+    try:
+        if ctypes.windll.user32.GetSystemMetrics(0x1000):  # SM_REMOTESESSION
+            return True
+    except Exception:
+        pass
+    try:
+        u = ctypes.windll.user32
+        u.GetWindowTextLengthW.argtypes = [wintypes.HWND]
+        u.GetWindowTextLengthW.restype = ctypes.c_int
+        u.GetWindowTextW.argtypes = [wintypes.HWND, wintypes.LPWSTR, ctypes.c_int]
+        u.GetWindowTextW.restype = ctypes.c_int
+        u.GetClassNameW.argtypes = [wintypes.HWND, wintypes.LPWSTR, ctypes.c_int]
+        u.GetClassNameW.restype = ctypes.c_int
+        u.IsWindowVisible.argtypes = [wintypes.HWND]
+        u.IsWindowVisible.restype = wintypes.BOOL
+        hit = [False]
+
+        @ctypes.WINFUNCTYPE(wintypes.BOOL, wintypes.HWND, wintypes.LPARAM)
+        def visit(hwnd, _lparam):
+            if not u.IsWindowVisible(hwnd):
+                return True
+            n = u.GetWindowTextLengthW(hwnd)
+            title = ""
+            if n > 0:
+                buf = ctypes.create_unicode_buffer(n + 1)
+                u.GetWindowTextW(hwnd, buf, n + 1)
+                title = buf.value
+            cls = ctypes.create_unicode_buffer(256)
+            u.GetClassNameW(hwnd, cls, 256)
+            hay = (title + " " + cls.value).lower()
+            if any(mark in hay for mark in REMOTE_MARKS):
+                hit[0] = True
+                return False
+            return True
+
+        u.EnumWindows(visit, 0)
+        return hit[0]
+    except Exception:
+        return False
+
+
+def glass_mode() -> str:
+    """玻璃背景模式：live（实时抓屏，默认）/ solid（纯色底板）。
+
+    `WDA_EXCLUDEFROMCAPTURE` 会让窗口在远程桌面、OBS、截图工具里**整窗消失**
+    （微软文档：“Everywhere else, the window does not appear at all”）。
+    本机看起来正常，因为 mss 抓到的是窗口背后的像素；远程端却连文字都看不到。
+
+    - `{ "glass": "solid" }`：不抓屏、不设 WDA，用纯色底板；任何捕获方式都能看到；
+    - `{ "glass": "live" }`：原来的实时玻璃；
+    - 不写 / `auto`：检测 `SM_REMOTESESSION` 和常见远程软件窗口，命中就用 solid。
+    """
+    if os.environ.get("DSH_GLASS_SOLID") == "1":
+        return "solid"
+    if os.environ.get("DSH_GLASS_LIVE") == "1":
+        return "live"
+    try:
+        mode = str(read_config().get("glass") or "").strip().lower()
+    except Exception:
+        mode = ""
+    if mode in ("solid", "live"):
+        return mode
+    # 空值 / auto：RDP 标志位或常见远程软件窗口任一命中，就用 solid。
+    if remote_capture_likely():
+        return "solid"
+    return "live"
+
+
 def append_user(text: str) -> None:
     CHAT_FILE.parent.mkdir(parents=True, exist_ok=True)
     with open(CHAT_FILE, "a", encoding="utf-8") as f:
@@ -232,6 +312,8 @@ class LiveGlass:
         # 录屏模式（capturable）下 mss 会抓到窗口自己，必须每帧挖掉，见 fill_own_rect。
         # 缓存起来：读配置是磁盘 IO，不能每帧做。
         self._cappable = capturable()
+        # solid：远程/录屏下 WDA 会让整窗在对面消失；不抓屏、不设 WDA。
+        self._solid = glass_mode() == "solid"
         self._drag = None
         self._resize = None
         self._preview_at = 0.0
@@ -240,7 +322,8 @@ class LiveGlass:
         self._stop = threading.Event()
         self._pause = threading.Event()
         self._geo_lock = threading.Lock()
-        self._source = CaptureSource((self._sw, self._sh), cappable=self._cappable)
+        self._source = CaptureSource((self._sw, self._sh), cappable=self._cappable,
+                                     solid=self._solid)
         self._renderer = self._make_renderer(self._geo)
         self._worker = threading.Thread(target=self._work, daemon=True)
 
@@ -255,7 +338,7 @@ class LiveGlass:
         self.root.deiconify()
         self.root.update_idletasks()
         self.text.refresh()
-        self._set_exclude(not capturable())
+        self._set_exclude(not capturable() and not self._solid)
         self._worker.start()
         self.root.lift()
         self.root.after(80, self.root.lift)
@@ -965,7 +1048,7 @@ class LiveGlass:
         if self._resize or self._collapsed:
             self.root.after(INTERVAL_MS, self._tick)
             return
-        if not self._excluded and not self._cappable:
+        if not self._excluded and not self._cappable and not self._solid:
             self._set_exclude(True)
         self._pause.clear()
 
