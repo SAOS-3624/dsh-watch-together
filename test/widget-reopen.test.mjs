@@ -13,14 +13,23 @@
  * 已经在 widget-guard.test.mjs 里用注入的 windowAlive 覆盖过。
  */
 
-process.env.DSH_WATCH_BRIDGE = '0';
-process.env.DSH_WATCH_REQUIRE_LINES = '0';
-
 import test from 'node:test';
 import assert from 'node:assert/strict';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
 
 import { createInputSurface } from '../src/input-surface.js';
 import { loopStatus, startWatchLoop, stopWatchLoop } from '../src/watch-loop.js';
+
+process.env.DSH_WATCH_BRIDGE = '0';
+process.env.DSH_WATCH_REQUIRE_LINES = '0';
+/**
+ * 隔离 `DSH_HOME`：`createInputSurface()` 会去挂 `~/.dsh/voice.json` 里配的**真实**声音适配器。
+ * 本机配的是常驻 edge-tts daemon —— 挂上以后没人 detach，测试跑完 node 进程一直不退出
+ * （实测：两条断言 2.8 秒跑完，进程挂满 90 秒才被 timeout 杀掉，全量 `npm test` 直接卡住）。
+ * 空目录 = 没配 voice.json = 不挂适配器。
+ */
+process.env.DSH_HOME = join(tmpdir(), `watch-widget-reopen-${process.pid}`);
 
 const ctxStub = { sessionController: { prompt: async () => {} } };
 
