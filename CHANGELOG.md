@@ -3,7 +3,7 @@
 All notable changes to **dsh-watch-together** are documented here.
 This package starts its own version line at `0.0.7` — it is not a continuation of `dsh-video-storyboard`.
 
-## [Unreleased]
+## [0.2.13] - 2026-11-04
 
 ### Changed — 语音改成抢占式：新的一句直接顶掉没念完的
 
@@ -49,6 +49,23 @@ api.position()                          // → { pos, dur, confidence, staleMs }
 
 实现：新增 `src/playhead.js`（循环把锚点推过来，避免 `watch-loop → runtime-ports →
 voice-adapter → companion-api` 反向 import 成环）和 `src/companion-api.js`（纯读）。
+
+### Fixed — 悬浮窗拖得到副屏，抓屏按虚拟桌面钳位（#8）
+
+副屏在主屏左边时坐标是负的，而拖动 / 缩放 / 恢复位置 / 抓屏外扩四处都拿主屏当边界：
+窗口拖不出去、放到副屏后玻璃停在旧帧、下次启动又被拉回主屏。
+
+- `virtual_bounds()` 用 `GetSystemMetrics(76..79)` 取虚拟桌面，取不到才退回主屏；
+  按下时重新 `_sync_screens()`，插拔显示器不用重开窗。
+- 抓屏同理：`CaptureSource(bounds=…)`。**窗口整个在主屏里时仍按主屏钳** —— 单屏逐像素不变。
+- `scripts/check-multimonitor.py`：单屏等价网格对比 + 副屏/跨屏正面积校验。
+
+### Fixed — 缺 `mss` / `numpy` / `pillow` 时弹窗说明，不再静默退出（#76 附带）
+
+pythonw 没有控制台，`import mss` 失败时 Python 直接退出，用户看到的只有"窗口没出来"。
+现在在 import 重依赖之前先检查一遍：缺包就弹 MessageBox 写明缺哪个、装什么，
+并把原因落到 `~/.dsh/watch-window-error.log`。README 也改了口径 ——
+原来写"不装任何第三方包"，下一段又说要 Pillow + numpy + mss，把 `pip install` 提到最前面。
 
 ## [0.2.12] - 2026-11-04
 
