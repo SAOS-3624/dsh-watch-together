@@ -450,11 +450,18 @@ watch_together({ say: "你看这条，鱼比人还紧张。" })
 ### 悬浮窗（不用浏览器）
 
 `examples/floating-chat/window.py` 是个**真·独立悬浮窗**：无边框圆角、置顶、
-按住顶部拖动、右下角可拉伸、回车发送、Esc 关闭。用标准库 tkinter，不装任何第三方包。
+按住顶部拖动、右下角可拉伸、回车发送、Esc 关闭。窗口本身只用标准库 tkinter，
+**但玻璃背景要三个第三方包**：
 
 ```bash
-pythonw examples/floating-chat/window.py     # 无控制台
+pip install pillow numpy mss      # 缺一个窗口就起不来
+pythonw examples/floating-chat/window.py     # 无控制台启动
 ```
+
+> **窗口没出来，什么都没发生？** 多半是缺依赖。`pythonw` 没有控制台，
+> 导入失败时 Python 自己会静默退出。现在 `window.py` 会先检查一遍，缺包时弹窗
+> 告诉你是哪一个，并把完整 traceback 写到 `~/.dsh/watch-window-error.log`。
+> 想自己在终端里看，就用 `python`（不是 `pythonw`）跑一次，`ModuleNotFoundError` 会直接打印。
 
 它长这样：三块分开的液态玻璃（标题 / 主体 / 输入栏），气泡圆角、半透明，
 你说的话靠右；标题栏可拖动、双击标题改名、▾ 折叠、✕ 关闭，底部有麦克风图标和发送。

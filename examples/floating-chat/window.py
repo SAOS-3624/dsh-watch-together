@@ -45,6 +45,45 @@ try:
 except Exception:
     pass
 
+# ---------------------------------------------------------------- 依赖预检
+#
+# 必须在 import mss / numpy / PIL / glass_* **之前**：pythonw 没有控制台，
+# 导入失败时 Python 直接退出，用户只看到"窗口没出来"，连一行提示都没有（#76）。
+# 这里用 ctypes 弹 MessageBox（不依赖 tkinter —— 它也可能缺），并把原因落盘。
+
+def _missing_deps() -> list:
+    missing = []
+    for module, package in (("tkinter", "tkinter（Python 安装时勾选 tcl/tk）"),
+                            ("mss", "mss"), ("numpy", "numpy"), ("PIL", "pillow")):
+        try:
+            __import__(module)
+        except Exception:
+            missing.append(package)
+    return missing
+
+
+def _die_missing(missing: list) -> None:
+    log_path = Path.home() / ".dsh" / "watch-window-error.log"
+    text = ("悬浮窗启动失败：缺少 " + "、".join(missing) + "\n\n"
+            + "装一次就好：\n    pip install pillow numpy mss\n\n"
+            + f"详情：{log_path}")
+    try:
+        log_path.parent.mkdir(parents=True, exist_ok=True)
+        log_path.write_text(text + "\n", encoding="utf-8")
+    except Exception:
+        pass
+    try:
+        ctypes.windll.user32.MessageBoxW(None, text, "dsh-watch-together", 0x10)
+    except Exception:
+        print(text, flush=True)
+    raise SystemExit(2)
+
+
+if __name__ == "__main__":
+    _missing = _missing_deps()
+    if _missing:
+        _die_missing(_missing)
+
 import tkinter as tk
 
 import mss
