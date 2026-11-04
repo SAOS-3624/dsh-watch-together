@@ -454,6 +454,7 @@ CPU/GPU 输出是逐像素对齐的（同一背景均差 0.07，99% 像素差 �
 | 只做内部焦点，不抢系统焦点 | 窗口一开就把焦点从浏览器抢走的话，敲空格想暂停会打进聊天框 |
 | 往上翻历史时新消息不把你拽回底部 | 只有本来就贴着底才自动滚 |
 | 关窗时记住位置和大小（`~/.dsh/watch-window.json` 的 `geometry`） | 下次不用重新摆 |
+| 远程桌面/录屏下窗口整窗消失 | `WDA_EXCLUDEFROMCAPTURE` 的语义；`~/.dsh/watch-window.json` 写 `{ "glass": "solid" }` 用纯色底板（不抓屏、不设 WDA）。默认 `auto` 会认 RDP 和常见远程软件窗口，其他远程工具可手动指定 |
 | 增量读 `chat.jsonl`（开场只回放最后 60 条） | 以前每 200ms 全量解析，两小时一场几千条会越来越慢 |
 | 圆角外的像素用 `-transparentcolor` 抠掉 | tkinter 没有圆角窗口；取不到这个能力就老实退成直角 |
 | 窗口只读 `window-events.jsonl`，写 `window-outbox.jsonl` | 和插件解耦；旧版插件没有协议文件时仍增量读 `chat.jsonl` |

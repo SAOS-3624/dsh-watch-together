@@ -380,7 +380,7 @@ class GpuRenderer:
             return None
         gw, gh = shot.shot.size
         raw = np.frombuffer(shot.shot.bgra, dtype=np.uint8).reshape(gh, gw, 4)
-        if source.cappable:
+        if source.cappable and not source.solid:
             # 录屏模式下必须挖掉自己，否则背景里永远有本窗口 → moved 恒真 →
             # 静态跳帧一次都不触发，还会自我反馈出拖尾。CPU 路径在
             # CaptureSource.to_image() 里做，GPU 直接吃 bgra，得在这里补上。

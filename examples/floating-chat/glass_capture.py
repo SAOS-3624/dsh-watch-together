@@ -268,10 +268,14 @@ class Shot:
 class CaptureSource:
     """按窗口矩形抓背景，外扩 PAD 供边缘透镜取「框外」的像素。"""
 
-    def __init__(self, screen: tuple[int, int], pad: int = PAD, cappable: bool = False):
+    def __init__(self, screen: tuple[int, int], pad: int = PAD, cappable: bool = False,
+                 solid: bool = False):
         self.screen = screen
         self.pad = pad
         self.cappable = cappable
+        # solid：远程/录屏下 WDA 会让整窗在对面消失；不抓屏，用纯色底板
+        # 仍然走同一条渲染管线，文字和气泡都还在，只是背后不透明。
+        self.solid = solid
 
     def grab(self, sct, bbox) -> Shot | None:
         l, t, r, b = (int(v) for v in bbox)
@@ -287,6 +291,12 @@ class CaptureSource:
         # —— 表现就是日志刷屏、背景永久停在旧帧。没有可抓的区域就别抓。
         if gr - gl <= 0 or gb - gt <= 0:
             return None
+        offset = (int(round((l - gl) / LPF)), int(round((t - gt) / LPF)))
+        if self.solid:
+            # 不碰 mss：远程桌面/锁屏/独占全屏下 BitBlt 也可能失败，
+            # 而纯色底板在这些环境里都能正常显示（更不会触发 WDA 的问题）。
+            return Shot(shot=_solid_shot(gr - gl, gb - gt), box=(gl, gt, gr, gb),
+                        offset=offset)
         try:
             shot = sct.grab({"left": gl, "top": gt, "width": gr - gl, "height": gb - gt})
         except Exception as exc:
@@ -299,13 +309,12 @@ class CaptureSource:
             _warn_grab(exc)
             return Shot(shot=_solid_shot(gr - gl, gb - gt), box=(gl, gt, gr, gb),
                         offset=(int(round((l - gl) / LPF)), int(round((t - gt) / LPF))))
-        return Shot(shot=shot, box=(gl, gt, gr, gb),
-                    offset=(int(round((l - gl) / LPF)), int(round((t - gt) / LPF))))
+        return Shot(shot=shot, box=(gl, gt, gr, gb), offset=offset)
 
     def to_image(self, shot: Shot, bbox) -> Image.Image:
         """抓屏帧 → RGB 图；录屏模式下先把自己挖掉。"""
         im = Image.frombytes("RGB", shot.shot.size, shot.shot.rgb)
-        if self.cappable:
+        if self.cappable and not self.solid:
             l, t, r, b = (int(v) for v in bbox)
             gl, gt = shot.box[0], shot.box[1]
             im = fill_own_rect(im, (l - gl, t - gt, r - gl, b - gt))
