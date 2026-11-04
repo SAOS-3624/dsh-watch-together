@@ -387,6 +387,11 @@ class LiveGlass:
         # 所以闪烁也得自己来。_caret_job 存 after 的 id，重排时取消，避免叠定时器。
         self._caret_on = True
         self._caret_job = None
+        # 长消息展开：被截断的气泡点一下独占整个消息区，再点收起。
+        # 存的是消息身份 (role, text, at) 而不是槽位下标 —— 新消息进来会让
+        # 同一条消息换槽，存下标会变成"展开的是另一条"。
+        self._expanded = None
+        self._fit_clipped = False
 
         self._q: queue.Queue = queue.Queue(maxsize=1)
         self._stop = threading.Event()
@@ -568,6 +573,7 @@ class LiveGlass:
                 self.feed.status = ""
                 self._refresh_feed()
             if self.feed.poll():
+                self._collapse_expanded()
                 self._refresh_feed()
         except Exception as exc:
             print("chat poll error", exc, flush=True)
@@ -626,6 +632,7 @@ class LiveGlass:
 
     def _wheel(self, e):
         if self.feed.scroll(1 if e.delta > 0 else -1):
+            self._collapse_expanded()
             self._refresh_feed()
 
     def _toggle_mic(self):
@@ -861,13 +868,39 @@ class LiveGlass:
                     lines.append(cur)
                     cur = ch
             lines.append(cur)
-        if len(lines) > max_lines:
+        # 调用方要知道这条到底被砍了没有：省略号自己看不出是"全文正好以…结尾"
+        # 还是"被截断了"，而展开入口只该给真被砍的那几条。
+        self._fit_clipped = len(lines) > max_lines
+        if self._fit_clipped:
             lines = lines[:max_lines]
             last = lines[-1]
             while last and measure(last + "…") > max_width:
                 last = last[:-1]
             lines[-1] = (last + "…") if last else "…"
         return lines or [""]
+
+    @staticmethod
+    def _msg_key(msg):
+        """消息身份：(role, text, at)，和 ChatFeed.add 的去重键一致。"""
+        return (msg.get("role"), msg.get("text"), msg.get("at"))
+
+    def _expanded_index(self, shown):
+        """当前展开的那条在 shown 里的下标；已经滚出视野就返回 None。"""
+        if self._expanded is None:
+            return None
+        for i, msg in enumerate(shown):
+            if self._msg_key(msg) == self._expanded:
+                return i
+        return None
+
+    def _toggle_expand(self, key) -> None:
+        """点截断的气泡：展开成独占整个消息区；再点收起。"""
+        self._expanded = None if self._expanded == key else key
+        self._layout()
+
+    def _collapse_expanded(self) -> None:
+        """新消息进来或翻页时自动收起：否则盯着一条老消息，新消息看不见。"""
+        self._expanded = None
 
     def _message_shapes(self, shown):
         """四个固定大框换成按正文文字测量的聊天气泡。
@@ -885,12 +918,21 @@ class LiveGlass:
         fstamp = self.fonts.get(9)
         ls = max(1, fbody.metrics("linespace"))
         shapes, infos = [], []
+        # 展开态：这条独占 4 个槽位的纵向范围，其余三条让位。槽位网格本身不动
+        # （chat_layout 仍是 h 的纯函数），只是把"4 槽各放 1 条"换成"1 条占满"，
+        # 气泡边界照样受 base 约束，不会压到输入框。
+        expanded_at = self._expanded_index(shown)
         for i in range(MESSAGE_SLOTS):
+            if expanded_at is not None and i != expanded_at:
+                shapes.append((0, 0, 0, 0, 0))     # 展开态下其他消息让位
+                continue
             if i >= len(shown):
                 shapes.append((0, 0, 0, 0, 0))     # 没有这条消息：不画框
                 continue
             msg = shown[i]
             x0, y0, x1, y1, _r = base[i]
+            if expanded_at is not None:
+                y0, y1 = base[0][1], base[MESSAGE_SLOTS - 1][3]
             slot_h = y1 - y0
             is_user = str(msg.get("role") or "").lower() in ("user", "me", "human")
             stamp = str(msg.get("stamp") or "")
@@ -918,6 +960,10 @@ class LiveGlass:
                 "tx": tx, "ta": ta, "lines": lines,
                 "ty": by0 + max(4, (bh - len(lines) * ls) // 2),
                 "stamp_y": y0, "ls": ls,
+                # 截断的气泡要能点开，也要看得出"这还没完"
+                "clipped": self._fit_clipped,
+                "expanded": expanded_at == i,
+                "key": self._msg_key(msg),
             })
         shapes.extend(base[MESSAGE_SLOTS:])
         return shapes, infos
@@ -1037,7 +1083,8 @@ class LiveGlass:
             with self._geo_lock:
                 self._set_geometry(self._geo.with_shapes(shapes, plate=bool(shown)))
         # 每条消息只按正文占一块；时间戳贴在气泡上方，不进框
-        for info in infos:
+        c = self.canvas
+        for idx, info in enumerate(infos):
             if info["stamp"]:
                 self.text.draw(info["tx"], info["stamp_y"], info["stamp"],
                                anchor=info["ta"], fill="#a8b7c9", size=9, tags=("feed",))
@@ -1046,6 +1093,18 @@ class LiveGlass:
                 self.text.draw(info["tx"], info["ty"] + li * info["ls"], line,
                                anchor=info["ta"], fill="#edf6ff", size=11, tags=("feed",),
                                shadow=PLATE, adapt=not PLATE)
+            if not (info["clipped"] or info["expanded"]):
+                continue
+            # 截断/展开的气泡给一块透明热区（fill="" 只占事件、不画像素）和一个
+            # 角标：光靠省略号看不出是被砍了，更没有入口把剩下的读出来。
+            bx0, by0, bx1, by1, _r = info["shape"]
+            tag = f"bubble{idx}"
+            c.create_rectangle(bx0, by0, bx1, by1, fill="", outline="",
+                               tags=("feed", "bubblehit", tag))
+            self.text.draw(bx1 - 12, by1 - 11, "▴" if info["expanded"] else "▾",
+                           anchor="center", fill="#9fc7ff", size=9, tags=("feed", tag))
+            c.tag_bind(tag, "<Button-1>",
+                       lambda _e, k=info["key"]: self._toggle_expand(k))
         if not shown:
             slot = self._geo.shapes[0]
             self.text.draw(w // 2, slot[1] + (slot[3] - slot[1]) // 2,
