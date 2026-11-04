@@ -71,8 +71,30 @@ ffmpeg / yt-dlp / B 站 cookies / ASR / 浏览器扩展 / 调试端口 / 声音 
 
 ## 安装
 
+**用宿主自带的插件管理器装（推荐）**。它会走 profile 的 pnpm，把本包和
+`dsh-video-storyboard` 一起装上、登记进 `dsh.profile.bundles`，装完重启 DSH 即可：
+
 ```bash
-npm i dsh-watch-together        # 会一并装 dsh-video-storyboard
+dsh plugin --profile web add dsh-watch-together       # web profile
+dsh plugin --profile desktop add dsh-watch-together   # 桌面版（先用桌面端初始化过）
+```
+
+卸载把 `add` 换成 `remove`。包名就是 npm 上的 `dsh-watch-together`，
+不需要先 `npm i` —— `dsh plugin` 那层会处理版本兼容预检和失败回滚。
+
+> 本包的 `dependencies` 里已经声明了 `dsh-video-storyboard`，所以**不用手动装第二个包**。
+> 浏览器扩展在这个包里（`<profile>/node_modules/dsh-watch-together/extension`），
+> 装完按「进度从哪来」加载一次就行。
+
+### 从源码装 / 本地双仓库开发
+
+`scripts/install-dev.mjs` 是开发用的：它把**本地**的自己和同级 `dsh-video-storyboard`
+复制进 profile，避免开发时用到 npm 上的旧版。
+
+```bash
+node scripts/install-dev.mjs            # 复制进 profile（带 --with-dep 时连带 storyboard）
+node scripts/install-dev.mjs --check    # 只读：看 profile 里现在装的是哪一版
+node scripts/install-dev.mjs --remove   # 只卸自己，不动 storyboard
 ```
 
 ### 从"陪看还在 storyboard 里"的旧版本升级（重要）
@@ -84,6 +106,8 @@ npm i dsh-watch-together        # 会一并装 dsh-video-storyboard
 node ../dsh-video-storyboard/scripts/install-dev.mjs   # 先把 storyboard 更新到 0.5.0（只剩 4 个 video_*）
 node scripts/install-dev.mjs                            # 再装陪看（它会连带把 storyboard 再同步一次）
 ```
+
+（这是本地副本的清理路径。走 `dsh plugin` 装的话，profile 里只有一份，不存在重复注册。）
 
 本包的 `scripts/install-dev.mjs` 会把**自己**和同级目录里的 `dsh-video-storyboard`
 一起复制进 profile —— 因为陪看是裸包名 import 后者的，profile 里缺了它就会

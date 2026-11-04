@@ -209,7 +209,9 @@ class TextLayer:
              adapt=True) -> None:
         """按字符拆开建 item；anchor 支持 w/e/center 与 n/s 变体。
 
-        `shadow=True` 时每个字先落一层偏移 1px 的深色副本，给亮背景一条边界；
+        `shadow=True` 时每个字先落一层描边：**四个方向各偏移 1px** 的深色副本。
+        原来只有右下 1px，等于投影 —— 背景是浅色视频时右下那条边不够，字看起来
+        还是浮在水里（#44 第 2 条）。四方向才是真的描边，成本是每字多 3 个 item。
         `adapt=False` 表示这块字有自己的底板，颜色固定、不参与 `adapt()` 采样。
         """
         font = self.fonts.get(size, bold)
@@ -233,6 +235,7 @@ class TextLayer:
         spec = self.fonts.spec(size, bold)
         base_tags = tags if isinstance(tags, tuple) else ((tags,) if tags else ())
         shadow_tags = base_tags + ("tshadow",) if shadow else ()
+        stroke = ((-1, 0), (1, 0), (0, -1), (0, 1)) if shadow else ()
         for row, line in enumerate(lines):
             width = measure(line)
             lx = x - width if right else (x - width / 2 if center else x)
@@ -241,8 +244,8 @@ class TextLayer:
             # 累积宽度，别对每个字重新 measure 前缀（那是 O(n²) 次 Tcl 调用）
             cx = lx
             for ch in line:
-                if shadow:
-                    self.canvas.create_text(cx + 1, ly + 1, text=ch, anchor="w",
+                for dx, dy in stroke:
+                    self.canvas.create_text(cx + dx, ly + dy, text=ch, anchor="w",
                                             fill=self.COLOR_DARK, font=spec,
                                             tags=shadow_tags)
                 item = self.canvas.create_text(cx, ly, text=ch, anchor="w",
