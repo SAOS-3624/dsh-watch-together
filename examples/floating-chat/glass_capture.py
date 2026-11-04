@@ -269,23 +269,35 @@ class CaptureSource:
     """按窗口矩形抓背景，外扩 PAD 供边缘透镜取「框外」的像素。"""
 
     def __init__(self, screen: tuple[int, int], pad: int = PAD, cappable: bool = False,
-                 solid: bool = False):
+                 solid: bool = False, bounds: tuple | None = None):
         self.screen = screen
         self.pad = pad
         self.cappable = cappable
         # solid：远程/录屏下 WDA 会让整窗在对面消失；不抓屏，用纯色底板
         # 仍然走同一条渲染管线，文字和气泡都还在，只是背后不透明。
         self.solid = solid
+        # bounds = 虚拟桌面 (x, y, w, h)。第二块屏在主屏左边时坐标是负的，
+        # 只拿主屏当边界会算出 gr <= gl，玻璃永远停在旧帧（#8）。
+        self.bounds = bounds
+
+    def _clamp_box(self, l: int, t: int, r: int, b: int) -> tuple[int, int, int, int]:
+        """抓屏外扩 + 钳位。窗口整个在主屏里时仍按主屏钳（与旧行为逐像素一致）。"""
+        sw, sh = self.screen
+        if 0 <= l and 0 <= t and r <= sw and b <= sh:
+            bl, bt, br, bb = 0, 0, sw, sh
+        elif self.bounds and self.bounds[2] > 0 and self.bounds[3] > 0:
+            bx, by, bw, bh = self.bounds
+            bl, bt, br, bb = bx, by, bx + bw, by + bh
+        else:
+            bl, bt, br, bb = 0, 0, sw, sh
+        return (max(bl, l - self.pad), max(bt, t - self.pad),
+                min(br, r + self.pad), min(bb, b + self.pad))
 
     def grab(self, sct, bbox) -> Shot | None:
         l, t, r, b = (int(v) for v in bbox)
         if r <= l or b <= t:
             return None
-        sw, sh = self.screen
-        gl = max(0, l - self.pad)
-        gt = max(0, t - self.pad)
-        gr = min(sw, r + self.pad)
-        gb = min(sh, b + self.pad)
+        gl, gt, gr, gb = self._clamp_box(l, t, r, b)
         # 多显示器 / DPI 变化 / 被别的程序挪出屏幕时，钳位后宽高可能 <= 0；
         # mss 会抛 "Region has zero or negative size"，而 _work() 会每帧吞掉它
         # —— 表现就是日志刷屏、背景永久停在旧帧。没有可抓的区域就别抓。
