@@ -40,7 +40,7 @@
  * 这样打包发布时不会把某个人的音色带进包里 —— 每个人自己配自己的。
  */
 
-import { execFile } from 'node:child_process';
+import { execFile, spawn } from 'node:child_process';
 import { existsSync, readFileSync, statSync, unlinkSync } from 'node:fs';
 import { homedir, tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
@@ -141,14 +141,36 @@ async function synthEdge(text, { bin, voice, rate }) {
   return { ok: true, path: out, engine: 'edge-tts' };
 }
 
+/**
+ * 正在念的那一句的「掐断」句柄（老路的 ffplay 进程）。
+ *
+ * 常驻通道不需要它 —— 那边走 `stream.interrupt()`，杀的是播放管道那个 ffplay。
+ * 两条路都要能被打断：串行链只保证"不重叠"，挡不住"越排越长"。
+ */
+let currentKill = null;
+
 /** 播放一个已经合成好的 mp3；返回时无论成败都删掉临时文件。 */
-async function playEdge(path, onStart = null) {
+function playEdge(path, onStart = null) {
   // **就在这里上报"要出声了"**：ffplay 一启动就有声 —— 悬浮窗收到才把字摆出来，
   // 于是"字出现"和"张嘴"几乎是同一刻（见 src/chat-store.js）。
   try { onStart?.(); } catch { /* 上报失败不影响念 */ }
-  const played = await run('ffplay', ['-nodisp', '-autoexit', '-loglevel', 'quiet', path], 90_000);
-  try { unlinkSync(path); } catch { /* 删不掉就留着 */ }
-  return played;
+  // 用 spawn 而不是 execFile：需要拿到 child 才能中途掐断（`interruptCurrent`）
+  return new Promise((resolve) => {
+    const child = spawn('ffplay', ['-nodisp', '-autoexit', '-loglevel', 'quiet', path], {
+      windowsHide: true,
+    });
+    let settled = false;
+    const done = (ok) => {
+      if (settled) return;
+      settled = true;
+      currentKill = null;
+      try { unlinkSync(path); } catch { /* 删不掉就留着 */ }
+      resolve(ok);
+    };
+    currentKill = () => { try { child.kill(); } catch { /* 已经退了 */ } };
+    child.on('error', () => done(false));
+    child.on('exit', (code) => done(code === 0));
+  });
 }
 
 /** Windows 系统声音。Linux/macOS 会失败，失败就当没这个引擎。 */
@@ -157,9 +179,23 @@ function speakSapi(text, rate, onStart = null) {
   const cmd = `$v = New-Object -ComObject SAPI.SpVoice; $v.Rate = ${Math.max(-10, Math.min(10, Number(rate) || 0))}; $null = $v.Speak(${lit})`;
   // PowerShell 冷启动要几百毫秒，上报放在**起进程之前**，宁可略早也别晚（字等声音没关系，声音等字不行）
   try { onStart?.(); } catch { /* 上报失败不影响念 */ }
+  // spawn 而不是 execFile：`SpVoice.Speak()` 是阻塞的，只有杀掉进程才能让它闭嘴 ——
+  // 没有 edge-tts 的机器全走这条路（实测本机就是），不能中断的话"越堆越长"永远治不好。
   return new Promise((resolve) => {
-    execFile('powershell', ['-NoProfile', '-NonInteractive', '-Command', cmd],
-      { timeout: 60_000, windowsHide: true }, (err) => resolve(!err));
+    const child = spawn('powershell', ['-NoProfile', '-NonInteractive', '-Command', cmd], {
+      windowsHide: true,
+    });
+    let settled = false;
+    const done = (ok) => {
+      if (settled) return;
+      settled = true;
+      currentKill = null;
+      resolve(ok);
+    };
+    const guard = setTimeout(() => { try { child.kill(); } catch { /* 已经退了 */ } done(false); }, 60_000);
+    currentKill = () => { try { child.kill(); } catch { /* 已经退了 */ } };
+    child.on('error', () => { clearTimeout(guard); done(false); });
+    child.on('exit', (code) => { clearTimeout(guard); done(code === 0); });
   });
 }
 
@@ -189,6 +225,26 @@ export function attach(api) {
   // 常驻合成器：能起就用它（首声 170~200ms），起不来就是 null，全部逻辑退回老路。
   const stream = openStream(bin);
   let chain = Promise.resolve();            // 播放串行：两句绝不重叠着念
+  /**
+   * 「该念的是第几句」。新的一句进来就 +1，之前排队的看到代际变了就自己退场。
+   *
+   * 为什么需要：串行链只保证"不重叠"，挡不住"越排越长" —— 模型连说三句，
+   * 第三句要等前两句念完才开口，那时候画面早换了，听到的是"它在说上一段的事"。
+   * 用户要的是**新的直接顶掉旧的**，不是排队。
+   */
+  let speakGen = 0;
+
+  /**
+   * 掐断当前这一句，并清空排队。
+   *
+   * 常驻通道走 `stream.interrupt()`（只杀播放管道那个 ffplay，daemon 还活着）；
+   * 老路直接 kill 调当前 ffplay。**chain 重置是有意的**：排队的都是"画面已经过去"的旧话。
+   */
+  function interruptCurrent() {
+    if (stream?.alive) { try { stream.interrupt(); } catch { /* 通道挂了就算了 */ } }
+    if (currentKill) { try { currentKill(); } catch { /* 已经退了 */ } currentKill = null; }
+    chain = Promise.resolve();
+  }
 
   // **预合成**：核心在台词写好、还没到点时发 `scheduled`。这里趁这段时间把 mp3 合成好，
   // 到点只播放；否则 due 才开始跑 edge-tts（CLI 冷启动 + 网络往返 + 完整 mp3），
@@ -250,6 +306,18 @@ export function attach(api) {
       return;
     }
     if (e.state !== 'due') return;
+
+    /**
+     * **抢占**：新的一句要开口了，把上一句没念完的直接截断、把还在排队的丢掉。
+     *
+     * 这是用户明确的诉求（"下一句来了直接把上一句停掉，不然越堆越长"）。
+     * 代价：被截断的那句后面几个字听不到 —— 但那几个字本来就是"上一段画面"的话，
+     * 留着说完反而和眼前的东西对不上。
+     */
+    speakGen += 1;
+    const myGen = speakGen;
+    interruptCurrent();
+
     // 「真的出声了」只报一次：edge 成功之后就不该再由 SAPI 兜底那条报第二遍。
     // 展示层（悬浮窗）等的就是这个上报 —— 不是 `due`（见 src/chat-store.js）。
     let reported = false;
@@ -263,6 +331,8 @@ export function attach(api) {
     };
     const queuedAt = Date.now();
     chain = chain.then(async () => {
+      // 已经被更新的一句顶掉了：直接退场，不念
+      if (myGen !== speakGen) return;
       // **排太久了就别念**：串行链只会越排越长，声音离画面越来越远。
       // 核心那边已经按"上一句念完才发下一句"节流，走到这里说明是真的卡住了
       // （合成慢、引擎换挡、机器在忙）—— 这一句放弃，队立刻清空。

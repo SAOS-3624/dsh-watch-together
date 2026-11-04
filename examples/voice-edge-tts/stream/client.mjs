@@ -143,6 +143,14 @@ export function startStream({ python, script, args = ['-u', script], onError, lo
     say: (text, { timeoutMs = 30_000, onFirst = null } = {}) => ask('say', text, timeoutMs, onFirst),
     prefetch: (text, timeoutMs = 30_000) => ask('prefetch', text, timeoutMs).catch(() => ({ failed: true })),
     forget: (text) => send({ op: 'forget', text }),
+    /**
+     * 截断正在念的那一句（**不停进程**）。
+     *
+     * 和 `stop()` 的区别：`stop` 是 `SystemExit(0)`，整个常驻合成器没了，下一句要
+     * 重新预热 1~2 秒；`interrupt` 只杀播放管道那一个 ffplay，daemon 还活着，
+     * 下一句从新进程开始念（多花一次 demuxer 探测 ~200ms）。
+     */
+    interrupt() { try { send({ op: 'interrupt' }); } catch { /* 已经断了 */ } },
     stop() {
       try { send({ op: 'stop' }); } catch { /* already */ }
       setTimeout(() => { try { proc.kill(); } catch { /* already */ } }, 300);

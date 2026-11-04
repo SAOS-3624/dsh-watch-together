@@ -3,6 +3,27 @@
 All notable changes to **dsh-watch-together** are documented here.
 This package starts its own version line at `0.0.7` — it is not a continuation of `dsh-video-storyboard`.
 
+## [Unreleased]
+
+### Changed — 语音改成抢占式：新的一句直接顶掉没念完的
+
+以前是纯串行链：三句排队，第三句要等前两句念完才开口 —— 那时候画面早换了，
+听到的是"它在说上一段的事"。`MAX_QUEUE_LAG_MS` 只能做"排太久就放弃"，救不了"一直在排"。
+
+现在每一句带代际（`speakGen`），新句一到立刻做两件事：
+
+1. **截断正在念的那一句**
+   - 常驻通道：走 daemon 新增的 `interrupt` op，只杀播放管道那个 ffplay（daemon 还活着，
+     下一句从新进程开始，多花一次 demuxer 探测 ~200ms）；
+   - 没有 edge-tts 的机器走 SAPI：kill 掉那个 PowerShell 进程 ——
+     `SpVoice.Speak()` 是阻塞调用，**只有杀进程才能让它闭嘴**。
+2. **清空排队**：那些句子配的是已经过去的画面，念出来只会让人困惑。
+
+代价：被截断的那句后面几个字听不到。这个取舍是明确的 —— 追上画面比句子完整重要。
+
+**新增协议**：`{"op":"interrupt"}` → `{"ev":"interrupted"}`。
+它和 `stop` 不是一回事：`stop` 是 `SystemExit(0)`，整个常驻合成器没了，下一句要重新预热 1~2 秒。
+
 ## [0.2.12] - 2026-11-04
 
 ### Fixed

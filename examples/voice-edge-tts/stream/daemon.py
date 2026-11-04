@@ -177,6 +177,31 @@ class Player:
             except Exception:
                 pass
 
+    def interrupt(self):
+        """截断"正在念的这一句"：倒空待喂队列 + 杀掉 ffplay。
+
+        为什么需要：常驻 ffplay 是按顺序吃 mp3 帧的，一条管道进去就得念完。
+        串行链只保证"不重叠"，挡不住"越排越长" —— 模型连说三句，第三句要等到
+        十几秒后才开口，那时候画面早换了。
+
+        下一帧数据进来时 `_loop` 会发现 `_proc is None` 自动 `_spawn` 一个新的，
+        所以**下一句是立刻开始念**，代价只是新进程要做一次 demuxer 探测（~200ms）。
+        """
+        while True:
+            try:
+                self._q.get_nowait()
+            except queue.Empty:
+                break
+            except Exception:
+                break
+        proc = self._proc
+        self._proc = None
+        if proc is not None:
+            try:
+                proc.kill()
+            except Exception:
+                pass
+
     def _spawn(self):
         args = ["ffplay", "-nodisp", "-loglevel", self.loglevel, "-volume", str(self.volume), "-"]
         extra = {"creationflags": 0x08000000} if os.name == "nt" else {}  # CREATE_NO_WINDOW
@@ -398,6 +423,11 @@ class Daemon:
                 except ValueError:
                     pass
             emit(ev="skip", id=req.get("id"))
+            return
+        if op == "interrupt":
+            # 新的一句要开口了：把正在念的截断，别让它排队排到画面之外
+            self.player.interrupt()
+            emit(ev="interrupted")
             return
         if op == "stop":
             raise SystemExit(0)
