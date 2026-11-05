@@ -24,6 +24,20 @@
     "url": "git+https://github.com/SAOS-3624/dsh-watch-together.git"
   },
   "author": "SAOS-3624",
+  "contributors": [
+    {
+      "name": "ggfgfgf-on",
+      "url": "https://github.com/ggfgfgf-on"
+    },
+    {
+      "name": "gao804",
+      "url": "https://github.com/gao804"
+    },
+    {
+      "name": "DreamDLYY",
+      "url": "https://github.com/DreamDLYY"
+    }
+  ],
   "license": "Apache-2.0",
   "type": "module",
   "main": "./src/index.js",
@@ -60,6 +74,7 @@
     "dsh.plugin.json",
     "README.md",
     "CHANGELOG.md",
+    "CREDITS.md",
     "LICENSE",
     "NOTICE",
     "examples/floating-chat/*.py",
