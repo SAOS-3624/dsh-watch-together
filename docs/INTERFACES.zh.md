@@ -88,6 +88,7 @@ Node 侧：`src/window-protocol.js`（`appendWindowEvent` /
 | `DSH_GLASS_GPU=1` | GPU（1/4 采样） |
 | `DSH_GLASS_NATIVE=1` | GPU + 全分辨率采样（边缘透镜没有 1/4 放大的像素感） |
 | `python glass_window_gpu.py` | 等价于 `DSH_GLASS_GPU=1` 起窗 |
+| `DSH_GLASS_MAX_FPS=120` | 把目标帧率上限从默认 60 抬到 120（更费 CPU；120fps 的抓屏+合成预算只有 8.3ms） |
 
 GPU 需要 `moderngl` 和 OpenGL 3.3；起不来时会打印一行原因并回落到 CPU，
 窗口照开。`DSH_GLASS_WDA=0` 可关闭抓屏排除，方便录屏/截图；
