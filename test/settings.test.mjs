@@ -138,7 +138,7 @@ test('watch settings server: token、保存、key 不适用但路径可读', asy
   assert.equal((await page.tool.execute()).available, true);
 });
 
-test('watch settings: DSH 设置 tab 的 client bundle 可注册', () => {
+test('watch settings: client bundle 只在组合包页面注册，不占用设置 tab', () => {
   const pkg = JSON.parse(readFileSync(new URL('../package.json', import.meta.url), 'utf8'));
   assert.equal(pkg.dsh.client.platform, 'web');
   assert.equal(pkg.exports['./client'], './lib/client.js');
@@ -150,10 +150,7 @@ test('watch settings: DSH 设置 tab 的 client bundle 可注册', () => {
   const mod = handoff.factory(() => ({ createElement: () => ({}) }));
   const registered = [];
   mod.apply({ slots: { inject(_name, callback) { callback(); }, register(options, component) { registered.push({ options, component }); } } });
-  const tab = registered.find((entry) => entry.options.name === 'settings.plugins.tab');
-  assert.equal(tab.options.id, 'watch-together');
-  assert.equal(tab.options.label(), '一起看');
-  assert.equal(typeof tab.component, 'function');
+  assert.equal(registered.some((entry) => entry.options.name === 'settings.plugins.tab'), false);
   const bundle = registered.find((entry) => entry.options.name === 'plugins.bundle.config');
   assert.equal(bundle.options.key, 'dsh-watch-together');
   assert.equal(bundle.component({ view: 'summary' }), null);
