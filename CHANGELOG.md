@@ -3,6 +3,27 @@
 All notable changes to **dsh-watch-together** are documented here.
 This package starts its own version line at `0.0.7` — it is not a continuation of `dsh-video-storyboard`.
 
+## [Unreleased]
+
+### Changed — 心跳从"空文件戳一下"变成带可见性的 JSON
+
+插件侧以前只能看心跳的 mtime，那只能回答"进程还在画吗"，回答不了"用户能不能看见"。
+于是出现最难查的一种：配置文件写 `hidden:false`、进程活着、心跳在跳，屏幕上什么都没有，
+而插件 `status` 说"显示中"（see-now issue #32 第 3 点）。
+
+现在每秒写的是：
+
+```json
+{"at":1793886026.33,"visible":true,"hidden":false,"state":"normal"}
+```
+
+`hidden` 是意图，`visible` 是事实（Tk 的 `state()` + `winfo_ismapped()` 说了算），
+两个都写 —— 只写事实的话插件分不清"用户故意藏的"和"想显示但没 map 出来"。
+原子写（`.tmp` + `replace`）：插件每秒都可能读，读到半行 JSON 会退回读配置文件，
+那正好是这一版要修的东西。
+
+mtime 照旧更新，老版本插件不受影响。
+
 ## [0.2.13] - 2026-11-04
 
 ### Changed — 语音改成抢占式：新的一句直接顶掉没念完的

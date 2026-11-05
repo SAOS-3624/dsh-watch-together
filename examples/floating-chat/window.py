@@ -1247,16 +1247,50 @@ class LiveGlass:
             self._set_exclude(False)
 
     def _beat(self) -> None:
-        """写心跳（每秒最多一次）。插件侧 `windowAlive()` 读它的 mtime。"""
+        """写心跳（每秒最多一次）。
+
+        以前写的是**空文件**，插件侧只能看 mtime —— 那只能回答"进程还在画吗"，
+        回答不了"用户能不能看见"。于是出现最难受的一种状态：配置文件写
+        `hidden:false`、进程活着、心跳在跳，屏幕上一片空，`status` 却说"显示中"
+        （see-now issue #32 第 3 点）。
+
+        现在把**窗口的真实可见性**一起写进去。mtime 仍然可用，老版本读法不受影响；
+        内容是多出来的一份事实。
+
+        必须原子写：插件每秒都可能读它，读到半行 JSON 会被当成"没有可见性"，
+        于是退回读配置文件 —— 那正好是这一版要修的东西。
+        """
         now = time.time()
         if now - getattr(self, "_beat_at", 0.0) < HEARTBEAT_EVERY:
             return
         self._beat_at = now
         try:
             HEARTBEAT.parent.mkdir(parents=True, exist_ok=True)
-            HEARTBEAT.write_bytes(b"")
+            tmp = HEARTBEAT.with_name("window-heartbeat.tmp")
+            tmp.write_bytes(self._beat_payload(now))
+            os.replace(tmp, HEARTBEAT)
         except Exception:
             pass
+
+    def _beat_payload(self, now: float) -> bytes:
+        """心跳内容：`{at, visible, hidden, state}`。
+
+        `hidden` 是**意图**（配置文件要求藏），`visible` 是**事实**（Tk 说了算）。
+        两个都要写 —— 只写事实的话，插件分不清"用户故意藏的"和"想显示但没 map 出来"。
+        """
+        try:
+            state = str(self.root.state())
+        except Exception:
+            state = "unknown"
+        visible = (not self._hidden) and state == "normal"
+        try:
+            visible = visible and bool(self.root.winfo_ismapped())
+        except Exception:
+            visible = False
+        return json.dumps(
+            {"at": round(now, 3), "visible": visible, "hidden": bool(self._hidden), "state": state},
+            ensure_ascii=False,
+        ).encode("utf-8")
 
     # ---- 主循环 ----
 
