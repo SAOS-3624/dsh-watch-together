@@ -1,7 +1,7 @@
 {
   "name": "dsh-watch-together",
   "version": "0.2.13",
-  "description": "Watch a video together with a text-only agent: follow the user's real playback position, hand over one segment at a time just before it ends, and keep a single text stream of scripted lines, interjections and the user's replies.",
+  "description": "Watch a video together, in sync with the user's real playback: every segment arrives as one storyboard image plus its subtitle lines just before it ends, while the floating window carries spoken replies and live room audio — picture and voice, not a transcript.",
   "keywords": [
     "dsh",
     "dsh-plugin",
@@ -106,8 +106,8 @@
     "catalog": {
       "category": "tool",
       "summary": {
-        "en": "Watch a video together with a text-only agent: it follows your real playback position and hands over one segment at a time, just before that segment ends.",
-        "zh": "和只有文字的智能体一起看视频：跟着你真实的播放位置，一段一段把画面和台词交到它手上，在每段结束前说完。"
+        "en": "Watch a video together, in sync with the user's playback: each segment arrives as one storyboard image plus its subtitle lines just before it ends, and the floating window carries spoken replies and live room audio.",
+        "zh": "和智能体一起看视频：跟着真实播放位置，每段结束前把分镜画面 + 带秒台词交过去；悬浮窗里能出声，也听得见房间里的声音 —— 给的是画面和声音，不是一段转写文本。"
       },
       "capabilities": [
         "fs",

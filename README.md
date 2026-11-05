@@ -4,13 +4,14 @@
 [![npm](https://img.shields.io/npm/v/dsh-watch-together.svg)](https://www.npmjs.com/package/dsh-watch-together)
 [![license](https://img.shields.io/badge/license-Apache--2.0-blue.svg)](LICENSE)
 
-> 陪一个只会读文字的模型**一起看视频**：跟着你的真实播放进度一段段往下看，在你快看完这一段时把画面和台词递过来。
+> 陪智能体**一起看视频**：跟着你的真实播放进度，在你快看完这一段时，把这一段的**画面分镜**和**带秒台词**一起递过去；它还能在悬浮窗里出声、也听得见房间里的声音 —— 它看到的是画面，不是一段转写文本。
 >
 > 名字全小写，带横杠 —— 和 `dsh-video-storyboard` 同一个风格。
 
-<sub>**English TL;DR** — a DSH plugin that watches a video *together* with a text-only agent: it follows
-the real playback position reported by a browser extension, hands the agent one storyboard + transcript
-per segment just before that segment ends, and speaks the scripted lines at the exact second. Code,
+<sub>**English TL;DR** — a DSH plugin that watches a video *together* with the agent, in sync with the real
+playback position a browser extension reports. Each segment arrives as one storyboard image plus its subtitle
+lines just before that segment ends; the floating window carries spoken replies (through whatever voice
+adapter you plug in) and live room audio. The agent gets picture, text and sound — not a transcript. Code,
 identifiers and the tool schema are English; the docs below are Chinese.</sub>
 
 - **它是什么**：一个 DSH 插件，只注册一个工具 `watch_together`
