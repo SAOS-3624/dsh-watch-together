@@ -16,6 +16,7 @@
  *  - saveImage 要的是**真正编码后的字节**（PNG/JPEG），不是裸 RGB —— 它会解码校验
  */
 
+import { defineToolCompat } from './define-tool.js';
 import { attachSpeechToChat } from './chat.js';
 import { getTtsPort } from './runtime-ports.js';
 import { watchTools } from './register.js';
@@ -38,13 +39,25 @@ async function loadDefineTool() {
   } catch {
     /* 落到环境变量 */
   }
+  /**
+   * 第二跳：`DSH_TOOLS_PATH` 指向磁盘上的那份（本地开发时用）。
+   * **包一层 try**：路径写错不该让插件整个废掉。
+   */
   const override = process.env.DSH_TOOLS_PATH;
   if (override) {
-    const { pathToFileURL } = await import('node:url');
-    const mod = await import(pathToFileURL(override).href);
-    if (mod?.defineTool) return mod.defineTool;
+    try {
+      const { pathToFileURL } = await import('node:url');
+      const mod = await import(pathToFileURL(override).href);
+      if (mod?.defineTool) return mod.defineTool;
+    } catch { /* 路径不对，继续落到兜底 */ }
   }
-  throw new Error('cannot resolve @deepseek-ai/dsh-tools (set DSH_TOOLS_PATH for local dev)');
+  /**
+   * 最后一跳：内置兼容实现。**不能再抛** ——
+   * 宿主的包在 `app.asar` 里，插件侧经常解析不到（社区实报），
+   * 抛出去会被 apply 的 catch 吞掉，结果是**整个插件静默不注册任何工具**。
+   * 内置版只少了运行时参数校验，工具照常能用（详见 define-tool.js）。
+   */
+  return defineToolCompat;
 }
 
 const APPLY_TIMEOUT_MS = 15_000;

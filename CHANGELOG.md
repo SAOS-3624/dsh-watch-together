@@ -1,5 +1,18 @@
 # Changelog
 
+## [0.2.15] - 2026-11-06
+
+### Fixed — 有些机器上装完一个工具都不出现（社区实报）
+
+`import('@deepseek-ai/dsh-tools')` 拿 `defineTool`，而宿主的这份**被打进 `app.asar`**，
+插件从自己的 `node_modules` 往上解析不到 → 抛 → `apply()` 的 catch 吞掉 →
+**整个插件静默不注册任何工具**（日志里只留一行 `failed to load`）。
+
+- 新增 `src/define-tool.js`：内置一份 `defineTool` 兼容实现（author spec → JSON Schema，
+  规则照抄宿主 `runSchemaCompiler` 的语义；只少了运行时参数校验）。
+- `loadDefineTool()` 改成三跳：`import` → `DSH_TOOLS_PATH`（包了 try，路径写错也不会崩）→ 内置兜底。
+- 走兜底的情况下工具照常注册，`schema-audit` 那套静态审计仍然是第一道防线。
+- 测试 +6：`type:'json'` 退化成注解、`required:true` 提升到父级、真实 spec 全部能编译出来。
 All notable changes to **dsh-watch-together** are documented here.
 This package starts its own version line at `0.0.7` — it is not a continuation of `dsh-video-storyboard`.
 
