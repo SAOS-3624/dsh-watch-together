@@ -58,7 +58,15 @@ except ImportError:
     sys.stderr.write("缺 numpy：pip install numpy\n")
     raise SystemExit(2)
 
-from aec import FdafAec, find_loopback_device   # 回声消除：把电脑放出来的声音从麦克风里减掉
+# 回声消除：把电脑放出来的声音从麦克风里减掉。
+# **不是硬依赖**：打包漏了 aec.py 时（issue #36：0.0.2–0.1.3 的 see-now 包都没带）
+# 麦克风仍要能起来，只是不做回声消除 —— 而模块级 import 失败会让整个进程当场退出，
+# 悬浮窗那边 stderr 又被丢进 DEVNULL，用户只看到"录音中"三个字。
+try:
+    from aec import FdafAec, find_loopback_device
+except ImportError:
+    FdafAec = None
+    find_loopback_device = None
 
 # ---------------------------------------------------------------- 与悬浮窗共享的那份流
 
@@ -273,14 +281,17 @@ def run(args):
     aec = None
     lb_dev, lb_name = None, None
     if not args.no_aec:
-        lb_dev = args.loopback
-        if lb_dev is None:
-            lb_dev, lb_name = find_loopback_device()
-        if lb_dev is not None:
-            aec = FdafAec(frame=512, taps=args.taps, mu=0.35, dt_ratio=args.dt_ratio)
-            log(f"回声消除开：参考设备 [{lb_dev}] {lb_name or ''}")
+        if FdafAec is None or find_loopback_device is None:
+            log("缺 aec.py，回声消除关 —— 麦克风照常可用，但扬声器的声音会被一起收进来")
         else:
-            log("没找到回环设备（扬声器/立体声混音），回声消除关 —— 可用 --loopback 指定设备号")
+            lb_dev = args.loopback
+            if lb_dev is None:
+                lb_dev, lb_name = find_loopback_device()
+            if lb_dev is not None:
+                aec = FdafAec(frame=512, taps=args.taps, mu=0.35, dt_ratio=args.dt_ratio)
+                log(f"回声消除开：参考设备 [{lb_dev}] {lb_name or ''}")
+            else:
+                log("没找到回环设备（扬声器/立体声混音），回声消除关 —— 可用 --loopback 指定设备号")
     ring = Ring()
 
     def feed(block, ref_block=None):

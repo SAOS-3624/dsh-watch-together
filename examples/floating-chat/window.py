@@ -36,22 +36,31 @@ import queue
 import subprocess
 import threading
 import time
-from ctypes import wintypes
 from pathlib import Path
 
-# 必须在 import tkinter / 创建任何窗口之前声明 per-monitor v2 DPI 感知。
-_u = ctypes.windll.user32
-try:
-    _u.SetProcessDpiAwarenessContext.argtypes = [ctypes.c_void_p]
-    _u.SetProcessDpiAwarenessContext.restype = ctypes.c_bool
-    _u.SetProcessDpiAwarenessContext(ctypes.c_void_p(-4))
-except Exception:
-    pass
+# 是不是 Windows。**所有 ctypes.windll / wintypes / WDA 都必须先问它**：
+# `ctypes.windll` 在 macOS/Linux 上根本不存在，模块顶层摸一下就是
+# `AttributeError: module 'ctypes' has no attribute 'windll'`，而且死在依赖预检
+# 之前，用户看到的是"启动后 700ms 退出，code=1"（issue #40）。
+IS_WIN = os.name == "nt"
 
-try:
-    ctypes.windll.winmm.timeBeginPeriod(1)
-except Exception:
-    pass
+if IS_WIN:
+    from ctypes import wintypes
+
+# 必须在 import tkinter / 创建任何窗口之前声明 per-monitor v2 DPI 感知。
+if IS_WIN:
+    _u = ctypes.windll.user32
+    try:
+        _u.SetProcessDpiAwarenessContext.argtypes = [ctypes.c_void_p]
+        _u.SetProcessDpiAwarenessContext.restype = ctypes.c_bool
+        _u.SetProcessDpiAwarenessContext(ctypes.c_void_p(-4))
+    except Exception:
+        pass
+
+    try:
+        ctypes.windll.winmm.timeBeginPeriod(1)
+    except Exception:
+        pass
 
 # ---------------------------------------------------------------- 依赖预检
 #
@@ -80,8 +89,10 @@ def _die_missing(missing: list) -> None:
         log_path.write_text(text + "\n", encoding="utf-8")
     except Exception:
         pass
+    # 弹窗标题跟着"谁拉起的这个窗"走：see-now 的用户看到 dsh-watch-together 会以为装错了包
     try:
-        ctypes.windll.user32.MessageBoxW(None, text, "dsh-watch-together", 0x10)
+        ctypes.windll.user32.MessageBoxW(None, text,
+                                         os.environ.get("DSH_WINDOW_BRAND") or "dsh-watch-together", 0x10)
     except Exception:
         print(text, flush=True)
     raise SystemExit(2)
@@ -226,6 +237,8 @@ REMOTE_MARKS = (
 
 def remote_capture_likely() -> bool:
     """当前是不是远程/捕获环境：RDP 标志位 + 常见远程软件窗口。"""
+    if not IS_WIN:
+        return False
     try:
         if ctypes.windll.user32.GetSystemMetrics(0x1000):  # SM_REMOTESESSION
             return True
@@ -420,7 +433,8 @@ class LiveGlass:
         self._excluded = False
         # 录屏模式（capturable）下 mss 会抓到窗口自己，必须每帧挖掉，见 fill_own_rect。
         # 缓存起来：读配置是磁盘 IO，不能每帧做。
-        self._cappable = capturable()
+        # **非 Windows 一律按"能抓到自己"处理**：那边没有 WDA，不挖就是"透过自己看自己"。
+        self._cappable = capturable() or not IS_WIN
         # 样式：live / frost / solid。静态样式不抓屏、不设 WDA、不起渲染线程。
         self._style = glass_style(cfg)
         self._static = self._style in STATIC_STYLES
@@ -1530,11 +1544,22 @@ class LiveGlass:
     # ---- 窗口句柄 ----
 
     def _hwnd_root(self):
+        if not IS_WIN:
+            return None
         if self._hwnd is None:
             self._hwnd = ctypes.windll.user32.GetAncestor(self.root.winfo_id(), 2)
         return self._hwnd
 
     def _set_exclude(self, on: bool) -> None:
+        """WDA：让窗口从屏幕捕获里消失，抓自己所在区域时抓到的是背后的桌面。
+
+        macOS/Linux 没有这个 API，**不能抓、也不能设**：硬调就是 AttributeError。
+        返回 False 之后 `_cappable` 会被打开，改走"抓到了就把自己那块填掉"那条路
+        （见 `glass_capture.fill_own_rect`），否则会递归地拍到自己。
+        """
+        if not IS_WIN:
+            self._excluded = False
+            return
         hwnd = self._hwnd_root()
         fn = ctypes.windll.user32.SetWindowDisplayAffinity
         fn.argtypes = [wintypes.HWND, wintypes.DWORD]
@@ -1545,6 +1570,15 @@ class LiveGlass:
             print("WDA failed", ctypes.GetLastError(), flush=True)
 
     def _bbox(self):
+        if not IS_WIN:
+            # 非 Windows 没有 GetWindowRect；用 Tk 自己的屏幕坐标顶上。
+            # Retina 上是逻辑像素，和 mss 的物理像素可能差一个缩放倍数 ——
+            # 已知的遗留问题，那类机器上建议用 frost/solid（都不抓屏）。
+            try:
+                x, y = int(self.root.winfo_rootx()), int(self.root.winfo_rooty())
+                return (x, y, x + int(self.root.winfo_width()), y + int(self.root.winfo_height()))
+            except Exception:
+                return (0, 0, 0, 0)
         rc = _RECT()
         ctypes.windll.user32.GetWindowRect(self._hwnd_root(), ctypes.byref(rc))
         return (rc.left, rc.top, rc.right, rc.bottom)
@@ -1580,7 +1614,8 @@ class LiveGlass:
                 self._renderer.close()
             except Exception:
                 pass
-            ctypes.windll.winmm.timeEndPeriod(1)
+            if IS_WIN:
+                ctypes.windll.winmm.timeEndPeriod(1)
         finally:
             self.root.destroy()
         return "break"

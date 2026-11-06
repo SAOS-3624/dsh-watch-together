@@ -3,6 +3,30 @@
 All notable changes to **dsh-watch-together** are documented here.
 This package starts its own version line at `0.0.7` — it is not a continuation of `dsh-video-storyboard`.
 
+## [Unreleased]
+
+### Fixed — 悬浮窗在 macOS/Linux 上必崩（see-now #40）
+
+`window.py` 顶层无条件摸 `ctypes.windll`（DPI 感知、`timeBeginPeriod`），
+非 Windows 上直接 `AttributeError`，而且死在依赖预检之前 —— 用户看到的是
+"启动后 700ms 退出，code=1"。
+
+- 所有 `ctypes.windll` / `wintypes` / WDA 调用按 `IS_WIN` 收口；
+- 没有 WDA 的平台一律按"能抓到自己"处理（`_cappable` 强制打开），
+  改走 `fill_own_rect` 那条路，不会递归拍到自己；
+- `_bbox()` 在非 Windows 上退回 Tk 的屏幕坐标（Retina 缩放对齐仍是已知问题，
+  那类机器建议用 `frost`/`solid`，两者都不抓屏）。
+- 启动失败弹窗的标题跟着 `DSH_WINDOW_BRAND` 走（see-now 的用户不会再看到
+  "dsh-watch-together"，issue #32 第 1 条）。
+
+### Fixed — 麦克风永远起不来：`aec.py` 没打进包（see-now #36）
+
+`mic.py` 顶层 `from aec import ...`，但 `aec.py` 既没进 see-now 的同步清单，
+发布包里的 stderr 又被丢进 DEVNULL —— 界面只剩"录音中"。
+
+- 导入改成可缺省：没有 `aec.py` 时回声消除关掉、麦克风照常可用（并打一行原因）；
+- see-now 的 `sync-window.mjs` ASSETS 补上 `aec.py`。
+
 ## [0.2.14] - 2026-11-06
 
 ### Added — 悬浮窗样式预设：多一档「静态磨砂」，设置页里能选
