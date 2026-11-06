@@ -5,6 +5,7 @@
  *   ~/.dsh/video.json  { browserPort, launchBrowser }   （与分镜插件共享）
  *   ~/.dsh/voice.json  { adapter }                       （voice-adapter.js 已读）
  *   ~/.dsh/watch.json  { chatPort }                       （本页新增，chat-server 读取）
+ *   ~/.dsh/watch-window.json { glass, geometry, name, … } （悬浮窗自己读写；本页只碰 glass）
  *
  * 这里不 import chat-server，避免 chat-server -> settings -> chat-server 的环。
  */
@@ -14,6 +15,19 @@ import { homedir } from 'node:os';
 import { dirname, join } from 'node:path';
 
 export const DEFAULT_CHAT_PORT = 9377;
+
+/**
+ * 悬浮窗样式预设。
+ *
+ * `auto` 不落盘（写进去等于删掉 `glass` 键）：窗口自己会按环境判断 ——
+ * 远程桌面/录屏用 solid（WDA 会让整窗在对面消失），其余用 live。
+ *
+ * 三个具体的档位：
+ *   live   实时玻璃，抓屏 + 模糊，最好看也最吃 CPU
+ *   frost  静态磨砂，一张预生成的底板，不抓屏（低配机/高分屏选这个）
+ *   solid  纯色底板，最省
+ */
+export const WINDOW_STYLES = Object.freeze(['auto', 'live', 'frost', 'solid']);
 const MAX_TEXT = 300;
 
 export function dshHome(env = process.env) {
@@ -23,6 +37,8 @@ export function dshHome(env = process.env) {
 export function videoConfigPath(env = process.env) { return join(dshHome(env), 'video.json'); }
 export function voiceConfigPath(env = process.env) { return join(dshHome(env), 'voice.json'); }
 export function watchConfigPath(env = process.env) { return join(dshHome(env), 'watch.json'); }
+/** 悬浮窗自己的配置（窗口进程也往这里写 geometry/name）；本页只改 `glass`。 */
+export function windowConfigPath(env = process.env) { return join(dshHome(env), 'watch-window.json'); }
 
 function readObject(path) {
   if (!existsSync(path)) return { data: {}, error: null, exists: false };
@@ -76,6 +92,42 @@ export function writeWatchSettings(patch = {}, env = process.env) {
   if (patch.chatPort !== undefined) next.chatPort = port(patch.chatPort, 'chatPort');
   writeObject(path, next);
   return readWatchSettings(env);
+}
+
+/**
+ * 悬浮窗样式（`watch-window.json` 的 `glass`）。
+ *
+ * 为什么写这个文件而不是 `watch.json`：窗口进程每 250ms 只看 `watch-window.json`
+ * 的 mtime，改这里才能**当场换过来**；写成别的文件要等下次开窗。
+ * 这个文件窗口自己也写（geometry / name / hidden），所以只能读-改-写，不能覆盖。
+ */
+export function readWindowSettings(env = process.env) {
+  const path = windowConfigPath(env);
+  const raw = readObject(path);
+  const value = typeof raw.data.glass === 'string' ? raw.data.glass.trim().toLowerCase() : '';
+  return {
+    path,
+    exists: raw.exists,
+    error: raw.error,
+    style: WINDOW_STYLES.includes(value) ? value : 'auto',
+  };
+}
+
+export function writeWindowSettings(patch = {}, env = process.env) {
+  const path = windowConfigPath(env);
+  const { data } = readObject(path);
+  const next = { ...data };
+  if (patch.style !== undefined) {
+    const style = String(patch.style ?? '').trim().toLowerCase();
+    if (!WINDOW_STYLES.includes(style)) {
+      throw new Error('style 必须是 auto / live / frost / solid');
+    }
+    // `auto` 不落盘：窗口把"没有 glass 键"理解成自动，写个 auto 进去反而看不懂
+    if (style === 'auto') delete next.glass;
+    else next.glass = style;
+  }
+  writeObject(path, next);
+  return readWindowSettings(env);
 }
 
 export function readVideoSettings(env = process.env) {
@@ -144,5 +196,6 @@ export function configPaths(env = process.env) {
     video: videoConfigPath(env),
     voice: voiceConfigPath(env),
     watch: watchConfigPath(env),
+    window: windowConfigPath(env),
   };
 }

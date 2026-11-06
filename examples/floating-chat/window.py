@@ -1,11 +1,12 @@
 #!/usr/bin/env python3
 """陪看悬浮窗：不铺全屏背景图，实时抓窗口背后的桌面并模糊成液态玻璃。
 
-三层，各自不知道对方的实现：
+四层，各自不知道对方的实现：
 
     glass_geometry.py   一套尺寸的全部贴图（不可变，尺寸/形状变了换一个新对象）
     glass_cpu.py        CPU 合成：抓屏 → 模糊 → 边缘折射 → 内框透镜 → 染色 → 色散
     glass_gpu.py        同一件事搬到 GPU（moderngl / OpenGL 3.3+）
+    glass_static.py     不吃性能的底板：预生成一张磨砂/纯色，换尺寸才重画
     window.py           这个文件：Tk 窗口、聊天流、文字层、拖动/缩放/折叠/改名
 
 `glass_capture.py` 是两条渲染路径共用的抓屏与运动判定 —— 历史上同一条判断
@@ -19,7 +20,14 @@
 - 抓到的背景按需重合成（静止时跳帧），所以是实时模糊，不是静态截图。
 - 这不是 DWM Acrylic；Acrylic 需要系统「透明效果」开启，这里是软件实时模糊。
 
-渲染后端：默认 CPU。`DSH_GLASS_NATIVE=1` 或 `DSH_GLASS_GPU=1` 走 GPU。
+样式预设（`~/.dsh/watch-window.json` 的 `glass`，设置页里可改，改完热切换）：
+
+    live    实时玻璃：抓屏 + 模糊，跟着桌面走。最好看，也最吃 CPU。
+    frost   静态磨砂：一张预生成的底板，不抓屏、不逐帧合成 —— 不吃性能。
+    solid   纯色底板：远程桌面/录屏兜底，任何捕获方式都看得见。
+    auto    不写或写 auto：远程/录屏环境自动用 solid，其余用 live。
+
+渲染后端：默认 CPU。`DSH_GLASS_NATIVE=1` 或 `DSH_GLASS_GPU=1` 走 GPU（只对 live 有效）。
 """
 import ctypes
 import json
@@ -137,6 +145,12 @@ USE_GPU = NATIVE or os.environ.get("DSH_GLASS_GPU") == "1"
 # 只用来拍新旧对比图，正常别动。
 PLATE = os.environ.get("DSH_GLASS_PLATE", "1") != "0"
 
+# 样式预设。`auto` 只出现在配置里（表示"看环境自动选"），解析后只会是下面三个之一。
+STYLE_LIVE, STYLE_FROST, STYLE_SOLID = "live", "frost", "solid"
+GLASS_STYLES = (STYLE_LIVE, STYLE_FROST, STYLE_SOLID)
+# 静态样式：不抓屏、不起渲染线程，只在换尺寸/换形状时重画一张底板。
+STATIC_STYLES = (STYLE_FROST, STYLE_SOLID)
+
 HERE = Path(__file__).resolve().parent
 
 
@@ -253,31 +267,43 @@ def remote_capture_likely() -> bool:
         return False
 
 
-def glass_mode() -> str:
-    """玻璃背景模式：live（实时抓屏，默认）/ solid（纯色底板）。
+def glass_style(cfg: dict | None = None) -> str:
+    """样式预设：live（实时玻璃）/ frost（静态磨砂）/ solid（纯色）。
 
     `WDA_EXCLUDEFROMCAPTURE` 会让窗口在远程桌面、OBS、截图工具里**整窗消失**
     （微软文档：“Everywhere else, the window does not appear at all”）。
     本机看起来正常，因为 mss 抓到的是窗口背后的像素；远程端却连文字都看不到。
+    所以选了 live 也要在远程环境下兜底成 solid —— 好看不能压过"看得见"。
 
-    - `{ "glass": "solid" }`：不抓屏、不设 WDA，用纯色底板；任何捕获方式都能看到；
-    - `{ "glass": "live" }`：原来的实时玻璃；
-    - 不写 / `auto`：检测 `SM_REMOTESESSION` 和常见远程软件窗口，命中就用 solid。
+    性能反过来是另一头：live 每帧都要抓屏 + 模糊，低配机/高分屏上会明显掉帧。
+    frost 和 solid 都不碰屏幕，只在换尺寸时画一张（见 `glass_static.py`）。
+
+    读 `~/.dsh/watch-window.json` 的 `glass`；不写 / `auto` = 按环境自动选。
+    环境变量优先级更高，只对这一次启动有效（插件拉起窗口时不传环境变量）。
     """
     if os.environ.get("DSH_GLASS_SOLID") == "1":
-        return "solid"
+        return STYLE_SOLID
+    if os.environ.get("DSH_GLASS_FROST") == "1":
+        return STYLE_FROST
     if os.environ.get("DSH_GLASS_LIVE") == "1":
-        return "live"
+        return STYLE_LIVE
+    if cfg is None:
+        try:
+            cfg = read_config()
+        except Exception:
+            cfg = {}
     try:
-        mode = str(read_config().get("glass") or "").strip().lower()
+        mode = str((cfg or {}).get("glass") or "").strip().lower()
     except Exception:
         mode = ""
-    if mode in ("solid", "live"):
-        return mode
+    if mode == STYLE_FROST:
+        return STYLE_FROST
+    if mode == STYLE_SOLID:
+        return STYLE_SOLID
+    if mode == STYLE_LIVE:
+        return STYLE_SOLID if remote_capture_likely() else STYLE_LIVE
     # 空值 / auto：RDP 标志位或常见远程软件窗口任一命中，就用 solid。
-    if remote_capture_likely():
-        return "solid"
-    return "live"
+    return STYLE_SOLID if remote_capture_likely() else STYLE_LIVE
 
 
 def append_user(text: str) -> None:
@@ -395,8 +421,10 @@ class LiveGlass:
         # 录屏模式（capturable）下 mss 会抓到窗口自己，必须每帧挖掉，见 fill_own_rect。
         # 缓存起来：读配置是磁盘 IO，不能每帧做。
         self._cappable = capturable()
-        # solid：远程/录屏下 WDA 会让整窗在对面消失；不抓屏、不设 WDA。
-        self._solid = glass_mode() == "solid"
+        # 样式：live / frost / solid。静态样式不抓屏、不设 WDA、不起渲染线程。
+        self._style = glass_style(cfg)
+        self._static = self._style in STATIC_STYLES
+        self._solid = self._style == STYLE_SOLID
         self._drag = None
         self._resize = None
         self._preview_at = 0.0
@@ -414,12 +442,12 @@ class LiveGlass:
         self._stop = threading.Event()
         self._pause = threading.Event()
         self._geo_lock = threading.Lock()
-        self._source = CaptureSource((self._sw, self._sh), cappable=self._cappable,
-                                     solid=self._solid,
-                                     # 窗口落在副屏时，抓屏范围要按虚拟桌面钳
-                                     bounds=(self._vx, self._vy, self._vw, self._vh))
+        # 抓屏源和渲染线程都是「换成 live 才有」的东西：静态样式下两条都不存在，
+        # 所以不在这里建，交给 `_start_worker()`（换样式时会再调用一次）。
+        self._source = None
         self._renderer = self._make_renderer(self._geo)
-        self._worker = threading.Thread(target=self._work, daemon=True)
+        self._worker = None
+        self._worker_stop = None
 
         self._hz = display_hz()
         self._target_fps = min(MAX_FPS, self._hz)
@@ -433,8 +461,8 @@ class LiveGlass:
         self.root.deiconify()
         self.root.update_idletasks()
         self.text.refresh()
-        self._set_exclude(not capturable() and not self._solid)
-        self._worker.start()
+        self._set_exclude(not capturable() and not self._static)
+        self._start_worker()
         self.root.lift()
         self.root.after(80, self.root.lift)
         self.root.after(120, self.root.focus_set)
@@ -448,6 +476,10 @@ class LiveGlass:
     # ---- 渲染后端 ----
 
     def _make_renderer(self, geo: Geometry):
+        """按样式给一个渲染器：静态样式完全不碰屏幕。"""
+        if self._static:
+            from glass_static import StaticRenderer
+            return StaticRenderer(geo, self._style)
         if USE_GPU:
             try:
                 from glass_gpu import GpuRenderer
@@ -455,6 +487,66 @@ class LiveGlass:
             except Exception as exc:
                 print("GPU 初始化失败，回落到 CPU:", repr(exc), flush=True)
         return CpuRenderer(geo)
+
+    def _start_worker(self) -> None:
+        """起抓屏/合成线程。静态样式没有东西要算，直接不起。"""
+        if self._static or self._worker is not None or self._stop.is_set():
+            return
+        self._source = CaptureSource((self._sw, self._sh), cappable=self._cappable,
+                                     solid=self._solid,
+                                     # 窗口落在副屏时，抓屏范围要按虚拟桌面钳
+                                     bounds=(self._vx, self._vy, self._vw, self._vh))
+        self._worker_stop = threading.Event()
+        self._worker = threading.Thread(target=self._work, args=(self._worker_stop,),
+                                        daemon=True)
+        self._worker.start()
+
+    def _stop_worker(self) -> None:
+        """停线程。先摘掉引用再 join：`_work` 里还会读 `self._source`。"""
+        worker, stop = self._worker, self._worker_stop
+        self._worker, self._worker_stop = None, None
+        if stop is not None:
+            stop.set()
+        if worker is not None:
+            worker.join(timeout=0.4)
+
+    def _apply_style(self, style: str) -> None:
+        """换样式（配置文件一变就调用，不用重开窗口）。
+
+        从 live 切走要真把抓屏线程停掉 —— 只换渲染器而不停线程，等于"静态样式"
+        还在后台每帧抓屏，用户切过去还是卡，只是看不见画面在变。
+        """
+        if style not in GLASS_STYLES:
+            style = STYLE_LIVE
+        if style == self._style:
+            return
+        self._style = style
+        self._static = style in STATIC_STYLES
+        self._solid = style == STYLE_SOLID
+        self._pause.set()
+        self._stop_worker()
+        try:
+            self._renderer.close()
+        except Exception:
+            pass
+        self._renderer = self._make_renderer(self._geo)
+        if self._static:
+            # 不再抓屏：WDA 没有意义，开着反而会让窗口在截图里消失
+            self._set_exclude(False)
+            self._last_frame = None
+            if self._collapsed:
+                # 折叠态贴的是 `_collapsed_frame`（不是 `_last_frame`）—— 清掉就是一块空白。
+                # 按折叠尺寸直接画一张：`slabs_for()` 在折叠高度下只返回标题栏那一块。
+                try:
+                    self._collapsed_frame = self._renderer.frame_for(self._geo)
+                except Exception:
+                    self._collapsed_frame = None
+            else:
+                self._collapsed_frame = None
+        else:
+            self._start_worker()
+        self._pause.clear()
+        self._layout(seed=True)
 
     # ---- 尺寸 ----
 
@@ -583,7 +675,7 @@ class LiveGlass:
 
     def _poll_chat(self) -> None:
         try:
-            self._sync_visible()
+            self._sync_config()
             for event in self._drain_protocol():
                 self._render_event(event)
             if self._mic_proc is not None and self._mic_proc.poll() is not None:
@@ -598,7 +690,12 @@ class LiveGlass:
         if not self._stop.is_set():
             self.root.after(250, self._poll_chat)
 
-    def _sync_visible(self) -> None:
+    def _sync_config(self) -> None:
+        """配置文件变了：样式和显隐都跟着改（不用重开窗口）。
+
+        设置页把 `glass` 写进同一个文件，所以这里顺手一起处理 —— 用户点一下
+        下拉，250ms 内窗口就换过来。读一次盘就够了，别为两个键各读一遍。
+        """
         try:
             st = CONFIG.stat()
             key = (st.st_mtime_ns, st.st_size)
@@ -607,7 +704,10 @@ class LiveGlass:
         if key == self._cfg_key:
             return
         self._cfg_key = key
-        want = bool(read_config().get("hidden"))
+        cfg = read_config()
+        # 换样式会重建渲染器并重排窗口；`_layout` 里会重新贴帧，所以放在显隐之前
+        self._apply_style(glass_style(cfg))
+        want = bool(cfg.get("hidden"))
         if want == self._hidden:
             return
         self._hidden = want
@@ -1043,6 +1143,7 @@ class LiveGlass:
                                       w // 2 + self._bar_len // 2, BAR_Y,
                                       width=BAR_THICK, fill=self._bar_color,
                                       capstyle="round")
+            self._sync_static_frame()
             self.text.refresh()
             return
 
@@ -1060,7 +1161,35 @@ class LiveGlass:
                                   w // 2 + self._bar_len // 2, BAR_Y,
                                   width=BAR_THICK, fill="#b8cbe0", capstyle="round")
         self._bar_color = "#b8cbe0"
+        # 气泡宽度变了 → 形状变了 → 静态底板要重画（缓存按 shapes 命中，没变就是 0 成本）
+        self._sync_static_frame()
         self.text.refresh()
+
+    def _sync_static_frame(self) -> None:
+        """静态样式：把当前尺寸/形状的底板贴上去（其余时间一帧都不算）。
+
+        `_draw_feed()` 会在 `_layout()` 中途换掉 `self._geo`（气泡宽度跟着文字走），
+        所以要在这里、在全部绘制之后再取一次帧 —— 否则贴上去的还是上一套气泡的
+        底板，文字换了位置而底板没换。
+        """
+        if not self._static or self._collapsed or self._resize:
+            return
+        if self._bg is None:
+            return
+        try:
+            frame = self._renderer.frame_for(self._geo)
+        except Exception as exc:
+            print("static plate error", exc, flush=True)
+            return
+        if frame is None or (frame is self._last_frame and self._img is not None):
+            return
+        self._last_frame = frame
+        try:
+            self._img = ImageTk.PhotoImage(frame, master=self.canvas)
+            self.canvas.itemconfigure(self._bg, image=self._img)
+            self.canvas.tag_lower(self._bg)
+        except Exception as exc:
+            print("static draw error", exc, flush=True)
 
     def _draw_header(self) -> None:
         c = self.canvas
@@ -1296,6 +1425,11 @@ class LiveGlass:
 
     def _tick(self) -> None:
         self._beat()
+        if self._static:
+            # 静态底板：没有帧要取、没有渐变要算。只留心跳（插件靠它判断窗口还活着）
+            # 和低频定时器，CPU 占用基本为 0。
+            self.root.after(500, self._tick)
+            return
         if SNAPSHOT and self._snapshot_done:
             self._pause.set()
             if self._excluded:
@@ -1340,13 +1474,17 @@ class LiveGlass:
 
         self.root.after(delay, self._tick)
 
-    def _work(self) -> None:
-        """抓取 + 合成全在后台，主线程只负责显示最新一帧。"""
+    def _work(self, stop: threading.Event) -> None:
+        """抓取 + 合成全在后台，主线程只负责显示最新一帧。
+
+        `stop` 是**这一次线程**的开关（不是 `self._stop`）：换样式时会停一次、
+        再换 live 时又要起一次，共用一个 Event 的话第二次一启动就退出。
+        """
         import mss
 
         idle = 0
         with mss.mss() as sct:
-            while not self._stop.is_set():
+            while not stop.is_set() and not self._stop.is_set():
                 if self._pause.is_set() or self._collapsed:
                     time.sleep(0.03)
                     continue
@@ -1437,7 +1575,7 @@ class LiveGlass:
             self._stop.set()
             self._pause.set()
             self._set_exclude(False)
-            self._worker.join(timeout=0.3)
+            self._stop_worker()
             try:
                 self._renderer.close()
             except Exception:

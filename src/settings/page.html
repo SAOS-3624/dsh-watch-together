@@ -63,6 +63,22 @@ code{font:12px/1.5 ui-monospace,SFMono-Regular,Consolas,monospace;background:var
 </div>
 
 <div class="card">
+  <h2>悬浮窗样式</h2>
+  <div class="grid">
+    <label class="field">外观预设
+      <select id="windowStyle">
+        <option value="auto">自动 —— 远程/录屏用纯色，其余实时玻璃</option>
+        <option value="live">实时玻璃 —— 跟着桌面模糊（好看，吃 CPU）</option>
+        <option value="frost">静态磨砂 —— 不吃性能</option>
+        <option value="solid">纯色 —— 最省，背后不透</option>
+      </select>
+      <span class="hint">改完立刻生效，不用重开窗口；窗口开着时也能切。</span>
+    </label>
+  </div>
+  <div class="banner" id="windowHint">实时玻璃每帧都要抓一次屏再模糊 —— 低配机、高分屏上「卡」就是这么来的。选「静态磨砂」后窗口不再抓屏，只画一张预生成的底板。</div>
+</div>
+
+<div class="card">
   <h2>依赖与下载</h2>
   <p>缺少的依赖会出现官方下载按钮；插件只打开官方来源，不静默安装、不执行下载的文件。装好后回到本页点“重新检查”。</p>
   <div id="deps"></div>
@@ -105,7 +121,7 @@ code{font:12px/1.5 ui-monospace,SFMono-Regular,Consolas,monospace;background:var
   const token = new URLSearchParams(location.search).get('token') || '';
   const apiBase = '/dsh-watch-together/settings/api';
   const $ = (id) => document.getElementById(id);
-  const state = { video: null, watch: null, voice: null, checks: [], paths: {} };
+  const state = { video: null, watch: null, voice: null, window: null, checks: [], paths: {} };
 
   async function api(path, body) {
     const res = await fetch(apiBase + path, {
@@ -132,18 +148,28 @@ code{font:12px/1.5 ui-monospace,SFMono-Regular,Consolas,monospace;background:var
     const v = state.video || {};
     const w = state.watch || {};
     const s = state.voice || {};
+    const win = state.window || {};
     $('browserPort').value = v.browserPort || '';
     $('chatPort').value = w.chatPort || '';
     $('adapter').value = s.adapter || '';
+    $('windowStyle').value = win.style || 'auto';
     $('positionHint').textContent = v.browserPort
       ? '浏览器调试端口：' + v.browserPort + '；扩展上报优先，端口用于直接读页面。'
       : '未配置调试端口：仍可用扩展上报或 SMTC；都没有时才需要手动传 cursor。';
     $('voiceHint').textContent = s.adapter
       ? '当前适配器：' + s.adapter + '（下一场开始时挂载）'
       : '留空 = 台词只写进聊天记录，不念出来。';
+    $('windowHint').textContent = win.style === 'frost'
+      ? '当前：静态磨砂 —— 不抓屏、不逐帧合成，CPU 占用接近 0。'
+      : win.style === 'solid'
+        ? '当前：纯色 —— 不抓屏、不设 WDA，远程桌面和录屏里也能看见。'
+        : win.style === 'live'
+          ? '当前：实时玻璃 —— 每帧抓屏 + 模糊。觉得卡就换成「静态磨砂」。'
+          : '当前：自动 —— 远程/录屏环境用纯色，其余用实时玻璃；觉得卡可以手动选「静态磨砂」。';
     $('paths').innerHTML = '<div>video.json：<code>' + escapeHtml(state.paths.video || '') + '</code></div>'
       + '<div>watch.json：<code>' + escapeHtml(state.paths.watch || '') + '</code></div>'
-      + '<div>voice.json：<code>' + escapeHtml(state.paths.voice || '') + '</code></div>';
+      + '<div>voice.json：<code>' + escapeHtml(state.paths.voice || '') + '</code></div>'
+      + '<div>watch-window.json：<code>' + escapeHtml(state.paths.window || '') + '</code></div>';
   }
 
   function renderChecks() {
@@ -185,6 +211,7 @@ code{font:12px/1.5 ui-monospace,SFMono-Regular,Consolas,monospace;background:var
     try {
       const data = await api('/state');
       state.video = data.video; state.watch = data.watch; state.voice = data.voice;
+      state.window = data.window;
       state.checks = data.checks || []; state.paths = data.paths || {};
       render(); renderChecks();
       setStatus('');
@@ -200,10 +227,12 @@ code{font:12px/1.5 ui-monospace,SFMono-Regular,Consolas,monospace;background:var
       };
       const watch = { chatPort: Number($('chatPort').value) };
       const voice = { adapter: $('adapter').value };
-      const data = await api('/save', { video, watch, voice });
+      const win = { style: $('windowStyle').value };
+      const data = await api('/save', { video, watch, voice, window: win });
       state.video = data.video; state.watch = data.watch; state.voice = data.voice;
+      state.window = data.window;
       render();
-      setStatus('已保存；语音下一场生效，聊天端口若服务已在跑需重启 DSH。', 'ok');
+      setStatus('已保存；悬浮窗样式立刻生效，语音下一场生效，聊天端口若服务已在跑需重启 DSH。', 'ok');
     } catch (e) { setStatus(e.message, 'bad'); }
   }
 
@@ -219,6 +248,11 @@ code{font:12px/1.5 ui-monospace,SFMono-Regular,Consolas,monospace;background:var
 
   $('save').addEventListener('click', save);
   $('check').addEventListener('click', check);
+  // 下拉一改就把说明也换掉（真正落盘还是点保存；这里只是别让提示和选中的对不上）
+  $('windowStyle').addEventListener('change', () => {
+    state.window = { ...(state.window || {}), style: $('windowStyle').value };
+    render();
+  });
   document.addEventListener('click', async (event) => {
     const btn = event.target.closest('button.copy');
     if (!btn) return;

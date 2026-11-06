@@ -7,8 +7,8 @@ import { Readable } from 'node:stream';
 import { runInNewContext } from 'node:vm';
 
 import {
-  configuredChatPort, readVideoSettings, readVoiceSettings, readWatchSettings,
-  writeVideoSettings, writeVoiceSettings, writeWatchSettings,
+  configuredChatPort, readVideoSettings, readVoiceSettings, readWatchSettings, readWindowSettings,
+  writeVideoSettings, writeVoiceSettings, writeWatchSettings, writeWindowSettings,
 } from '../src/settings/config.js';
 import { createSettingsPage } from '../src/settings/server.js';
 
@@ -47,6 +47,31 @@ test('watch settings: video 端口与 voice adapter 写入', () => {
     readVoiceSettings({ ...env, DSH_VOICE_ADAPTER: 'D:/env/voice.mjs' }).envOverrides,
     ['DSH_VOICE_ADAPTER'],
   );
+});
+
+test('watch settings: 悬浮窗样式写 watch-window.json，删 auto 且不动别的键', () => {
+  const dir = home();
+  const env = envOf(dir);
+  // 窗口自己也会往这个文件写（geometry/name），设置页只准补一个 glass
+  writeFileSync(join(dir, 'watch-window.json'), JSON.stringify({
+    geometry: '700x665+10+10', name: '大肥鱼',
+  }));
+  assert.equal(readWindowSettings(env).style, 'auto', '没有 glass 键 = 自动');
+
+  const saved = writeWindowSettings({ style: 'frost' }, env);
+  assert.equal(saved.style, 'frost');
+  assert.equal(readWindowSettings(env).style, 'frost');
+  const raw = JSON.parse(readFileSync(join(dir, 'watch-window.json'), 'utf8'));
+  assert.equal(raw.glass, 'frost');
+  assert.equal(raw.geometry, '700x665+10+10', '不能把窗口记的位置抹掉');
+  assert.equal(raw.name, '大肥鱼');
+
+  // auto 不落盘：窗口把"没有这个键"理解成自动
+  writeWindowSettings({ style: 'auto' }, env);
+  assert.equal(Object.hasOwn(JSON.parse(readFileSync(join(dir, 'watch-window.json'), 'utf8')), 'glass'), false);
+  assert.equal(readWindowSettings(env).style, 'auto');
+
+  assert.throws(() => writeWindowSettings({ style: 'neon' }, env), /auto \/ live \/ frost \/ solid/);
 });
 
 function fakeWeb() {
@@ -116,6 +141,7 @@ test('watch settings server: token、保存、key 不适用但路径可读', asy
       video: { browserPort: 9333 },
       watch: { chatPort: 9388 },
       voice: { adapter: 'D:/voice/my.mjs' },
+      window: { style: 'frost' },
     }),
   });
   assert.equal(saved.status, 200);
@@ -123,7 +149,9 @@ test('watch settings server: token、保存、key 不适用但路径可读', asy
   assert.equal(state.video.browserPort, 9333);
   assert.equal(state.watch.chatPort, 9388);
   assert.equal(state.voice.adapter, 'D:/voice/my.mjs');
+  assert.equal(state.window.style, 'frost', '样式要能从同一个 /save 落盘');
   assert.equal(state.paths.watch.endsWith('watch.json'), true);
+  assert.equal(state.paths.window.endsWith('watch-window.json'), true);
   const checked = await api('/check', { method: 'POST', headers: { 'content-type': 'application/json' }, body: '{}' });
   assert.equal(checked.status, 200);
   const checks = JSON.parse(checked.body).checks;

@@ -3,7 +3,28 @@
 All notable changes to **dsh-watch-together** are documented here.
 This package starts its own version line at `0.0.7` — it is not a continuation of `dsh-video-storyboard`.
 
-## [Unreleased]
+## [0.2.14] - 2026-11-06
+
+### Added — 悬浮窗样式预设：多一档「静态磨砂」，设置页里能选
+
+社区反馈实时玻璃在低配机/高分屏上卡。实测同机同尺寸（760×560、背景在播视频）：
+
+| 样式 | 3 秒内 CPU | 占单核 |
+|---|---|---|
+| `live` 实时玻璃 | 5.17 s | **172%** |
+| `frost` 静态磨砂（新） | 0.03 s | **1%** |
+
+不是把模糊调小，而是换了一条路径：`frost` **完全不抓屏**，只画一张预生成的
+底板（对角冷色渐变 + 两团极淡光晕 + 细噪点 + 每块玻璃 1px 亮边），尺寸或气泡
+形状变了才重画（约 11ms），其余时间一帧都不算 —— 静态样式连渲染线程都不起。
+`live` 那条路径一行没动，只是把线程的启停抽成了 `_start_worker` / `_stop_worker`。
+
+样式写在 `~/.dsh/watch-window.json` 的 `glass`：`auto`（默认，远程/录屏 →
+solid）/ `live` / `frost` / `solid`。窗口每 250ms 看一次这个文件的 mtime，
+所以**从设置页改完立刻切换**，不用重开窗口；从 `live` 切走时真的把抓屏线程
+停掉（只换渲染器不停线程 = 用户切过去还是卡，只是看不见画面在变）。
+
+设置页（浏览器版与 DSH 设置里的原生表单）都多了一栏「悬浮窗样式」。
 
 ### Changed — 心跳从"空文件戳一下"变成带可见性的 JSON
 

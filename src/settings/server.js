@@ -10,7 +10,8 @@ import { randomBytes } from 'node:crypto';
 import { checkEnvironment } from './deps.js';
 import {
   configPaths, readVideoSettings, readVoiceSettings, readWatchSettings,
-  writeVideoSettings, writeVoiceSettings, writeWatchSettings,
+  readWindowSettings, writeVideoSettings, writeVoiceSettings, writeWatchSettings,
+  writeWindowSettings,
 } from './config.js';
 import { settingsPage } from './page.js';
 
@@ -63,6 +64,7 @@ function statePayload(env) {
     video: readVideoSettings(env),
     watch: readWatchSettings(env),
     voice: readVoiceSettings(env),
+    window: readWindowSettings(env),
     paths: configPaths(env),
   };
 }
@@ -104,6 +106,8 @@ export function createSettingsPage({ ctx, env = process.env, log = () => {} } = 
         if (body.video !== undefined) writeVideoSettings(body.video, env);
         if (body.watch !== undefined) writeWatchSettings(body.watch, env);
         if (body.voice !== undefined) writeVoiceSettings(body.voice, env);
+        // 悬浮窗样式：写 watch-window.json，窗口下一拍（250ms）自己换过来
+        if (body.window !== undefined) writeWindowSettings(body.window, env);
         return json(res, 200, statePayload(env));
       }
       if (req.method === 'POST' && action === '/check') {
@@ -145,7 +149,8 @@ export function createSettingsPage({ ctx, env = process.env, log = () => {} } = 
     name: 'watch_together_settings',
     description: [
       'Open the local watch_together settings page: browser debugging port,',
-      'chat service port, voice adapter path, and a read-only dependency check',
+      'chat service port, voice adapter path, floating-window appearance preset',
+      '(live glass / static frost / solid), and a read-only dependency check',
       'with official download buttons for Python, the browser extension, and ffmpeg.',
       'Returns a tokenized local URL; the Web GUI also renders the same settings natively in the bundle detail page and Settings > Built-in plugins.',
     ].join(' '),
@@ -175,6 +180,7 @@ export function createSettingsPage({ ctx, env = process.env, log = () => {} } = 
           '一起看设置页：',
           url,
           '在浏览器打开；页面里的 API 用这个 URL 的 token 校验，不要把它发给别人。',
+          '悬浮窗样式（实时玻璃 / 静态磨砂 / 纯色）改完立刻生效，不用重开窗口。',
           '语音适配器下一场开始时挂载；聊天端口在聊天服务启动时读取（服务已在跑需重启 DSH）。',
           '台词/ASR 的 key 在视频分镜设置页配置。',
         ].join('\n'),

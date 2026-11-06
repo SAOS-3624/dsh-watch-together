@@ -77,6 +77,7 @@ Node 侧：`src/window-protocol.js`（`appendWindowEvent` /
 | `glass_capture.py` | 抓屏（外扩 PAD、零尺寸守卫、录屏模式挖掉自己）、`MotionTracker`（静态跳帧 + 运动强度，**拖动窗口也算动**）、麦克风图标、圆角收尾 |
 | `glass_cpu.py` | CPU 合成：1/4 缩小 → 高斯 → 边缘折射 → 内框透镜 → 2x 合成 → 染色 → 色散 → 残影 |
 | `glass_gpu.py` | 同一件事在 moderngl 上做；`native=True` 时走全分辨率采样 |
+| `glass_static.py` | 不吃性能的两档：`frost`（预生成的磨砂底板：冷色渐变 + 细噪点 + 1px 亮边）、`solid`（纯色）。**不抓屏**，只在尺寸/气泡形状变化时重画一张 |
 | `window.py` | 上面的编排 + Tk 窗口、聊天流、交互 |
 | `window_widgets.py` | `Fonts`（字体缓存）、`ChatFeed`（chat.jsonl 增量视图）、`TextLayer`（逐字翻色） |
 
@@ -89,6 +90,17 @@ Node 侧：`src/window-protocol.js`（`appendWindowEvent` /
 | `DSH_GLASS_NATIVE=1` | GPU + 全分辨率采样（边缘透镜没有 1/4 放大的像素感） |
 | `python glass_window_gpu.py` | 等价于 `DSH_GLASS_GPU=1` 起窗 |
 | `DSH_GLASS_MAX_FPS=120` | 把目标帧率上限从默认 60 抬到 120（更费 CPU；120fps 的抓屏+合成预算只有 8.3ms） |
+
+样式预设走 `~/.dsh/watch-window.json` 的 `glass`（设置页可改，热切换）：
+
+| 值 | 效果 |
+|---|---|
+| 不写 / `auto` | 远程/录屏 → `solid`，其余 → `live` |
+| `live` | 实时玻璃（抓屏 + 模糊） |
+| `frost` | 静态磨砂，不抓屏；换尺寸/气泡才重画（约 11ms） |
+| `solid` | 纯色底板，不抓屏、不设 WDA |
+
+`DSH_GLASS_LIVE=1` / `DSH_GLASS_FROST=1` / `DSH_GLASS_SOLID=1` 只对这一次启动强制指定。
 
 GPU 需要 `moderngl` 和 OpenGL 3.3；起不来时会打印一行原因并回落到 CPU，
 窗口照开。`DSH_GLASS_WDA=0` 可关闭抓屏排除，方便录屏/截图；
