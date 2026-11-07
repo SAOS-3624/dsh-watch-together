@@ -38,6 +38,7 @@ import json
 import os
 import queue
 import subprocess
+import sys
 import threading
 import time
 from pathlib import Path
@@ -360,12 +361,26 @@ def append_user(text: str) -> None:
 
 
 def asr_python() -> str:
-    """麦克风用 ASR 的 Python，不是带 tkinter 的这个。"""
+    """麦克风用哪个 Python。
+
+    **优先用跑窗口的这个解释器**（`sys.executable`）：
+    1. 发布包是用 `pythonw.exe` 起的；回退到 PATH 上的 `python.exe` 会弹控制台黑框；
+    2. `pyaudiowpatch` 可能只装在启动窗口的那个解释器/venv 里，PATH 上的 python
+       找不到它，而 mic.py 的 stderr 被 DEVNULL 吞掉，表现成“点了麦克风没反应”。
+
+    显式配了 `DSH_ASR_PYTHON` / `DSH_FLOAT_PYTHON` 的仍然优先（给特殊环境留口子）。
+    """
     for key in ("DSH_ASR_PYTHON", "DSH_FLOAT_PYTHON"):
         v = os.environ.get(key)
         if v:
             return v
-    return "python.exe" if os.name == "nt" else "python3"
+    exe = sys.executable or ""
+    # 万一窗口就是用 python.exe 起的：换成同目录的 pythonw.exe，别开控制台
+    if os.name == "nt" and exe.lower().endswith("python.exe"):
+        guess = exe[:-len("python.exe")] + "pythonw.exe"
+        if os.path.exists(guess):
+            exe = guess
+    return exe or ("python.exe" if os.name == "nt" else "python3")
 
 
 def display_hz() -> int:
