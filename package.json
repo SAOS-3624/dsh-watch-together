@@ -57,7 +57,9 @@
     "./recognition-interface": "./src/recognition-interface.js",
     "./tts-interface": "./src/tts-interface.js",
     "./window-interface": "./src/window-interface.js",
-    "./window-protocol": "./src/window-protocol.js"
+    "./window-protocol": "./src/window-protocol.js",
+    "./package.json": "./package.json",
+    "./locale/*.json": "./locale/*.json"
   },
   "bin": {
     "dsh-watch": "./bin/watch.mjs",
@@ -70,6 +72,7 @@
     "extension",
     "scripts",
     "docs",
+    "locale",
     "cordis.patch.yml",
     "dsh.plugin.json",
     "README.md",

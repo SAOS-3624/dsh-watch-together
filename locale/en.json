@@ -1,0 +1,7 @@
+{
+  "meta": {
+    "title": "Watch Together",
+    "description": "Watch a video in sync with the user's real playback: each segment delivers a storyboard image and timed lines, while the floating window speaks and listens.",
+    "detail": "docs/plugin.md"
+  }
+}

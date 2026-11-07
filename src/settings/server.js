@@ -5,8 +5,6 @@
  * 原生 React 表单渲染，直接调用同一套 API，不再套 iframe。工具也仍返回同一地址。
  */
 
-import { randomBytes } from 'node:crypto';
-
 import { checkEnvironment } from './deps.js';
 import {
   configPaths, readVideoSettings, readVoiceSettings, readWatchSettings,
@@ -14,6 +12,7 @@ import {
   writeWindowSettings,
 } from './config.js';
 import { settingsPage } from './page.js';
+import { settingsToken } from './token.js';
 
 const PAGE_PATH = '/dsh-watch-together/settings';
 const API_PREFIX = PAGE_PATH + '/api';
@@ -76,7 +75,7 @@ function statePayload(env) {
 export function createSettingsPage({ ctx, env = process.env, log = () => {} } = {}) {
   const webServer = ctx?.get?.('webServer');
   if (!webServer || typeof webServer.register !== 'function') return null;
-  const token = randomBytes(32).toString('hex');
+  const token = settingsToken(env);
   let disposed = false;
 
   const handle = async (req, res) => {
