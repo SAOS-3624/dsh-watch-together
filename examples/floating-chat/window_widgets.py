@@ -244,6 +244,22 @@ class TextLayer:
             lx = x - width if right else (x - width / 2 if center else x)
             ly = (y + row * linespace + height / 2 if top
                   else y + (row - (len(lines) - 1) / 2) * linespace)
+            if not adapt:
+                # 颜色固定（这块字有自己的底板）→ **整行一个 item**。
+                #
+                # 逐字的唯一理由是"同一行左右两半背后明暗不同、要各自翻色"，
+                # `adapt=False` 时那个理由不存在，留着就是白建 5×字符数 个 item
+                # （1 个字 + 4 层描边）。滚一格重排要几百毫秒，大半花在这儿（#44）。
+                #
+                # 位置和逐字版本一致：Tk 8.6 不做字距调整，整串宽度 = 逐字宽度之和。
+                for dx, dy in stroke:
+                    self.canvas.create_text(lx + dx, ly + dy, text=line, anchor="w",
+                                            fill=self.COLOR_DARK, font=spec,
+                                            tags=shadow_tags)
+                item = self.canvas.create_text(lx, ly, text=line, anchor="w",
+                                               fill=fill, font=spec, tags=tags)
+                self._fixed.add(item)
+                continue
             # 累积宽度，别对每个字重新 measure 前缀（那是 O(n²) 次 Tcl 调用）
             cx = lx
             for ch in line:
@@ -251,10 +267,8 @@ class TextLayer:
                     self.canvas.create_text(cx + dx, ly + dy, text=ch, anchor="w",
                                             fill=self.COLOR_DARK, font=spec,
                                             tags=shadow_tags)
-                item = self.canvas.create_text(cx, ly, text=ch, anchor="w",
-                                               fill=fill, font=spec, tags=tags)
-                if not adapt:
-                    self._fixed.add(item)
+                self.canvas.create_text(cx, ly, text=ch, anchor="w",
+                                        fill=fill, font=spec, tags=tags)
                 cx += measure(ch)
 
     # ---- 翻色 ----

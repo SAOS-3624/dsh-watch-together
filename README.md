@@ -513,6 +513,8 @@ CPU/GPU 输出是逐像素对齐的（同一背景均差 0.07，99% 像素差 �
 | 圆角外的像素用 `-transparentcolor` 抠掉 | tkinter 没有圆角窗口；取不到这个能力就老实退成直角 |
 | 窗口只读 `window-events.jsonl`，写 `window-outbox.jsonl` | 和插件解耦；旧版插件没有协议文件时仍增量读 `chat.jsonl` |
 | CPU/GPU 共用同一份 UI 和同一套抓屏/运动判定 | GPU 只换每帧合成，不另写窗口；历史上两边各写一份，同一个 bug 修两遍（#39、#48） |
+| 滚轮翻历史不会每格卡一下 | 滚动**只重画聊天流那两层**，不再 `delete("all")` 整窗重排（标题栏/输入框/绑定/底板都不动）；连滚 40ms 防抖只重排最后一次；有底板的正文**整行一个 canvas item**（原来逐字建，每字 1 个正文 + 4 层描边）。同素材 20 条消息实测：canvas item **964 → 104**，滚一格 **136ms → 63ms** |
+| 点窗会把全屏游戏切出去（已知问题） | 窗口是置顶的，点它会激活它，Windows 随之重排置顶带 —— 宿主窗跟着被顶上来、全屏游戏被切走。`~/.dsh/watch-window.json` 写 `{ "noActivate": true }`（或环境变量 `DSH_WINDOW_NO_ACTIVATE=1`）让窗口**点击不激活**；代价是它也拿不到键盘焦点，所以点输入框时会自动摘掉这条样式（本次运行不再加回）。游戏里建议配 `frost`/`solid` |
 
 > 窗口默认要 Pillow + numpy + mss；GPU 额外要 `pip install moderngl` 和 OpenGL 3.3。
 > CPU 在这台机器上更省（约 43% 单核 / 93 MB，GPU 32% / 195 MB —— 显存纹理和每帧

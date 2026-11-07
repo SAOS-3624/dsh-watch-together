@@ -18,6 +18,38 @@ This package starts its own version line at `0.0.7` — it is not a continuation
 
 ## [Unreleased]
 
+### Fixed — 滚轮翻历史每格卡近一秒（see-now #44）
+
+`_wheel()` 每次都走 `_refresh_feed()` → `_layout()`：`delete("all")` 之后标题栏、
+输入框、滚动条、事件绑定、静态底板全部重建，而 `TextLayer.draw()` 是**按字符**建
+canvas item（有底板时每个字还要再加 4 层描边）。滚一格 = 重建整屏几千个 item。
+
+- 新增 `_relayout_feed()`：只删 `feedbody` / `sbar` 两层重画，其余一概不动；
+- 连滚 40ms 防抖（`_schedule_feed_refresh`），只重排最后一次；
+- **有底板的正文整行一个 canvas item** —— `adapt=False` 时逐字唯一的好处（同一行
+  左右两半分别翻色）不成立，而那是 item 数的大头。逐字路径只留给真的跟着背景翻色的文字；
+- 删 `feedbody` 而不是 `feed`：`_draw_input()` 里的「发送」两个字也挂着 `feed` tag，
+  删 `feed` 会让按钮变空白。
+
+同素材（20 条消息、440×380、`frost`）实测，已扣掉脚本里固定的 60ms pump：
+
+| | 改前 | 改后 |
+|---|---|---|
+| canvas item 总数 | 964 | **104** |
+| 滚一格 | 136 ms | **63 ms** |
+| 连滚 8 格 | 123 ms | **62 ms** |
+
+### Added — `noActivate`：点窗不激活（默认关，see-now #44）
+
+悬浮窗是置顶的，点一下会激活它，Windows 跟着重排置顶带 —— 宿主窗被顶上来、全屏
+游戏被切走。#44 提的三条路子里选"给开关、不改默认"：
+
+- `~/.dsh/watch-window.json` 的 `{ "noActivate": true }`，或 `DSH_WINDOW_NO_ACTIVATE=1`；
+- 打开后给窗口加 `WS_EX_NOACTIVATE`，点它不改变前台窗口。代价是它也拿不到键盘焦点，
+  所以点输入框时先摘掉这条样式（`_focus_input`），本次运行不再加回；
+- **默认关**：`WS_EX_NOACTIVATE` 的窗口输入框直接打不了字，而那条"点输入框自动摘掉"
+  的路径没法自动化验证，不替用户做这个决定。
+
 ### Fixed — 悬浮窗在 macOS/Linux 上必崩（see-now #40）
 
 `window.py` 顶层无条件摸 `ctypes.windll`（DPI 感知、`timeBeginPeriod`），

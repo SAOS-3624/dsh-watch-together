@@ -48,6 +48,10 @@ from pathlib import Path
 # 之前，用户看到的是"启动后 700ms 退出，code=1"（issue #40）。
 IS_WIN = os.name == "nt"
 
+# 窗口扩展样式：`noActivate` 用它（点窗不激活，见 `_apply_no_activate`）
+GWL_EXSTYLE = -20
+WS_EX_NOACTIVATE = 0x08000000
+
 if IS_WIN:
     from ctypes import wintypes
 
@@ -323,6 +327,31 @@ def glass_style(cfg: dict | None = None) -> str:
     return STYLE_SOLID if remote_capture_likely() else STYLE_LIVE
 
 
+def no_activate_wanted(cfg: dict | None = None) -> bool:
+    """`~/.dsh/watch-window.json` 的 `noActivate`：点窗不激活它（默认关）。
+
+    **为什么要它**：悬浮窗是 topmost，鼠标点一下会把它激活，Windows 随之重排
+    topmost 带 —— 用户开着全屏游戏时，宿主窗跟着被顶上来、游戏被切走（#44 第 1 条）。
+
+    **为什么默认关**：`WS_EX_NOACTIVATE` 的窗口拿不到键盘焦点，输入框直接打不了字。
+    打开之后点输入区会先摘掉这条样式（见 `_focus_input`），但那条路没法自动化验证，
+    所以让用户自己选，而不是替他决定。
+
+    环境变量 `DSH_WINDOW_NO_ACTIVATE=1` 优先级更高（只对这一次启动有效）。
+    """
+    if os.environ.get("DSH_WINDOW_NO_ACTIVATE") == "1":
+        return True
+    if cfg is None:
+        try:
+            cfg = read_config()
+        except Exception:
+            cfg = {}
+    try:
+        return bool((cfg or {}).get("noActivate"))
+    except Exception:
+        return False
+
+
 def append_user(text: str) -> None:
     CHAT_FILE.parent.mkdir(parents=True, exist_ok=True)
     with open(CHAT_FILE, "a", encoding="utf-8") as f:
@@ -486,6 +515,12 @@ class LiveGlass:
         self.root.update_idletasks()
         self.text.refresh()
         self._set_exclude(not capturable() and not self._static)
+        # 点窗不激活（可选，见 `no_activate_wanted`）。必须等窗口真的映射出来再设扩展样式，
+        # 否则 Tk 自己那次 `overrideredirect` 会把样式重写回去。
+        self._no_activate = no_activate_wanted(cfg)
+        self._no_activate_on = False
+        if self._no_activate:
+            self.root.after(0, lambda: self._apply_no_activate(True))
         self._start_worker()
         self.root.lift()
         self.root.after(80, self.root.lift)
@@ -775,7 +810,48 @@ class LiveGlass:
     def _wheel(self, e):
         if self.feed.scroll(1 if e.delta > 0 else -1):
             self._collapse_expanded()
-            self._refresh_feed()
+            # 连滚只重排最后一次：滚十格就白画九遍（#44 第 2 条，社区实测每格卡 ~1 秒）
+            self._schedule_feed_refresh()
+
+    def _schedule_feed_refresh(self, delay: int = 40) -> None:
+        job = getattr(self, "_feed_job", None)
+        if job is not None:
+            try:
+                self.root.after_cancel(job)
+            except Exception:
+                pass
+        self._feed_job = self.root.after(delay, self._run_feed_refresh)
+
+    def _run_feed_refresh(self) -> None:
+        self._feed_job = None
+        self._relayout_feed()
+
+    def _relayout_feed(self) -> None:
+        """**只**重画聊天流那两层（滚轮走这条，不走整窗 `_layout()`）。
+
+        `_layout()` 是 `delete("all")` + 标题栏 / 输入框 / 滚动条 / 事件绑定全部重来
+        一遍；滚动时这些一个都没变，只有气泡和滚动条位置要跟着 `feed.offset` 走。
+        把整窗重排放在滚轮上，就是社区报的"每滚一格卡将近一秒"（#44 第 2 条）。
+
+        两个必须跟着做的：
+        - `_draw_feed()` 可能因为折行数变了而换 `_geo`（气泡宽度跟着文字走），
+          这时静态底板得重画一张，否则文字换了位置、底板还是上一套；
+        - 删了 item 就必须 `text.reset()`：`_fixed` / `_colors` 存的是 item id，
+          留着旧的会让新画出来的文字被当成"要跟背景翻色"，有底板的气泡会闪。
+        """
+        c = self.canvas
+        shapes_before = self._geo.shapes
+        # 删的是 `feedbody`，不是 `feed`：`_draw_input()` 里的「发送」两个字也挂着
+        # `feed` tag（历史遗留），删 `feed` 会把按钮文字一起删掉，而 `_draw_feed()`
+        # 不负责重画它 —— 滚一下滚轮发送键就变空白。
+        c.delete("feedbody")
+        c.delete("sbar")
+        self.text.reset()
+        self._draw_feed()
+        self._draw_scrollbar()
+        self.text.refresh()
+        if self._geo.shapes != shapes_before:
+            self._sync_static_frame()
 
     def _toggle_mic(self):
         if self._mic_proc is not None and self._mic_proc.poll() is None:
@@ -906,6 +982,11 @@ class LiveGlass:
         return None
 
     def _focus_input(self, _e=None):
+        # noActivate 开着时先摘掉那条样式，否则 focus_force 也拿不到键盘焦点
+        # （WS_EX_NOACTIVATE 的窗口本来就不接受焦点）。摘掉后本次运行不再加回，
+        # 理由见 `_apply_no_activate`。
+        if getattr(self, "_no_activate_on", False):
+            self._apply_no_activate(False)
         try:
             self._entry.focus_force()
             self._entry.icursor("end")
@@ -1258,11 +1339,11 @@ class LiveGlass:
         for idx, info in enumerate(infos):
             if info["stamp"]:
                 self.text.draw(info["tx"], info["stamp_y"], info["stamp"],
-                               anchor=info["ta"], fill="#a8b7c9", size=9, tags=("feed",))
+                               anchor=info["ta"], fill="#a8b7c9", size=9, tags=("feed", "feedbody"))
             for li, line in enumerate(info["lines"]):
                 # 气泡里有底板，文字颜色固定、再补一层 1px 深色偏移当描边
                 self.text.draw(info["tx"], info["ty"] + li * info["ls"], line,
-                               anchor=info["ta"], fill="#edf6ff", size=11, tags=("feed",),
+                               anchor=info["ta"], fill="#edf6ff", size=11, tags=("feed", "feedbody"),
                                shadow=PLATE, adapt=not PLATE)
             if not (info["clipped"] or info["expanded"]):
                 continue
@@ -1271,16 +1352,16 @@ class LiveGlass:
             bx0, by0, bx1, by1, _r = info["shape"]
             tag = f"bubble{idx}"
             c.create_rectangle(bx0, by0, bx1, by1, fill="", outline="",
-                               tags=("feed", "bubblehit", tag))
+                               tags=("feed", "feedbody", "bubblehit", tag))
             self.text.draw(bx1 - 12, by1 - 11, "▴" if info["expanded"] else "▾",
-                           anchor="center", fill="#9fc7ff", size=9, tags=("feed", tag))
+                           anchor="center", fill="#9fc7ff", size=9, tags=("feed", "feedbody", tag))
             c.tag_bind(tag, "<Button-1>",
                        lambda _e, k=info["key"]: self._toggle_expand(k))
         if not shown:
             slot = self._geo.shapes[0]
             self.text.draw(w // 2, slot[1] + (slot[3] - slot[1]) // 2,
                            "在这里跟它说话 · 滚轮翻历史", anchor="center",
-                           fill="#8e9db2", size=12, tags=("feed",))
+                           fill="#8e9db2", size=12, tags=("feed", "feedbody"))
 
     def _draw_input(self) -> None:
         geo = self._geo
@@ -1559,6 +1640,28 @@ class LiveGlass:
         if self._hwnd is None:
             self._hwnd = ctypes.windll.user32.GetAncestor(self.root.winfo_id(), 2)
         return self._hwnd
+
+    def _apply_no_activate(self, on: bool) -> None:
+        """给窗口加 / 摘 `WS_EX_NOACTIVATE`（Windows only，见 `no_activate_wanted`）。
+
+        加上之后点窗不激活它，Windows 也就不重排 topmost 带 —— 全屏游戏里点悬浮窗
+        不会把宿主窗顶到前面（#44 第 1 条）。代价是**键盘焦点也拿不到**，所以点输入框
+        时要先摘掉（`_focus_input`），而且摘掉之后本次运行不再加回：用户既然要点输入框，
+        就是准备打字了，再抢走焦点只会更烦人。
+        """
+        if not IS_WIN:
+            return
+        try:
+            hwnd = self._hwnd_root()
+            u = ctypes.windll.user32
+            ex = int(u.GetWindowLongW(hwnd, GWL_EXSTYLE))
+            want = (ex | WS_EX_NOACTIVATE) if on else (ex & (~WS_EX_NOACTIVATE & 0xFFFFFFFF))
+            if want != ex:
+                u.SetWindowLongW(hwnd, GWL_EXSTYLE, want)
+            self._no_activate_on = bool(on)
+        except Exception as exc:
+            self._no_activate_on = False
+            print("noActivate 设置失败", repr(exc), flush=True)
 
     def _set_exclude(self, on: bool) -> None:
         """WDA：让窗口从屏幕捕获里消失，抓自己所在区域时抓到的是背后的桌面。
