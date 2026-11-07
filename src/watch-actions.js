@@ -44,7 +44,10 @@ export async function runWatchAction(args, {
 
   // **藏起来 / 放出来**：和关窗是两件事（关窗 = 不看了，会停表；藏起来 = 陪看继续）。
   // 用户的原话是"如果有其他功能隐藏悬浮窗会更好"（2026-11-01）—— 他嫌它挡画面，
-  // 但并不想结束陪看。窗口进程不动，只写一个配置键，窗口自己每 200ms 读一次。
+  // 但并不想结束陪看。窗口进程不动，只写一个配置键，窗口自己每 250ms 读一次。
+  //
+  // 2026-11-07 起 `hide` = **真正从屏幕上消失**（托盘图标 + Ctrl+Alt+W 叫回来），
+  // 不再是"缩成一条"；同一次调用可以带 `danmaku: true`，这样窗口不占地方、台词还看得见。
   if (args.window === 'hide' || args.window === 'show') {
     const want = args.window === 'hide';
     const r = want ? winPort.hide() : winPort.show();
@@ -59,10 +62,17 @@ export async function runWatchAction(args, {
             : `切不过去（${r?.reason}）`}。`,
       };
     }
+    let note = '';
+    if (typeof args.danmaku === 'boolean' && typeof winPort.danmaku === 'function') {
+      const d = winPort.danmaku(args.danmaku);
+      if (d?.ok) note = args.danmaku ? '台词会以弹幕飘过屏幕顶部。' : '弹幕已关。';
+    }
     // 藏起来之后用户看不见窗口，所以这句话只能靠 `say` 进流 —— 让它自己说一句
     return {
       images: [],
-      text: `[window] 悬浮窗已${want ? '藏起来（陪看继续，位置照跟、台词照念）' : '放出来'}。`
+      text: `[window] 悬浮窗已${want
+        ? '最小化（右下角托盘里，Ctrl+Alt+W 也能叫回来；陪看继续，位置照跟、台词照念）'
+        : '放出来'}。${note}`
         + '别调 stop，也别当成"用户不看了" —— 关窗才是那个意思。',
     };
   }

@@ -79,6 +79,27 @@ code{font:12px/1.5 ui-monospace,SFMono-Regular,Consolas,monospace;background:var
 </div>
 
 <div class="card">
+  <h2>打游戏的时候</h2>
+  <div class="grid">
+    <label class="field">窗口
+      <select id="windowMode">
+        <option value="full">正常显示</option>
+        <option value="hidden">最小化到托盘（完全不占屏幕）</option>
+      </select>
+      <span class="hint">最小化是<strong>真的从屏幕上消失</strong>，不是缩成一条。右下角托盘图标点一下就回来，键盘 Ctrl+Alt+W 也行；陪看不会停，位置照跟、台词照念。</span>
+    </label>
+    <label class="field">弹幕
+      <select id="windowDanmaku">
+        <option value="off">关</option>
+        <option value="on">开 —— 台词从屏幕顶部飘过</option>
+      </select>
+      <span class="hint">只飘它说的话；你自己发的不飘。窗口最小化之后，这是唯一还看得见消息的通道。</span>
+    </label>
+  </div>
+  <div class="banner" id="gameHint">想边打游戏边听：窗口选「最小化到托盘」+ 弹幕「开」+ 外观选「静态磨砂」—— 三个一起才是真正的 0 占屏、0 抓屏。</div>
+</div>
+
+<div class="card">
   <h2>依赖与下载</h2>
   <p>缺少的依赖会出现官方下载按钮；插件只打开官方来源，不静默安装、不执行下载的文件。装好后回到本页点“重新检查”。</p>
   <div id="deps"></div>
@@ -153,6 +174,8 @@ code{font:12px/1.5 ui-monospace,SFMono-Regular,Consolas,monospace;background:var
     $('chatPort').value = w.chatPort || '';
     $('adapter').value = s.adapter || '';
     $('windowStyle').value = win.style || 'auto';
+    $('windowMode').value = win.mode || 'full';
+    $('windowDanmaku').value = win.danmaku ? 'on' : 'off';
     $('positionHint').textContent = v.browserPort
       ? '浏览器调试端口：' + v.browserPort + '；扩展上报优先，端口用于直接读页面。'
       : '未配置调试端口：仍可用扩展上报或 SMTC；都没有时才需要手动传 cursor。';
@@ -227,7 +250,11 @@ code{font:12px/1.5 ui-monospace,SFMono-Regular,Consolas,monospace;background:var
       };
       const watch = { chatPort: Number($('chatPort').value) };
       const voice = { adapter: $('adapter').value };
-      const win = { style: $('windowStyle').value };
+      const win = {
+        style: $('windowStyle').value,
+        mode: $('windowMode').value,
+        danmaku: $('windowDanmaku').value === 'on',
+      };
       const data = await api('/save', { video, watch, voice, window: win });
       state.video = data.video; state.watch = data.watch; state.voice = data.voice;
       state.window = data.window;

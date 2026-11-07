@@ -105,11 +105,15 @@ export function readWindowSettings(env = process.env) {
   const path = windowConfigPath(env);
   const raw = readObject(path);
   const value = typeof raw.data.glass === 'string' ? raw.data.glass.trim().toLowerCase() : '';
+  // `hidden` 是老键，`mode` 是新键：两个都要认（窗口自己也是这么读的）
+  const hidden = raw.data.hidden === true || raw.data.mode === 'hidden';
   return {
     path,
     exists: raw.exists,
     error: raw.error,
     style: WINDOW_STYLES.includes(value) ? value : 'auto',
+    mode: hidden ? 'hidden' : 'full',
+    danmaku: raw.data.danmaku === true,
   };
 }
 
@@ -126,6 +130,21 @@ export function writeWindowSettings(patch = {}, env = process.env) {
     if (style === 'auto') delete next.glass;
     else next.glass = style;
   }
+  if (patch.mode !== undefined) {
+    const mode = String(patch.mode ?? '').trim().toLowerCase();
+    if (mode !== 'full' && mode !== 'hidden') {
+      throw new Error('mode 必须是 full / hidden');
+    }
+    // 两个键永远一起写：老版本窗口只认 `hidden`，降级后还得能看懂
+    if (mode === 'hidden') {
+      next.mode = 'hidden';
+      next.hidden = true;
+    } else {
+      delete next.mode;
+      next.hidden = false;
+    }
+  }
+  if (patch.danmaku !== undefined) next.danmaku = Boolean(patch.danmaku);
   writeObject(path, next);
   return readWindowSettings(env);
 }

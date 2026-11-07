@@ -351,10 +351,18 @@ export function watchToolSpec() {
         type: 'string',
         enum: ['hide', 'show'],
         description: 'Hide or bring back the floating window WITHOUT ending the watch. Use `hide` when '
-          + 'the user wants it out of the way ("把窗口藏起来" / "收起来" / "别挡着画面") - the window '
-          + 'process stays alive, the clock keeps running, lines keep being spoken, and nothing is '
-          + 'marked as hung up. `show` brings it back. This is NOT the same as closing the window: '
-          + 'closing means "I am done watching" (that still stops the watch); hiding does not.',
+          + 'the user wants it out of the way ("把窗口最小化" / "收起来" / "别挡着画面" / "打游戏的时候") '
+          + '- from 0.2.15 it really leaves the screen (tray icon + Ctrl+Alt+W), it is not shrunk to a '
+          + 'strip. The window process stays alive, the clock keeps running, lines keep being spoken, '
+          + 'and nothing is marked as hung up. `show` brings it back. This is NOT the same as closing '
+          + 'the window: closing means "I am done watching" (that still stops the watch); hiding does not.',
+      },
+      danmaku: {
+        type: 'boolean',
+        description: 'Whether spoken lines also fly across the top of the screen as danmaku. Pair it with '
+          + '`window: "hide"` when the user wants the window gone but still wants to catch what is said '
+          + '("最小化，但弹幕留着" / "打游戏的时候弹幕弹一下"). Only assistant lines are shown; the user\'s '
+          + 'own input never becomes a danmaku. Off by default.',
       },
       say: {
         type: 'string',

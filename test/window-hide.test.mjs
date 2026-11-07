@@ -74,7 +74,10 @@ test('window:hide 只写 hidden 标记 —— 不停钟、不落挂断', async (
     assert.equal(loopStatus().active, true);
 
     const r = await runWatchAction({ window: 'hide' }, { ctx: ctxStub, sessionId: 's-hide' });
-    assert.match(String(r?.text ?? ''), /藏起来/, `要回一句人话，实得 ${r?.text}`);
+    // 2026-11-07：`hide` 的语义从"藏起来"变成"最小化到托盘（真的离开屏幕）"，
+    // 文案跟着换了；两条都认，别再让这句人话被断死。
+    assert.match(String(r?.text ?? ''), /藏起来|最小化/, `要回一句人话，实得 ${r?.text}`);
+    assert.match(String(r?.text ?? ''), /托盘|Ctrl\+Alt\+W/, '得告诉用户怎么叫回来');
     assert.equal(loopStatus().active, true, '藏窗口不该停钟');
     assert.equal(await isHungUp('h.mp4'), false, '藏窗口不是挂断');
 

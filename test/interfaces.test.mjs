@@ -85,8 +85,12 @@ test('window interface uses the transport, not a hard-coded process', async () =
   assert.deepEqual(w.open({ force: true }), { ok: true });
   assert.equal(w.hide(), true);
   w.message({ role: 'assistant', text: 'via transport' });
-  assert.deepEqual(w.status(), { alive: true, hidden: false });
-  assert.deepEqual(seen.map((s) => s[0]), ['open', 'hide', 'message']);
+  // v2 起 status 多一个 mode（full / hidden）：最小化的语义要能被面板读到
+  assert.deepEqual(w.status(), { alive: true, hidden: false, mode: 'full' });
+  // transport 没实现 setMode / danmaku 时不能炸：退化成 hide / unsupported
+  assert.equal(w.setMode('hidden'), true);
+  assert.deepEqual(w.danmaku(true), { ok: false, reason: 'unsupported' });
+  assert.deepEqual(seen.map((s) => s[0]), ['open', 'hide', 'message', 'hide']);
   assert.equal(seen[2][1], 'via transport');
 });
 

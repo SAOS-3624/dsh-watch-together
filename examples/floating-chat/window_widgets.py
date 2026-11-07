@@ -65,6 +65,10 @@ class ChatFeed:
     def __init__(self, path: Path):
         self.path = path
         self.messages: list[dict] = []
+        # **本轮 poll 新增的消息**。弹幕只该飘"新来的"，不能把可见区那 4 条
+        # 反复推一遍；用 messages 长度差算，而不是让 add() 自己记 ——
+        # add() 也被 reload() 调，那样重载历史会一次性刷 80 条弹幕。
+        self.recent: list[dict] = []
         self.status = ""
         self.offset = 0          # 相对最新一条的滚动量
         self._seen: set = set()
@@ -115,6 +119,7 @@ class ChatFeed:
     def reload(self) -> None:
         """重读最后 80 行（文件被清短 / 首次加载）。"""
         self.messages = []
+        self.recent = []
         self._seen.clear()
         self._pos = 0
         self.offset = 0
@@ -127,7 +132,8 @@ class ChatFeed:
             self._pos = 0
 
     def poll(self) -> bool:
-        """增量读；返回是否有变化。"""
+        """增量读；返回是否有变化。本轮新增的消息放在 `self.recent`。"""
+        self.recent = []
         try:
             size = self.path.stat().st_size
         except OSError:
@@ -142,10 +148,13 @@ class ChatFeed:
             data = f.read()
             self._pos = f.tell()
         changed = False
+        before = len(self.messages)
         for line in data.splitlines():
             if self.add(self.parse(line)):
                 changed = True
         if changed:
+            # 只取非 meta 的那部分：meta 走 `status`，不进 messages
+            self.recent = self.messages[before:]
             if self.offset > 0:
                 self.offset += len(data.splitlines())
             self.offset = max(0, min(self.offset, max(0, len(self.messages) - MESSAGE_SLOTS)))

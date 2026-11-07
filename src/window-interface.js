@@ -15,10 +15,11 @@ import {
   appendWindowAction, appendWindowEvent, readWindowActions,
 } from './window-protocol.js';
 import {
-  floatingWindowAlive, floatingWindowHidden, openFloatingWindow, setWindowHidden,
+  floatingWindowAlive, floatingWindowHidden, floatingWindowMode, openFloatingWindow,
+  setWindowDanmaku, setWindowHidden, setWindowMode,
 } from './floating-window.js';
 
-export const WINDOW_INTERFACE_VERSION = 1;
+export const WINDOW_INTERFACE_VERSION = 2;
 
 export function createWindowInterface({ transport = null } = {}) {
   const t = transport ?? {
@@ -36,6 +37,15 @@ export function createWindowInterface({ transport = null } = {}) {
     },
     hidden() {
       return floatingWindowHidden();
+    },
+    mode() {
+      return floatingWindowMode();
+    },
+    setMode(mode) {
+      return setWindowMode(mode);
+    },
+    danmaku(on) {
+      return setWindowDanmaku(on);
     },
   };
   return Object.freeze({
@@ -55,6 +65,15 @@ export function createWindowInterface({ transport = null } = {}) {
     },
     hidden() {
       return t.hidden();
+    },
+    mode() {
+      return typeof t.mode === 'function' ? t.mode() : (t.hidden?.() ? 'hidden' : 'full');
+    },
+    setMode(mode) {
+      return typeof t.setMode === 'function' ? t.setMode(mode) : t.hide?.();
+    },
+    danmaku(on) {
+      return typeof t.danmaku === 'function' ? t.danmaku(on) : { ok: false, reason: 'unsupported' };
     },
     message(entry, env = process.env) {
       return typeof t.message === 'function'
@@ -83,7 +102,11 @@ export function createWindowInterface({ transport = null } = {}) {
       return typeof t.accept === 'function' ? t.accept(action, env) : appendWindowAction(action, env);
     },
     status() {
-      return { alive: Boolean(t.alive()), hidden: Boolean(t.hidden()) };
+      return {
+        alive: Boolean(t.alive()),
+        hidden: Boolean(t.hidden()),
+        mode: typeof t.mode === 'function' ? t.mode() : (t.hidden?.() ? 'hidden' : 'full'),
+      };
     },
   });
 }

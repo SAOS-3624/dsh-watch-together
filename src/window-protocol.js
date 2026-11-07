@@ -26,6 +26,10 @@ export const WINDOW_EVENT_TYPES = Object.freeze([
 ]);
 export const WINDOW_ACTION_TYPES = Object.freeze([
   'say', 'close', 'hide', 'show', 'rename', 'collapse', 'expand',
+  // 最小化（进托盘）和弹幕开关：窗口上的按钮会发这两个。**必须在这里声明**，
+  // `appendWindowAction` 对未声明的类型静默返回 null —— 表现是设置页状态永远
+  // 不同步，而且没有任何报错。
+  'minimize', 'danmaku',
 ]);
 
 export function windowEventFile(env = process.env) {

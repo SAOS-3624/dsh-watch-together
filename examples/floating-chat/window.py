@@ -38,6 +38,7 @@ import json
 import os
 import queue
 import subprocess
+import sys
 import threading
 import time
 from pathlib import Path
@@ -208,9 +209,12 @@ def read_config() -> dict:
         return {}
 
 
-def write_config(patch: dict) -> None:
+def write_config(patch: dict, drop=()) -> None:
+    """合并写。`drop` 里的键会被删掉（`mode: full` 不落盘，见 `_write_mode`）。"""
     cfg = read_config()
     cfg.update(patch or {})
+    for key in drop:
+        cfg.pop(key, None)
     try:
         CONFIG.parent.mkdir(parents=True, exist_ok=True)
         tmp = CONFIG.with_suffix(".json.tmp")
@@ -352,6 +356,68 @@ def no_activate_wanted(cfg: dict | None = None) -> bool:
         return False
 
 
+# ---------------------------------------------------------------- 模式与弹幕
+#
+# 两档模式（互斥）+ 一个正交的弹幕开关：
+#
+#   full     完整玻璃窗（折叠成 78 高横条是 UI 内的临时态，不落盘）
+#   hidden   最小化：真的从屏幕上消失，只在托盘留一个图标
+#
+# 弹幕是独立窗口（`danmaku.py`），和模式正交：`hidden + 弹幕` 就是
+# "打游戏不挡视野、又能瞥一眼消息"的那一档。
+
+MODE_FULL, MODE_HIDDEN = "full", "hidden"
+WINDOW_MODES = (MODE_FULL, MODE_HIDDEN)
+DANMAKU_EDGES = ("top", "bottom")
+
+# 最小化后的**第二**恢复通道：Windows 11 会把新托盘图标塞进溢出区（要点 ∧ 才看得见），
+# 只靠图标用户可能根本找不到窗口。热键用 GetAsyncKeyState 轮询 —— 不能用
+# RegisterHotKey：那要独占一个消息循环，和 Tk 的抢。
+VK_CTRL, VK_ALT, VK_W = 0x11, 0x12, 0x57
+HOTKEY_GAP = 1.2          # 秒，长按不重复触发
+
+
+def window_mode(cfg=None) -> str:
+    """配置要哪一档。
+
+    `mode` 是新的唯一真相源；但**老的 `hidden` 布尔键必须继续生效** ——
+    磁盘上的配置是两个人写的（插件和自己），只认新键会让"点了藏起来"的老用户
+    升级后窗口又冒出来。
+    """
+    if cfg is None:
+        cfg = read_config()
+    cfg = cfg or {}
+    mode = str(cfg.get("mode") or "").strip().lower()
+    if mode in WINDOW_MODES:
+        return mode
+    return MODE_HIDDEN if cfg.get("hidden") is True else MODE_FULL
+
+
+def danmaku_wanted(cfg=None) -> bool:
+    """默认关：替用户决定"打游戏时飘字"是不礼貌的。"""
+    if cfg is None:
+        cfg = read_config()
+    return (cfg or {}).get("danmaku") is True
+
+
+def danmaku_options(cfg=None) -> dict:
+    if cfg is None:
+        cfg = read_config()
+    cfg = cfg or {}
+    try:
+        speed = int(cfg.get("danmakuSpeed") or 220)
+    except (TypeError, ValueError):
+        speed = 220
+    try:
+        lanes = int(cfg.get("danmakuLanes") or 2)
+    except (TypeError, ValueError):
+        lanes = 2
+    edge = str(cfg.get("danmakuEdge") or "top").strip().lower()
+    return {"edge": edge if edge in DANMAKU_EDGES else "top",
+            "lanes": max(1, min(3, lanes)),
+            "speed": max(40, min(400, speed))}
+
+
 def append_user(text: str) -> None:
     CHAT_FILE.parent.mkdir(parents=True, exist_ok=True)
     with open(CHAT_FILE, "a", encoding="utf-8") as f:
@@ -360,11 +426,30 @@ def append_user(text: str) -> None:
 
 
 def asr_python() -> str:
-    """麦克风用 ASR 的 Python，不是带 tkinter 的这个。"""
+    """麦克风用哪个 Python。
+
+    **优先用跑窗口的这个解释器**（`sys.executable`）。两个理由，都是踩出来的：
+
+    1. 它是 `pythonw.exe` —— 用 PATH 上的 `python.exe` 起 `mic.py` 会**弹一个黑框**
+       （用户报的"启动 asr 老是弹命令行窗口"）；
+    2. `pyaudiowpatch` 只装在用户那个 asr venv 里。回退到 PATH 上的 python，
+       `import pyaudiowpatch` 当场失败，而 stderr 是 DEVNULL，于是表现成
+       "点了麦克风，什么都没发生"。
+
+    显式配了 `DSH_ASR_PYTHON` / `DSH_FLOAT_PYTHON` 的仍然优先（给特殊环境留口子）。
+    """
     for key in ("DSH_ASR_PYTHON", "DSH_FLOAT_PYTHON"):
         v = os.environ.get(key)
         if v:
             return v
+    exe = sys.executable or ""
+    # 万一窗口就是用 python.exe 起的：换成同目录的 pythonw.exe，别开控制台
+    if os.name == "nt" and exe.lower().endswith("python.exe"):
+        guess = exe[:-len("python.exe")] + "pythonw.exe"
+        if os.path.exists(guess):
+            exe = guess
+    if exe and os.path.exists(exe):
+        return exe
     return "python.exe" if os.name == "nt" else "python3"
 
 
@@ -410,6 +495,21 @@ def virtual_bounds(fallback_w=0, fallback_h=0):
 class LiveGlass:
     def __init__(self):
         cfg = read_config()
+        # **崩溃取证**：`pythonw` 没有 stderr，段错误时用户只看到"窗口没了"。
+        # faulthandler 会在信号里把**所有线程**的 Python 栈写进这个文件 ——
+        # 没有它，ctypes 回调踩内存这种问题只能靠猜（本机实测过两次 Segfault）。
+        self._fault_log = None
+        if os.environ.get("DSH_WINDOW_FAULTLOG", "1") != "0":
+            try:
+                import faulthandler
+                log_path = cache_dir() / "window-fault.log"
+                log_path.parent.mkdir(parents=True, exist_ok=True)
+                self._fault_log = open(log_path, "a", encoding="utf-8", buffering=1)
+                self._fault_log.write(
+                    "\n=== start pid=%d %s ===\n" % (os.getpid(), time.strftime("%Y-%m-%d %H:%M:%S")))
+                faulthandler.enable(file=self._fault_log, all_threads=True)
+            except Exception:
+                self._fault_log = None
         raw_name = cfg.get("name")
         self.name = (raw_name.strip()[:24] if isinstance(raw_name, str) and raw_name.strip()
                      else "陪看")
@@ -419,6 +519,15 @@ class LiveGlass:
         self._protocol = WindowProtocol() if WindowProtocol is not None else None
         self._collapsed = False
         self._saved_h = DEFAULT_H
+        self._mode = window_mode(cfg)
+        self._tray = None
+        self._tray_hinted = False
+        self._hotkey_at = 0.0
+        self._toast = ""
+        self._danmaku = None
+        # 未读角标：只看"比上次展开时更新的"消息。首次启动没有这个键时按现在算，
+        # 否则历史 80 条会全算未读。
+        self._last_read_at = int(cfg.get("lastReadAt") or time.time() * 1000)
         self._snapshot_done = False
         self._title_entry = None
         self._title_item = None
@@ -445,6 +554,7 @@ class LiveGlass:
         # 主屏尺寸只用来算默认位置；能拖到哪、抓屏能抓到哪，看虚拟桌面（多显示器）
         self._vx, self._vy, self._vw, self._vh = virtual_bounds(self._sw, self._sh)
         w, h, x, y = self._initial_geometry(cfg.get("geometry"))
+        self._saved_h = h
         self._x, self._y = x, y
         self._geo = Geometry.for_size(w, h)
         # 入场：从下方 22px 滑上来（不碰 -alpha，避免和抠色冲突）
@@ -522,6 +632,22 @@ class LiveGlass:
         if self._no_activate:
             self.root.after(0, lambda: self._apply_no_activate(True))
         self._start_worker()
+        # 托盘：只在最小化时出现。这是"缩到底下"之后唯一能点回来的地方。
+        # `DSH_TRAY=0` 关掉它（只剩 Ctrl+Alt+W 和宿主工具）—— 二分排查段错误用：
+        # 托盘是这里唯一碰 ctypes 回调的东西，崩和不崩只差这一个开关。
+        if os.environ.get("DSH_TRAY", "1") != "0":
+            try:
+                from tray import TrayIcon
+                self._tray = TrayIcon(self.root, tip=f"{self.name} · 点击展开",
+                                      icon_png=str(HERE / "mic-dsh.png"),
+                                      cache_dir=cache_dir(),
+                                      # **必须带 save=True**：只把窗口放回来而不改配置，
+                                      # 250ms 后 `_sync_config` 读到还是 `mode: hidden`，
+                                      # 立刻又把它收回去（实测：点了托盘窗口闪一下就没了）。
+                                      on_activate=lambda: self._apply_mode(MODE_FULL, save=True))
+            except Exception as exc:
+                self._tray = None
+                print("tray unavailable", repr(exc), flush=True)
         self.root.lift()
         self.root.after(80, self.root.lift)
         self.root.after(120, self.root.focus_set)
@@ -529,6 +655,11 @@ class LiveGlass:
         self.root.after(30, lambda: self._intro_step(0))
         self.root.after(250, self._poll_chat)
         self.root.after(1200, self._keep_on_top)
+        # 启动即按配置挂弹幕：`mode=hidden` / `mini` 走的是 __init__ 里的直接赋值，
+        # 不经过 `_apply_mode()`，所以不能指望那条路把它带起来。
+        self._sync_danmaku(cfg)
+        if self._mode == MODE_HIDDEN:
+            self._minimize()
         if SNAPSHOT:
             self.root.after(2600, self._snapshot_mode)
 
@@ -701,15 +832,15 @@ class LiveGlass:
                 self.toggle_collapse()
             elif action == "expand" and self._collapsed:
                 self.toggle_collapse()
+            elif action in WINDOW_MODES:
+                self._apply_mode(action, save=True)
+            elif action == "danmaku":
+                write_config({"danmaku": bool(value)})
+                self._sync_danmaku()
             elif action == "hide":
-                self._hidden = True
-                write_config({"hidden": True})
-                self.root.withdraw()
+                self._apply_mode(MODE_HIDDEN, save=True)
             elif action == "show":
-                self._hidden = False
-                write_config({"hidden": False})
-                self.root.deiconify()
-                self.root.attributes("-topmost", True)
+                self._apply_mode(MODE_FULL, save=True)
         except Exception:
             pass
 
@@ -735,6 +866,11 @@ class LiveGlass:
     def _poll_chat(self) -> None:
         try:
             self._sync_config()
+            if self._hidden and self._hotkey_down():
+                now = time.time()
+                if now - self._hotkey_at > HOTKEY_GAP:
+                    self._hotkey_at = now
+                    self._apply_mode(MODE_FULL, save=True)
             for event in self._drain_protocol():
                 self._render_event(event)
             if self._mic_proc is not None and self._mic_proc.poll() is not None:
@@ -744,16 +880,19 @@ class LiveGlass:
             if self.feed.poll():
                 self._collapse_expanded()
                 self._refresh_feed()
+                self._push_danmaku()
+                self._sync_tray_tip()
         except Exception as exc:
             print("chat poll error", exc, flush=True)
         if not self._stop.is_set():
             self.root.after(250, self._poll_chat)
 
     def _sync_config(self) -> None:
-        """配置文件变了：样式和显隐都跟着改（不用重开窗口）。
+        """配置文件变了：样式、模式、弹幕都跟着改（不用重开窗口）。
 
-        设置页把 `glass` 写进同一个文件，所以这里顺手一起处理 —— 用户点一下
-        下拉，250ms 内窗口就换过来。读一次盘就够了，别为两个键各读一遍。
+        设置页写的是同一个文件，读一次盘把三个键全处理掉 —— 用户点一下下拉，
+        250ms 内窗口就换过来。顺序有讲究：先换样式（会重建渲染器），再切模式
+        （会改尺寸并重排），最后挂弹幕（放最后，少一次无谓的窗口创建）。
         """
         try:
             st = CONFIG.stat()
@@ -764,21 +903,8 @@ class LiveGlass:
             return
         self._cfg_key = key
         cfg = read_config()
-        # 换样式会重建渲染器并重排窗口；`_layout` 里会重新贴帧，所以放在显隐之前
         self._apply_style(glass_style(cfg))
-        want = bool(cfg.get("hidden"))
-        if want == self._hidden:
-            return
-        self._hidden = want
-        try:
-            if want:
-                self.root.withdraw()
-            else:
-                self.root.deiconify()
-                self.root.attributes("-topmost", True)
-                self.root.lift()
-        except Exception:
-            self._hidden = not want
+        self._apply_mode(window_mode(cfg), cfg=cfg)
 
     # ---- 输入 ----
 
@@ -862,10 +988,19 @@ class LiveGlass:
             self._refresh_feed()
             return
         try:
+            # `CREATE_NO_WINDOW` 对商店版 python 的 app alias 不一定管用，
+            # 再叠一层 STARTUPINFO + SW_HIDE：两样都上才真的不弹黑框。
+            si = None
+            flags = 0
+            if os.name == "nt":
+                si = subprocess.STARTUPINFO()
+                si.dwFlags |= subprocess.STARTF_USESHOWWINDOW
+                si.wShowWindow = subprocess.SW_HIDE
+                flags = 0x08000000          # CREATE_NO_WINDOW
             self._mic_proc = subprocess.Popen(
                 [asr_python(), str(MIC_SCRIPT), "--engine", "local"],
                 stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
-                creationflags=0x08000000 if os.name == "nt" else 0,
+                creationflags=flags, startupinfo=si,
             )
             self.feed.status = "录音中"
         except Exception as exc:
@@ -1048,27 +1183,204 @@ class LiveGlass:
 
     # ---- 折叠 ----
 
-    def toggle_collapse(self, _event=None):
-        # 先读真实坐标再切高度：_x/_y 只是启动时的缓存，拖动/缩放后已过期。
+    def _set_collapsed(self, on: bool) -> None:
+        """折叠 / 展开：只压高度，宽度不变。
+
+        ⚠️ **这不是"最小化"**。用户说的最小化是"像网页那样缩到底下、完全不占屏幕"
+        —— 那是 `_minimize()`（withdraw + 托盘）。760x78 的横条依然占着一整条，
+        打游戏照样挡视野，所以别再把它当最小化用。
+        """
+        if on == self._collapsed:
+            return
+        # 先读真实坐标再切尺寸：_x/_y 只是启动时的缓存，拖动/缩放后已过期。
         self._sync_pos()
-        self._collapsed = not self._collapsed
-        if self._collapsed:
+        if on:
             self._saved_h = self._geo.height
+            self._collapsed = True
             # 先换成折叠尺寸的几何，再按它裁上一帧，否则圆角遮罩还是整窗高度
             self._set_geometry(Geometry.for_size(self._geo.width, collapsed_height()))
             self._collapsed_frame = self._geo.collapsed_frame(self._last_frame)
             self.root.geometry(f"{self._geo.width}x{self._geo.height}+{self._x}+{self._y}")
             self._layout()
         else:
+            self._collapsed = False
             self._collapsed_frame = None
-            self._set_geometry(Geometry.for_size(self._geo.width, self._saved_h))
+            self._set_geometry(Geometry.for_size(self._geo.width, max(MIN_H, self._saved_h)))
             self.root.geometry(f"{self._geo.width}x{self._geo.height}+{self._x}+{self._y}")
             self._layout(seed=True)
+        self._save_geometry()
+
+    def toggle_collapse(self, _event=None):
+        """▾ / 展开：完整 ↔ 折叠横条。不落盘，重启回到完整态。"""
+        self._set_collapsed(not self._collapsed)
+        self._report("collapse" if self._collapsed else "expand")
+        return "break"
+
+    def toggle_danmaku(self, _event=None):
+        """标题栏那个「弹」：弹幕开关，不用绕到设置页。
+
+        写盘 + 当场挂/拆弹幕层。状态回写一行 toast（1.8 秒后自己消失）——
+        标题栏上只靠颜色区分开关，光看「弹」字不知道现在是什么状态。
+        """
+        want = not danmaku_wanted()
+        write_config({"danmaku": want})
+        self._sync_danmaku()
+        self._toast = "弹幕已开" if want else "弹幕已关"
+        self._layout()
         try:
-            if self._protocol is not None:
-                self._protocol.action("collapse" if self._collapsed else "expand")
+            self.root.after(1800, self._clear_toast)
         except Exception:
             pass
+        self._report("danmaku", value=want)
+        return "break"
+
+    def _clear_toast(self) -> None:
+        if not self._toast:
+            return
+        self._toast = ""
+        try:
+            self._refresh_feed()
+        except Exception:
+            pass
+
+    # ---- 模式 / 弹幕 ----
+
+    def _report(self, action: str, **fields) -> None:
+        """用户动作回给宿主（`window-outbox.jsonl`）。动作名必须在 JS 侧白名单里，
+        否则 `appendWindowAction` 静默返回 null —— 表现是设置页状态永远不同步、
+        而且没有任何报错。"""
+        try:
+            if self._protocol is not None:
+                self._protocol.action(action, **fields)
+        except Exception:
+            pass
+
+    def _write_mode(self, mode: str) -> None:
+        """`mode` 与老的 `hidden` 一起写，两个键永远一致。
+
+        只写 mode 的话，降级回老版本窗口（只认 hidden）会读到一个过期的 `false`，
+        于是「藏起来的窗」又冒出来；反过来只写 hidden，新版本就不知道是 mini。
+        """
+        self._mode = mode
+        patch = {"hidden": mode == MODE_HIDDEN}
+        drop = ()
+        if mode == MODE_FULL:
+            # 默认态不落盘：和 `glass: auto` 一个道理，少一个键就少一次误判
+            drop = ("mode",)
+        else:
+            patch["mode"] = mode
+        write_config(patch, drop=drop)
+
+    def _apply_mode(self, mode: str, *, save: bool = False, cfg=None) -> None:
+        """切档。`save=False` 是配置驱动的（磁盘上已经是这个值，别回写）。"""
+        mode = mode if mode in WINDOW_MODES else MODE_FULL
+        if mode == MODE_HIDDEN:
+            self._minimize()
+        else:
+            self._restore()
+        self._sync_danmaku(cfg)
+        if save:
+            self._write_mode(mode)
+
+    def _minimize(self) -> None:
+        """最小化：真的从屏幕上消失，只在托盘留一个图标。
+
+        `overrideredirect` 的窗口不进任务栏，`withdraw()` 之后屏幕上一点痕迹都没有
+        —— 所以托盘图标是这条功能的**红线**：没有它，用户只能杀进程才找得回来。
+        弹幕层是独立窗口，不受这里影响（`hidden + 弹幕` 才是"打游戏"的完整形态）。
+        """
+        if self._hidden:
+            return
+        self._hidden = True
+        try:
+            self.root.withdraw()
+        except Exception:
+            self._hidden = False
+            return
+        if self._tray is not None:
+            self._tray.show()
+            # 每次运行只提示一次：Windows 11 会把新图标塞进溢出区，不告诉用户
+            # "东西在哪"，他只会觉得窗口被关掉了。
+            if not self._tray_hinted:
+                self._tray_hinted = True
+                self._tray.notify("已最小化到托盘（Ctrl+Alt+W 也能叫回来）")
+
+    def _restore(self) -> None:
+        """从托盘回来。顺手把未读清零 —— 用户点开就是想看现在有什么。"""
+        if not self._hidden:
+            return
+        self._hidden = False
+        try:
+            self.root.deiconify()
+            self.root.attributes("-topmost", True)
+            self.root.lift()
+        except Exception:
+            pass
+        if self._tray is not None:
+            self._tray.hide()
+        self._mark_read()
+
+    def _sync_danmaku(self, cfg=None) -> None:
+        """弹幕开关。开 = 一条横跨屏幕的独立窗口；关 = 连定时器一起销毁。
+
+        弹幕层和主窗的显隐是正交的：`hidden + 弹幕` 才是"打游戏最干净"那一档。
+        """
+        want = danmaku_wanted(cfg) if cfg is not None else danmaku_wanted()
+        opts = danmaku_options(cfg) if cfg is not None else danmaku_options()
+        if want:
+            if self._danmaku is None:
+                try:
+                    from danmaku import DanmakuLayer
+                    self._danmaku = DanmakuLayer(self.root, screen_w=self._sw,
+                                                 screen_h=self._sh, **opts)
+                except Exception as exc:
+                    self._danmaku = None
+                    print("danmaku init failed", repr(exc), flush=True)
+            else:
+                self._danmaku.set_options(**opts)
+        elif self._danmaku is not None:
+            self._danmaku.close()
+            self._danmaku = None
+
+    def _push_danmaku(self) -> None:
+        """把本轮新增的消息推进弹幕队列。用户自己说的话不飘。"""
+        if self._danmaku is None:
+            return
+        for msg in getattr(self.feed, "recent", ()):
+            text = msg.get("text") or ""
+            if text:
+                self._danmaku.push(text, msg.get("role") or "assistant")
+
+    def _unread(self) -> int:
+        return sum(1 for m in self.feed.messages
+                   if (m.get("at") or 0) > self._last_read_at)
+
+    def _mark_read(self) -> None:
+        now = int(time.time() * 1000)
+        self._last_read_at = now
+        write_config({"lastReadAt": now})
+
+    def _hotkey_down(self) -> bool:
+        """Ctrl+Alt+W 是否按下。只在最小化时问（其它时候窗口本来就在）。"""
+        if not IS_WIN:
+            return False
+        try:
+            u = ctypes.windll.user32
+            return bool((u.GetAsyncKeyState(VK_CTRL) & 0x8000)
+                        and (u.GetAsyncKeyState(VK_ALT) & 0x8000)
+                        and (u.GetAsyncKeyState(VK_W) & 0x8000))
+        except Exception:
+            return False
+
+    def _sync_tray_tip(self) -> None:
+        """最小化时把"有几条新的"写进托盘提示。
+
+        弹幕关掉之后，托盘那行字就是**唯一**的信号 —— 没有它，用户不知道要不要点开。
+        """
+        if self._tray is None or not self._hidden:
+            return
+        n = self._unread()
+        self._tray.set_tip(f"{self.name} · {n} 条新消息" if n else f"{self.name} · 点击展开")
 
     # ---- 气泡布局 ----
 
@@ -1243,11 +1555,9 @@ class LiveGlass:
         if self._collapsed:
             self._bind_header()
             c.itemconfigure(self._bg, state="normal")
-            self._bar_len = max(72, int(w * BAR_FRAC))
-            self._bar = c.create_line(w // 2 - self._bar_len // 2, BAR_Y,
-                                      w // 2 + self._bar_len // 2, BAR_Y,
-                                      width=BAR_THICK, fill=self._bar_color,
-                                      capstyle="round")
+            # 迷你态不画顶部那条装饰线：240 宽时它横在名字上方，像一条穿头的
+            # 进度条（截图确认过）。胶囊本身已经够小，不需要再给一个视觉锚点。
+            self._bar = None
             self._sync_static_frame()
             self.text.refresh()
             return
@@ -1301,7 +1611,7 @@ class LiveGlass:
         w = self._geo.width
         mic_on = self._mic_proc is not None and self._mic_proc.poll() is None
         dot = "#e05a5a" if mic_on else "#0a84ff"
-        # 标题栏玻璃是 y=12..66，中心 39；右边 ▾/✕ 也在 38。点、名字、状态必须
+        # 标题栏玻璃是 y=12..66，中心 39；右边 —/▾/✕ 也在 38。点、名字、状态必须
         # 同一条水平中线，且字号要能完整落在条内，不能压到气泡区。
         cy, dot_x, title_x = 38, 54, 68
         c.create_oval(dot_x - 9, cy - 9, dot_x + 9, cy + 9,
@@ -1310,16 +1620,44 @@ class LiveGlass:
         name = self.name[:10]
         self.text.draw(title_x, cy, name, anchor="w", fill="#f7fbff", size=16,
                        bold=True, tags=("title",))
-        count = self.feed.status or f"{len(self.feed.messages)} 条"
+        count = self._toast or self.feed.status or f"{len(self.feed.messages)} 条"
         nx = title_x + self.fonts.get(16, True).measure(name) + 10
-        self.text.draw(nx, cy, count, anchor="w",
-                       fill="#ffb4b4" if self.feed.status else "#dbe6f5", size=11)
-        self.text.draw(w - 94, 38, "▾", anchor="w", fill="#7f8da3", size=12, tags=("collapse",))
-        self.text.draw(w - 58, 38, "✕", anchor="w", fill="#9fb0c8", size=13, tags=("close",))
+        tone = "#9fe1cb" if self._toast else ("#ffb4b4" if self.feed.status else "#dbe6f5")
+        # 右边四个按钮占 176px。状态行不截断的话，一条长 meta（宿主的报错动辄
+        # 七八十字）会直接糊到按钮上 —— 之前只有一个 ▾/✕ 时不明显，现在四个按钮
+        # 一撞就整排看不见。
+        count = self._clip_text(count, 11, max(40, (w - 176) - nx - 8))
+        self.text.draw(nx, cy, count, anchor="w", fill=tone, size=11)
+        # 「弹」= 弹幕开关（亮蓝 = 开，暗灰 = 关）；「—」= 最小化到托盘；
+        # 「▾」= 折叠成横条；「✕」= 关闭。四个按钮，从右往左数。
+        dm_on = danmaku_wanted()
+        self.text.draw(w - 168, 38, "弹", anchor="w",
+                       fill="#7fc4ff" if dm_on else "#55637a", size=12, tags=("danmaku",))
+        self.text.draw(w - 130, 38, "—", anchor="w", fill="#7f8da3", size=13,
+                       tags=("minimize",))
+        self.text.draw(w - 92, 38, "▾", anchor="w", fill="#7f8da3", size=12,
+                       tags=("collapse",))
+        self.text.draw(w - 54, 38, "✕", anchor="w", fill="#9fb0c8", size=13, tags=("close",))
+
+    def _clip_text(self, text: str, size: int, width: int) -> str:
+        """按像素宽度截断（单行）。`_fit_lines` 是折行，标题栏不能折 —— 折下去就压气泡了。"""
+        text = str(text or "")
+        font = self.fonts.get(size)
+        if width <= 0 or font.measure(text) <= width:
+            return text
+        cur = ""
+        for ch in text:
+            if font.measure(cur + ch + "…") > width:
+                break
+            cur += ch
+        return (cur + "…") if cur else ""
 
     def _bind_header(self) -> None:
         c = self.canvas
         c.tag_bind("close", "<Button-1>", self._close)
+        c.tag_bind("danmaku", "<Button-1>", self.toggle_danmaku)
+        c.tag_bind("minimize", "<Button-1>",
+                   lambda _e: self._apply_mode(MODE_HIDDEN, save=True))
         c.tag_bind("collapse", "<Button-1>", self.toggle_collapse)
         # 双击改名：单击要留给「按住标题拖动窗口」，两者不能抢同一个事件
         c.tag_bind("title", "<Double-Button-1>", self._edit_title)
@@ -1709,9 +2047,14 @@ class LiveGlass:
             pass
 
     def _save_geometry(self) -> None:
-        h = self._saved_h if self._collapsed else self.root.winfo_height()
-        write_config({"geometry": f"{self.root.winfo_width()}x{h}"
-                                  f"+{self.root.winfo_x()}+{self.root.winfo_y()}"})
+        """记住完整态的位置。折叠只是临时压高度，不能把 78 当成窗口尺寸存下去。
+
+        尺寸取 `_geo` 而**不能取 `winfo_height()`**：`root.geometry()` 是异步的，
+        刚设完读回来还是上一档的值（实测折叠时存成 560、展开时存成 78，正好互换）。
+        """
+        self._sync_pos()
+        h = self._saved_h if self._collapsed else self._geo.height
+        write_config({"geometry": f"{self._geo.width}x{h}+{self._x}+{self._y}"})
 
     # ---- 关闭 / 隐藏 ----
 
@@ -1719,6 +2062,14 @@ class LiveGlass:
         try:
             self._save_geometry()
             self._stop_mic()
+            # 弹幕层和托盘都是本进程的额外窗口：不显式关的话，`root.destroy()`
+            # 也会带走它们，但那些 after job 会先报一次 "invalid command name"。
+            if self._danmaku is not None:
+                self._danmaku.close()
+                self._danmaku = None
+            if self._tray is not None:
+                self._tray.close()
+                self._tray = None
             self._stop.set()
             self._pause.set()
             self._set_exclude(False)
@@ -1780,11 +2131,14 @@ class LiveGlass:
     def _press(self, e):
         # 每次按下先把屏幕布局重新读一遍：拖动前插/拔显示器也能立刻生效
         self._sync_screens()
-        # 麦克风图标画在玻璃里，不在 Canvas 上单独建控件；点它不能当拖窗
-        mx, my = self._geo.mic_pos
-        if abs(e.x - (mx + MIC_SIZE // 2)) <= 22 and abs(e.y - (my + MIC_SIZE // 2)) <= 22:
-            self._toggle_mic()
-            return
+        # 麦克风图标画在玻璃里，不在 Canvas 上单独建控件；点它不能当拖窗。
+        # **迷你态没有麦克风**：`mic_pos` 是按高度算的（h-67），78 高时落在标题栏
+        # 左侧，点名字附近就会误开麦（折叠态一直有这个毛病）。
+        if not self._collapsed:
+            mx, my = self._geo.mic_pos
+            if abs(e.x - (mx + MIC_SIZE // 2)) <= 22 and abs(e.y - (my + MIC_SIZE // 2)) <= 22:
+                self._toggle_mic()
+                return
         x0, y0, x1, y1, _r = self._geo.input_shape
         if x0 <= e.x <= x1 and y0 <= e.y <= y1:
             self._focus_input()

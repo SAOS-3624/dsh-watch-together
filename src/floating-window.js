@@ -64,9 +64,10 @@ function readConfig() {
 }
 
 /** 写一个键进配置（只合并不覆盖：`window.py` 也往这个文件写 geometry） */
-function patchConfig(patch) {
+function patchConfig(patch, drop = []) {
   try {
     const cfg = { ...readConfig(), ...patch };
+    for (const key of drop) delete cfg[key];
     writeFileSync(windowConfigPath(), `${JSON.stringify(cfg, null, 2)}\n`, 'utf8');
     return true;
   } catch {
@@ -79,21 +80,57 @@ function patchConfig(patch) {
  *
  * 为什么这是**独立于关窗**的一档：关窗在陪看里是"不看了"（停表 + 落挂断记录），
  * 而用户经常只是嫌它挡画面 —— 那两件事必须分开（2026-11-01 用户提出）。
- * 窗口自己每 200ms 读一次这个配置（`_sync_visible`），所以这里只写文件就够。
+ * 窗口自己每 250ms 读一次这个配置（`_sync_config`），所以这里只写文件就够。
  *
  * @param {boolean} hidden
  * @returns {{ok: boolean, hidden: boolean, reason?: string}}
  */
 export function setWindowHidden(hidden) {
-  if (process.env.DSH_WATCH_NO_WIDGET === '1') return { ok: false, hidden: false, reason: 'disabled' };
-  if (!stillRunning()) return { ok: false, hidden: false, reason: 'window-not-open' };
-  if (!patchConfig({ hidden: Boolean(hidden) })) return { ok: false, hidden: false, reason: 'config-write-failed' };
-  return { ok: true, hidden: Boolean(hidden) };
+  const r = setWindowMode(hidden ? 'hidden' : 'full');
+  return { ok: r.ok, hidden: Boolean(hidden) && r.ok, reason: r.reason };
+}
+
+/**
+ * 两档：`full` / `hidden`。
+ *
+ * `hidden` 是**真正从屏幕上消失**（不是缩成一条）—— `overrideredirect` 窗口不进
+ * 任务栏，所以窗口进程会挂一个托盘图标，另外留了 `Ctrl+Alt+W` 热键兜底。
+ * 想在这时候还看得见消息，就配 `danmaku: true`。
+ *
+ * @param {'full'|'hidden'} mode
+ */
+export function setWindowMode(mode) {
+  const want = String(mode ?? '').trim().toLowerCase();
+  if (want !== 'full' && want !== 'hidden') {
+    return { ok: false, mode: null, reason: 'bad-mode' };
+  }
+  if (process.env.DSH_WATCH_NO_WIDGET === '1') return { ok: false, mode: null, reason: 'disabled' };
+  if (!stillRunning()) return { ok: false, mode: null, reason: 'window-not-open' };
+  const patch = { hidden: want === 'hidden' };
+  // 只写 `hidden`：它是窗口真正读的那个键，`mode` 是窗口自己在最小化时补的
+  // 语义标记。JS 侧多写一个键，只会让"hide 到底改了什么"变得难查。
+  const ok = want === 'hidden' ? patchConfig(patch) : patchConfig(patch, ['mode']);
+  if (!ok) return { ok: false, mode: null, reason: 'config-write-failed' };
+  return { ok: true, mode: want };
+}
+
+/** 台词是否以弹幕飘过（和 mode 正交：隐藏 + 弹幕是最干净的一档）。 */
+export function setWindowDanmaku(on) {
+  if (process.env.DSH_WATCH_NO_WIDGET === '1') return { ok: false, reason: 'disabled' };
+  if (!stillRunning()) return { ok: false, reason: 'window-not-open' };
+  if (!patchConfig({ danmaku: Boolean(on) })) return { ok: false, reason: 'config-write-failed' };
+  return { ok: true, danmaku: Boolean(on) };
 }
 
 /** 窗口现在是藏着的吗（读配置，不看进程） */
 export function floatingWindowHidden() {
   return readConfig().hidden === true;
+}
+
+/** 当前是哪一档（读配置） */
+export function floatingWindowMode() {
+  const cfg = readConfig();
+  return cfg.hidden === true || cfg.mode === 'hidden' ? 'hidden' : 'full';
 }
 
 /** 这个脚本最终用哪个文件（不检查存在性，交给调用方报清楚） */
@@ -150,8 +187,9 @@ export function floatingWindowAlive() {
  */
 export function openFloatingWindow({ log = null, force = false } = {}) {
   // **先清"上次藏着退出"的标记**（在任何早退之前）：否则下次真开窗时它直接隐身，
-  // 用户以为插件坏了（`window.py` 的 `_sync_visible` 只跟这个键，没有"第一次"的概念）。
-  if (readConfig().hidden === true) patchConfig({ hidden: false });
+  // 用户以为插件坏了（`window.py` 的 `_sync_config` 只跟这个键，没有"第一次"的概念）。
+  const boot = readConfig();
+  if (boot.hidden === true || boot.mode === 'hidden') patchConfig({ hidden: false }, ['mode']);
   if (process.env.DSH_WATCH_NO_WIDGET === '1') return { ok: false, reason: 'disabled' };
   const cfg = readConfig();
   let script = resolveWindowScript(cfg);
