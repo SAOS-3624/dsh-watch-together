@@ -1,22 +1,30 @@
 # Changelog
 
-## [0.2.15] - 2026-11-06
+## [0.3.0] - 2026-11-07
 
-### Fixed — 有些机器上装完一个工具都不出现（社区实报）
+> 这一版的重点是**「别碍事」**：窗口能真的从屏幕上消失、滚动手感从卡顿变成跟手、
+> 在 mac 和 Linux 上不再一启动就退。另外补了一个从 0.0.2 起就存在的静默失败 —— 麦克风。
 
-`import('@deepseek-ai/dsh-tools')` 拿 `defineTool`，而宿主的这份**被打进 `app.asar`**，
-插件从自己的 `node_modules` 往上解析不到 → 抛 → `apply()` 的 catch 吞掉 →
-**整个插件静默不注册任何工具**（日志里只留一行 `failed to load`）。
+### Added — 最小化到托盘 + 弹幕层
 
-- 新增 `src/define-tool.js`：内置一份 `defineTool` 兼容实现（author spec → JSON Schema，
-  规则照抄宿主 `runSchemaCompiler` 的语义；只少了运行时参数校验）。
-- `loadDefineTool()` 改成三跳：`import` → `DSH_TOOLS_PATH`（包了 try，路径写错也不会崩）→ 内置兜底。
-- 走兜底的情况下工具照常注册，`schema-audit` 那套静态审计仍然是第一道防线。
-- 测试 +6：`type:'json'` 退化成注解、`required:true` 提升到父级、真实 spec 全部能编译出来。
-All notable changes to **dsh-watch-together** are documented here.
-This package starts its own version line at `0.0.7` — it is not a continuation of `dsh-video-storyboard`.
+悬浮窗以前只有两档形态：全尺寸、或者"折叠成一条"。折叠还占着一块屏幕，打游戏时很碍事。
 
-## [Unreleased]
+- **两档：`full` / `hidden`**。`hidden` 走 `withdraw`，**真的离开屏幕**，不是缩成一条；
+- 回来的路有三条（少一条就等于"窗口没了"）：托盘图标、`Ctrl+Alt+W`、宿主工具的 `window:show`；
+- **`danmaku.py`**：独立 `Toplevel` + `WS_EX_TRANSPARENT` 点穿，30fps，队列空了就停表
+  （不是空转）；只飘 assistant 的话，自己发的不飘；
+- 标题栏四个按钮：弹 / 最小化 / 折叠 / 关闭；状态行按像素截断，不再糊住按钮；
+- 协议加白名单 + `minimize` / `danmaku` 两个方法；工具参数补 `window:hide` 和 `danmaku`。
+
+顺带修了四个真问题：
+
+- **`asr` 用窗口自己的 `pythonw`**：PATH 上的 `python.exe` 会弹黑框，而且没有 `pyaudiowpatch`
+  —— 麦克风一直是静默失败的（stderr 是 DEVNULL，所以没人知道）；
+- `_save_geometry` 取 `_geo` 而不是 `winfo`（geometry 是异步的，折叠/展开会互换）；
+- 折叠态点名字附近会误开麦；
+- `faulthandler` 落 `window-fault.log`（`pythonw` 没有 stderr，段错误本来没证据可查）；
+  `DSH_TRAY=0` 可以关掉托盘做二分。
+
 
 ### Fixed — 滚轮翻历史每格卡近一秒（see-now #44）
 
@@ -84,6 +92,22 @@ canvas item（有底板时每个字还要再加 4 层描边）。滚一格 = 重
 
 - 导入改成可缺省：没有 `aec.py` 时回声消除关掉、麦克风照常可用（并打一行原因）；
 - see-now 的 `sync-window.mjs` ASSETS 补上 `aec.py`。
+
+## [0.2.15] - 2026-11-06
+
+### Fixed — 有些机器上装完一个工具都不出现（社区实报）
+
+`import('@deepseek-ai/dsh-tools')` 拿 `defineTool`，而宿主的这份**被打进 `app.asar`**，
+插件从自己的 `node_modules` 往上解析不到 → 抛 → `apply()` 的 catch 吞掉 →
+**整个插件静默不注册任何工具**（日志里只留一行 `failed to load`）。
+
+- 新增 `src/define-tool.js`：内置一份 `defineTool` 兼容实现（author spec → JSON Schema，
+  规则照抄宿主 `runSchemaCompiler` 的语义；只少了运行时参数校验）。
+- `loadDefineTool()` 改成三跳：`import` → `DSH_TOOLS_PATH`（包了 try，路径写错也不会崩）→ 内置兜底。
+- 走兜底的情况下工具照常注册，`schema-audit` 那套静态审计仍然是第一道防线。
+- 测试 +6：`type:'json'` 退化成注解、`required:true` 提升到父级、真实 spec 全部能编译出来。
+All notable changes to **dsh-watch-together** are documented here.
+This package starts its own version line at `0.0.7` — it is not a continuation of `dsh-video-storyboard`.
 
 ## [0.2.14] - 2026-11-06
 
