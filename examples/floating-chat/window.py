@@ -29,6 +29,10 @@
 
 渲染后端：默认 CPU。`DSH_GLASS_NATIVE=1` 或 `DSH_GLASS_GPU=1` 走 GPU（只对 live 有效）。
 """
+# `X | Y` 形式的注解要这个才在 3.9 上不求值（见 #45：Xcode CLT 自带 3.9 是 mac 上
+# 最好拿的一个解释器，不该因为注解写法把它排除掉）。
+from __future__ import annotations
+
 import ctypes
 import json
 import os
@@ -399,7 +403,13 @@ class LiveGlass:
         self.root.title(self.name)
         self.root.attributes("-topmost", True)
         self.root.configure(bg=KEY)
-        self.root.attributes("-transparentcolor", KEY)
+        # `-transparentcolor` 是 Tk 的 **Windows 专有** 属性：aqua 的合法集合是
+        # `-alpha / -fullscreen / -modified / -notify / -titlepath / -topmost / -transparent`，
+        # X11 也没有它。无条件调用 → `TclError: bad attribute "-transparentcolor"`，
+        # 死在 `__init__` 里，用户看到的是"窗口起不来"（#45 macOS、PR #38 Linux 都栽在这行）。
+        # 非 Windows 上就留着 KEY 这个底色（窗口退化成一张深色卡片），别再让整个窗口起不来。
+        if IS_WIN:
+            self.root.attributes("-transparentcolor", KEY)
         self.fonts = Fonts(self.root)
 
         self._sw, self._sh = self.root.winfo_screenwidth(), self.root.winfo_screenheight()

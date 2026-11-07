@@ -256,9 +256,14 @@ class MotionTracker:
         return 0.35 * max(0.0, min(1.0, self.motion))
 
 
-@dataclass(slots=True)
+@dataclass
 class Shot:
-    """一次抓屏的结果。CPU 用 `rgb`，GPU 用 `bgra`，避免重复抓。"""
+    """一次抓屏的结果。CPU 用 `rgb`，GPU 用 `bgra`，避免重复抓。
+
+    **不要加 `slots=True`**：那是 3.10 才有的参数，3.9 上直接
+    `TypeError: dataclass() got an unexpected keyword argument 'slots'`（#45）。
+    这三个字段的分配频率撑不起 `__slots__` 的那点收益，别为它抬高解释器门槛。
+    """
 
     shot: object            # mss 的 ScreenShot
     box: tuple              # 屏幕坐标 (gl, gt, gr, gb)

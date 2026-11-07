@@ -9,6 +9,9 @@
 拆出来的原因只有一个：`window.py` 原来 1900 行里，这三块和「拖动/缩放/渲染
 状态机」混在一起，改一个阈值要在同一文件里翻三遍。
 """
+# 3.9 兼容：`dict | None` 这类注解要 future import 才不求值（见 #45）。
+from __future__ import annotations
+
 import json
 import time
 from pathlib import Path

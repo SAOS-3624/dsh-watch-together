@@ -29,6 +29,19 @@ This package starts its own version line at `0.0.7` — it is not a continuation
   改走 `fill_own_rect` 那条路，不会递归拍到自己；
 - `_bbox()` 在非 Windows 上退回 Tk 的屏幕坐标（Retina 缩放对齐仍是已知问题，
   那类机器建议用 `frost`/`solid`，两者都不抓屏）。
+
+上一版只收了 `ctypes.windll`，**`-transparentcolor` 这一行漏了** —— 它同样是 Tk 的
+**Windows 专有属性**（aqua 的合法集合是 `-alpha / -fullscreen / -modified / -notify /
+-titlepath / -topmost / -transparent`，X11 也没有它），无条件调用一样 `TclError` 死在
+`__init__`。这道坎在 see-now #45（macOS）和 see-now PR #38（Linux VM）里各被独立撞到一次。
+
+- `-transparentcolor` 包进 `if IS_WIN:`；非 Windows 上窗口退化成一张 KEY 底色的深色卡片
+  （`#010203`、四角变直角），先保证起得来再说视觉；
+- `glass_capture.py` 的 `@dataclass(slots=True)`（3.10+）去掉 —— Xcode CLT 自带的
+  3.9 是 mac 上最好拿的一个解释器，不该被三个字段的 `__slots__` 挡在门外；
+- `window.py` / `window_widgets.py` 补 `from __future__ import annotations`，
+  `X | None` 这类注解在 3.9 上不再求值。12 个 py 文件现在全部过
+  `ast.parse(feature_version=(3, 9))`。
 - 启动失败弹窗的标题跟着 `DSH_WINDOW_BRAND` 走（see-now 的用户不会再看到
   "dsh-watch-together"，issue #32 第 1 条）。
 
