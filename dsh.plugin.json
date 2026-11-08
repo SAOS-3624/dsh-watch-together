@@ -1,7 +1,7 @@
 {
   "name": "dsh-watch-together",
   "description": "Watch a video together, in sync with the user's real playback: each segment arrives as one storyboard image plus its subtitle lines just before it ends, and the floating window carries spoken replies and live room audio.",
-  "version": "0.3.0",
+  "version": "0.3.1",
   "entry": {
     "name": "dsh-watch-together",
     "inject": [

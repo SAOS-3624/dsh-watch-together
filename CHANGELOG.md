@@ -1,5 +1,28 @@
 # Changelog
 
+## [0.3.1] - 2026-11-08
+
+> 两个修复，都不动窗口本身：设置页 token 不再一重启就失效、**对 storyboard 的依赖范围
+> 真的能装到 0.7.x** —— 后者是装完就坏的那种，值得单独升一版。
+
+### Fixed — 依赖范围 `^0.6.0` 装不到 storyboard 0.7.0（#60）
+
+0.x 的 caret 不跨小版本：`^0.6.0` 只匹配 `>=0.6.0 <0.7.0`。而 0.3.0 是按 storyboard 0.7 的
+导出写的，于是**新装的人拿到 0.6.x，装完直接坏**。
+
+- `dependencies.dsh-video-storyboard` 抬到 `^0.7.0`；
+- `test/dep-contract.test.mjs` 加了一条断言：同级 storyboard 的小版本必须落在依赖范围内
+  （并排仓库不在时自动跳过）。以后改版本号忘了抬依赖，测试会先红。
+
+### Fixed — 设置页 token 一重启就失效（PR #59）
+
+与 storyboard 同款修法：token 落 `$DSH_HOME/watch-settings-token`，宿主重启后已打开的
+设置页继续能保存。
+
+### Added — 本地化元数据与详情页（PR #59）
+
+`locale/{zh,en}.json` + `docs/plugin*.md`。
+
 ## [0.3.0] - 2026-11-07
 
 > 这一版的重点是**「别碍事」**：窗口能真的从屏幕上消失、滚动手感从卡顿变成跟手、
