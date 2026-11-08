@@ -49,6 +49,30 @@ SHADOW = "#0a1018"
 FONT_FAMILY = "Microsoft YaHei UI"
 FONT_SIZE = 13
 
+# 上面这些是**默认值**（2026-11 用户实报：13px 在 2560×1440 上偏小）。
+# `window.py` 会把 `watch-window.json` 里的 danmakuFontSize / danmakuFont /
+# danmakuFg / danmakuShadow 传进来覆盖，改配置即可，不必动代码。
+
+
+def _color(value, fallback: str) -> str:
+    """只认 `#rrggbb`；写错的颜色退回默认色，别让弹幕因为一个笔误消失。"""
+    s = str(value or "").strip()
+    if len(s) == 7 and s[0] == "#":
+        try:
+            int(s[1:], 16)
+            return s
+        except ValueError:
+            pass
+    return fallback
+
+
+def _clamp_size(value, fallback: int = FONT_SIZE) -> int:
+    try:
+        n = int(value)
+    except (TypeError, ValueError):
+        return fallback
+    return max(10, min(40, n))
+
 
 def _units(ch: str) -> float:
     """全角算 1，半角算 0.55 —— 按字符数截断会让英文短句显得很长。"""
@@ -73,7 +97,9 @@ class DanmakuLayer:
 
     def __init__(self, root: tk.Tk, *, screen_w: int, screen_h: int,
                  edge: str = "top", lanes: int = 2, speed: float = SPEED,
-                 inset: int = 0):
+                 inset: int = 0, font_family: str = FONT_FAMILY,
+                 font_size: int = FONT_SIZE, fg: str = FG, shadow: str = SHADOW,
+                 weight: str = "normal"):
         self.root = root
         self.screen_w = max(320, int(screen_w))
         self.screen_h = max(240, int(screen_h))
@@ -81,6 +107,18 @@ class DanmakuLayer:
         self.lanes = max(1, min(3, int(lanes)))
         self.speed = max(40.0, min(400.0, float(speed)))
         self.inset = max(0, int(inset))
+        self.font_family = str(font_family or "").strip() or FONT_FAMILY
+        self.font_size = _clamp_size(font_size)
+        self.weight = "bold" if str(weight).lower() == "bold" else "normal"
+        self.fg = _color(fg, FG)
+        self.shadow = _color(shadow, SHADOW)
+        # 轨道高度**必须按字体实际行高**算，不能拿字号估：Tk 的 size 是磅值，
+        # 30 磅在 96DPI 下约 40px 字、行高 58px，旧公式 max(26, 字号+13) 只给 43px，
+        # 第二轨的文字会被窗口底边裁成"上半截"（2026-11 用户实报）。
+        # 行高问字体自己（metrics），换字体/换 DPI 都不会再错。
+        self._font = tkfont.Font(root=root, family=self.font_family,
+                                 size=self.font_size, weight=self.weight)
+        self.lane_h = max(LANE_H, self._font.metrics("linespace") + 1)
 
         self._pending = []
         self._items = []          # [{main, shadow, x, w, lane}]
@@ -106,7 +144,6 @@ class DanmakuLayer:
         self.canvas.pack(fill="both", expand=True)
         # 自己量宽度而不是问 `canvas.bbox()`：刚 create_text 出来的 item 还没排过版，
         # bbox 可能给 None / 旧值，那样 GAP 会算小、同轨两条直接叠上。
-        self._font = tkfont.Font(root=root, family=FONT_FAMILY, size=FONT_SIZE)
         self._resize()
         self._apply_ex_style()
 
@@ -114,7 +151,7 @@ class DanmakuLayer:
 
     @property
     def height(self) -> int:
-        return self.lanes * LANE_H + 2 * PAD_Y
+        return self.lanes * self.lane_h + 2 * PAD_Y
 
     def _resize(self) -> None:
         y = (self.screen_h - self.height - self.inset) if self.edge == "bottom" else self.inset
@@ -138,8 +175,15 @@ class DanmakuLayer:
         except Exception as exc:
             print("danmaku exstyle failed", repr(exc), flush=True)
 
-    def set_options(self, *, edge=None, lanes=None, speed=None, inset=None) -> None:
-        """配置改了就地生效：不清屏、不重开窗口（用户的观感是"字变快了"）。"""
+    def set_options(self, *, edge=None, lanes=None, speed=None, inset=None,
+                    font_family=None, font_size=None, fg=None, shadow=None,
+                    weight=None) -> None:
+        """配置改了就地生效：不清屏、不重开窗口（用户的观感是"字变快了"）。
+
+        颜色能原地 `itemconfigure`；字体/字号/字重不行 —— 已经飞出去的 item 用的是旧字体，
+        量出来的宽度也是旧的，硬改会让同轨间距算错。所以这几种情况清掉在飞的几条
+        （下一次 push 用新样式），配置改动本来就是低频操作。
+        """
         if edge is not None:
             self.edge = "bottom" if str(edge).lower() == "bottom" else "top"
         if lanes is not None:
@@ -148,6 +192,25 @@ class DanmakuLayer:
             self.speed = max(40.0, min(400.0, float(speed)))
         if inset is not None:
             self.inset = max(0, int(inset))
+        if fg is not None:
+            self.fg = _color(fg, self.fg)
+        if shadow is not None:
+            self.shadow = _color(shadow, self.shadow)
+        family = (str(font_family).strip() or self.font_family) if font_family is not None else self.font_family
+        size = _clamp_size(font_size) if font_size is not None else self.font_size
+        want_weight = ("bold" if str(weight).lower() == "bold" else "normal") if weight is not None else self.weight
+        if (family, size, want_weight) != (self.font_family, self.font_size, self.weight):
+            self.font_family, self.font_size, self.weight = family, size, want_weight
+            self._font.configure(family=self.font_family, size=self.font_size, weight=self.weight)
+            # 行高跟着字体走（见 __init__ 的注释）：换字号/字体/字重都要重算
+            self.lane_h = max(LANE_H, self._font.metrics("linespace") + 1)
+            for it in list(self._items):
+                self.canvas.delete(it["main"])
+                self.canvas.delete(it["shadow"])
+            self._items.clear()
+        for it in self._items:
+            self.canvas.itemconfigure(it["main"], fill=self.fg)
+            self.canvas.itemconfigure(it["shadow"], fill=self.shadow)
         self._resize()
 
     # ---- 输入 ----
@@ -187,10 +250,10 @@ class DanmakuLayer:
         if lane is None:
             return
         text = self._pending.pop(0)
-        y = PAD_Y + lane * LANE_H
-        kwargs = dict(text=text, anchor="nw", font=(FONT_FAMILY, FONT_SIZE))
-        shadow = self.canvas.create_text(self.screen_w + 1, y + 1, fill=SHADOW, **kwargs)
-        main = self.canvas.create_text(self.screen_w, y, fill=FG, **kwargs)
+        y = PAD_Y + lane * self.lane_h
+        kwargs = dict(text=text, anchor="nw", font=self._font)
+        shadow = self.canvas.create_text(self.screen_w + 1, y + 1, fill=self.shadow, **kwargs)
+        main = self.canvas.create_text(self.screen_w, y, fill=self.fg, **kwargs)
         width = self._font.measure(text)
         self._items.append({"main": main, "shadow": shadow, "x": float(self.screen_w),
                             "w": width, "lane": lane})
