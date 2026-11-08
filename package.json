@@ -104,7 +104,7 @@
     "e2e": "node scripts/watch-e2e.mjs"
   },
   "dependencies": {
-    "dsh-video-storyboard": "^0.6.0"
+    "dsh-video-storyboard": "^0.7.0"
   },
   "peerDependencies": {
     "@deepseek-ai/dsh-tools": ">=0.1.0-rc.7"
