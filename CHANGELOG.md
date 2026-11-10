@@ -1,5 +1,27 @@
 # Changelog
 
+## [Unreleased]
+
+### Fixed — 开了弹幕却一条都不飘（#61，PR #62）
+
+弹幕唯一的推送入口挂在老的 `chat.jsonl` 轮询上，而 0.2 之后消息都走
+`window-events.jsonl` → `_render_event()`，那条只上聊天框。协议文件存在时
+`chat.jsonl` 基本不再产生新行，于是**弹幕功能整体失效**，开关怎么点都没反应。
+
+- `_render_event()` 里 `add()` 成功后直接推这一条；`_replay_protocol()` 期间置
+  `_replaying`，开场回放只填聊天框、不飘弹幕雨；
+- `_push_danmaku(messages=None)` 接显式消息列表，跳过 `meta` 和 `at` 早于 5 秒的迟到历史；
+- 默认位置从"竖着居中"改到右下角 —— 居中那档正好压在播放器和画面弹幕上。
+
+### Fixed — 带 BOM 的 `watch-window.json` 被静默读成空配置
+
+`read_config()` 用 `utf-8` 读、异常吞成 `{}`，用记事本或老编辑器改过配置就会中招：
+窗口跳回默认位置、弹幕变回关、`glass` 变回 `live`。改成 `utf-8-sig`。
+
+### Fixed — `danmakuInset` 是死键
+
+`danmaku_options()` 没透传 `inset`（`danmaku.py` 一直支持），带子压在系统 OSD 上时挪不动。
+
 ## [0.3.1] - 2026-11-08
 
 > 两个修复，都不动窗口本身：设置页 token 不再一重启就失效、**对 storyboard 的依赖范围
