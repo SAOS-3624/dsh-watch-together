@@ -41,7 +41,7 @@ import { resolveWatchSource } from './watch-source.js';
 import { runWatchMode } from './watch-modes.js';
 import { readBridge } from './position-bridge.js';
 import { interjectNote } from './interject.js';
-import { isFedSegment, sourceSwitched, stopWatchLoop } from './watch-loop.js';
+import { isFedSegment, sourceSwitched, stopWatchLoop, watchPaused } from './watch-loop.js';
 
 /**
  * 给循环用的建段函数：传一次参数，返回 `build(from) => Promise`。
@@ -631,6 +631,8 @@ export async function runWatchPass(args, deps) {
     : Math.max(60, 2 * Number(plan.segment));
   const idleMs = idleSec * 1000;
   let idleHit = false;
+  /** 等待期间用户按了窗口上的 ⏸（暂停采集、窗还留着）—— 见下面 while 里那一条 */
+  let pausedHit = false;
   if (!d.due && args.wait === true) {
     // 真要阻塞了 → 把输入框支起来（第一次会起服务 + 开悬浮窗，之后是空操作）。
     // **放在这里而不是工具入口**：没视频、没到阻塞就没必要弹窗。
@@ -658,6 +660,9 @@ export async function runWatchPass(args, deps) {
     let baseUrl = typeof browserState?.url === 'string' ? browserState.url : null;
     try {
       while (Date.now() < deadline && !signal?.aborted && !windowGone()) {
+        // 用户按了 ⏸（暂停采集）：别挂着等。等的是"到点该说话了"，而暂停期间
+        // 根本不会到点 —— 挂满 maxWaitSec 只会把会话占死，用户按 ▶ 也不会有回应。
+        if (watchPaused()) { pausedHit = true; break; }
         const chatHit = chatPoll();
         if (chatHit) { d.chatNow = chatHit; break; }
         // 位置来源：读得到就用读到的；这一拍读不到才按墙钟往前推一个估计值
@@ -755,6 +760,20 @@ export async function runWatchPass(args, deps) {
         + ` @ ${mmss(switchedTo.pos)}（刚才跟的是 ${mmss(segStart)}–${mmss(segStart + size)}）。\n`
         + '**先跟用户说一句**（`say`），问要不要接着陪这支；要的话重新调一次 watch_together'
         + '（不用带 input），我会按新片从头跟。',
+    });
+  }
+
+  // 用户按了窗口上的 ⏸：收工，并说清楚"不是我卡住了，是他让我歇着"
+  if (!d.due && pausedHit) {
+    return pass({
+      ok: false,
+      reason: 'paused',
+      paused: true,
+      waitedSec,
+      text: `${head}${waitNote}\n[paused] 用户按了悬浮窗顶栏的 ⏸（**暂停采集，窗还留着**）——`
+        + '这一轮到这里为止，别再说台词、也别再叫醒自己。'
+        + '他按 ▶ 之后会重新开口，那时再调 `watch_together` 接着陪（暂停那段不补）。'
+        + '要确认状态看 `status` 里的 `paused`。',
     });
   }
 

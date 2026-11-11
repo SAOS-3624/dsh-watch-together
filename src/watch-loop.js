@@ -29,6 +29,7 @@ import { consumeLine, dueLine, hasLine, loadLine, upcomingLines, WATCH_LEAD } fr
 import { mmss } from './time.js';
 import { appendChat } from './chat-store.js';
 import { markHungUp, sessionKey } from './watch-state.js';
+import { appendWindowEvent, readWindowActions } from './window-protocol.js';
 import { interjectNote } from './interject.js';
 import { __resetReplyGuard, replyBusyUntil } from './reply-guard.js';
 import { isRetryableWakeFailure, wakeFailureGate, wakeFailureHint } from './wake-failure.js';
@@ -137,6 +138,14 @@ const loop = {
   lastReason: '',
   /** 关窗即收工：这次真的开过窗才为 true */
   windowGuard: false,
+  /**
+   * 用户按了窗口上的 ⏸：**时钟冻住，不叫醒、不念词、不建缓存**，窗口和插话入口照常活着。
+   * 和"视频被暂停"不是一回事 —— 那个是播放器的状态，这个是人让插件歇会儿。
+   */
+  paused: false,
+  pausedAt: 0,
+  /** outbox 的水位（毫秒时间戳）。null = 还没读过，第一次只记水位不执行 */
+  lastActionAt: null,
   ticker: null,
   log: () => {},
 };
@@ -201,8 +210,17 @@ export function isFedSegment(input, from) {
   return loop.fedTranscript.has(Number(from));
 }
 
-export function loopStatus() {
-  const est = loop.anchor ? estimate(loop.anchor) : null;
+/**
+ * 用户按了窗口上的 ⏸ 吗？
+ *
+ * 单独一个函数：阻塞等待每 500ms 问一次，没必要为此造一个完整的 status 对象。
+ * `active` 也要看 —— 循环停了就是"没人陪看"，不是"暂停"。
+ */
+export function watchPaused() {
+  return Boolean(loop.active && loop.paused);
+}
+
+export function loopStatus() {  const est = loop.anchor ? estimate(loop.anchor) : null;
   const plan = loop.plan ?? null;
   const segNow = (plan && est && Number.isFinite(est.pos)) ? plan.segmentAt(est.pos) : null;
   // 片长知道时才敢报"共几段"；不知道就是 null（不知道 ≠ 0）。
@@ -221,6 +239,8 @@ export function loopStatus() {
     depth: loop.depth ?? 'auto',
     bufferSec: loop.bufferSec ?? null,
     spoken: loop.spoken.length,
+    // 用户按了窗口上的 ⏸（只停这一场，窗还开着；`✕` 才是"不看了"）
+    paused: Boolean(loop.paused),
     /*
      * 下面三块是**诊断用**的：用户报"后面越来越慢 / 不说话了"时，
      * 只看 pos 和 reason 是查不出来的，得知道"卡在哪一环"。
@@ -414,6 +434,54 @@ export function startWatchLoop({
     loop.logs.push(`${new Date().toTimeString().slice(0, 8)} ${msg}`);
     if (loop.logs.length > 20) loop.logs.shift();
   };
+
+  /**
+   * **窗口上的 ⏸/▶ 走 `window-outbox.jsonl` —— 这里是唯一的运行时消费者。**
+   *
+   * 以前 `readWindowActions()` 只有测试在用，窗口把动作写进去就没了下文。
+   *
+   * 两条硬规矩：
+   *   · **只认比水位新的行**。outbox 是只追加的，重启会重放整份文件 —— 把三天前
+   *     按过的 pause 当成刚按的，表现是"一开窗就停着不动"，而且怎么点都没反应。
+   *   · 水位先推进再执行。文件里动作的时间戳理论上递增，但不依赖它（按 at 比大小）。
+   */
+  const readActions = deps.readActions ?? (() => readWindowActions());
+  const drainActions = (tNow) => {
+    let list = [];
+    try { list = readActions() || []; } catch { list = []; }
+    const seen = loop.lastActionAt;
+    let watermark = seen ?? 0;
+    const fresh = [];
+    for (const a of list) {
+      const at = Number(a?.at);
+      if (!Number.isFinite(at) || at <= 0) continue;
+      if (at > watermark) watermark = at;
+      if (seen !== null && at > seen) fresh.push({ ...a, at });
+    }
+    loop.lastActionAt = watermark;
+    if (seen === null) return;                 // 第一次读只记水位，不执行历史动作
+    for (const a of fresh) {
+      if (a.type === 'pause' && !loop.paused) {
+        loop.paused = true;
+        loop.pausedAt = tNow;
+        // 锚点改成"暂停态"：`estimate()` 会停在这一秒，而不是继续外推到 60 秒后变 unknown
+        if (loop.anchor) {
+          loop.anchor = makeAnchor({ ...loop.anchor, status: 'paused', updated: tNow }, tNow);
+        }
+        note('window ⏸ → paused (clock frozen, no wakes)');
+      } else if (a.type === 'resume' && loop.paused) {
+        loop.paused = false;
+        loop.pausedAt = 0;
+        // 恢复**不补**暂停那段：真实进度一直在走，按旧锚点外推出来的位置是假的。
+        // 丢掉锚点 + 清零探针节流 → 下一拍立刻读一次真值，重新锚住。
+        loop.anchor = null;
+        loop.lastProbeAt = 0;
+        loop.lastIdlePos = null;
+        loop.lastMoveAt = 0;
+        note('window ▶ → resumed (re-anchoring now)');
+      }
+    }
+  };
   /**
    * 转写失败：**不记进 `transcribed`**，下一拍自然重试（字幕轨的失败不该让画面停）。
    * 同一段连续三次就放弃 10 分钟 —— ASR 服务没起、片子没声音这类问题不该每 2 秒撞一次。
@@ -507,7 +575,9 @@ export function startWatchLoop({
     // 用户关了窗，钟照样跑（2026-10-31 实报："关了悬浮窗还在继续看"）。
     loop.windowGuard = Boolean(loop.windowGuard || windowGuard);
     if (cache) loop.cache = cache;
-    if (Number.isFinite(cursor)) {
+    // 暂停中**不许**拿 cursor 把冻住的钟推走：用户按的是 ⏸，模型再调一次工具
+    // 不等于"我要继续看"（那一下得由人按 ▶）。不定锚点，暂停期的位置就一直是冻结的那个。
+    if (Number.isFinite(cursor) && !loop.paused) {
       loop.anchor = makeAnchor({ pos: cursor, dur: loop.dur, status, updated: Date.now() }, Date.now());
     }
     syncPlayhead();
@@ -516,6 +586,7 @@ export function startWatchLoop({
   }
 
   // 走到这里说明是新的一段陪看（换源或换批次表）：停掉旧的，重建状态
+  const wasPaused = loop.paused;
   stopWatchLoop('restart');
 
   Object.assign(loop, {
@@ -560,6 +631,10 @@ export function startWatchLoop({
     lastReason: 'started',
     // 窗口守卫（关窗即收工）：这次真的开过窗才为 true；resume 路径只能把它从 false 抬到 true
     windowGuard: Boolean(windowGuard),
+    // 暂停是"这一场"的状态：重新起一场（任何一次 watch_together 调用）就恢复默认继续陪
+    paused: false,
+    pausedAt: 0,
+    lastActionAt: null,
     cache: cache ?? null,
     lastBuildMs: 0,
     buildingFrom: null,
@@ -585,6 +660,12 @@ export function startWatchLoop({
   // 新一场：哪怕还没有锚点也要先推一次 —— 适配器这时候问 `position()` 应该看到
   // `active: true / pos: null`（"在陪看，但位置还不知道"），而不是上一支片子的残留值。
   syncPlayhead();
+
+  // 换片/换批次表会把暂停清掉（新一场默认"在看"）。窗口那边还停在 ▶ 上，
+  // 不推一条 control 过去它就一直在说"已暂停"—— 界面上说的和实际做的相反最难查。
+  if (wasPaused) {
+    try { appendWindowEvent({ type: 'control', action: 'resume', value: true }); } catch { /* 没窗口就算了 */ }
+  }
 
   void readLatency().then((st) => { loop.aheadSec = aheadSeconds(st); });
 
@@ -636,6 +717,9 @@ export function startWatchLoop({
     tick: async () => {
       const tNow = now();
 
+      // 窗口按钮（⏸/▶）先进来 —— 暂停期间其它都不跑，但**恢复**必须能被看见。
+      drainActions(tNow);
+
       // 用户插话：模型可能正闲着（不在阻塞等待里），这时候也得把它叫起来回一句。
       // 用共享 watcher 消费一条就够 —— 它本来就只报"增量"，我这边消费了，
       // 下一次阻塞等待就不会重复报同一句。
@@ -683,6 +767,22 @@ export function startWatchLoop({
         stopWatchLoop('widget-closed');
         try { await markHungUp(loop.input, undefined, HANGUP_NOTE); } catch { /* 记不住也不影响停 */ }
         note('window closed → hung up (note delivered on next tool result)');
+        return;
+      }
+
+      /**
+       * ⏸ **暂停：这一拍什么都不做**（不读位置、不叫醒、不念词、不建缓存）。
+       *
+       * 放在关窗判定**之后**：暂停期间用户照样能按 ✕，那要正常收工 —— 把人卡在
+       * "窗口关不掉、钟也停着"是最糟的状态。
+       *
+       * 放在插话判定**之后**：人打了字是明确动作，不该被暂停一起冻住（否则
+       * 用户会以为窗口坏了）。模型被叫醒后可能重新调 `watch_together` ——
+       * **同一支片子重调不解除暂停**（只有按 ▶ 或换片才算），见 `samePlan` 那条路。
+       */
+      if (loop.paused) {
+        syncPlayhead();          // 适配器看到的是"停在这一秒"，不是"不知道在哪"
+        loop.lastReason = 'paused';
         return;
       }
 

@@ -30,6 +30,10 @@ export const WINDOW_ACTION_TYPES = Object.freeze([
   // `appendWindowAction` 对未声明的类型静默返回 null —— 表现是设置页状态永远
   // 不同步，而且没有任何报错。
   'minimize', 'danmaku',
+  // 暂停/恢复（窗口顶栏的 ⏸/▶，issue #56 第 3 条）：**只停采集，窗留着**。
+  // 和 `close` 的区别是语义，不是实现：`close` 是"不看了"（停采集 + 落挂断记录），
+  // `pause` 是"歇会儿"（时钟冻住、不叫醒，用户按 ▶ 就从当前进度接着看）。
+  'pause', 'resume',
 ]);
 
 export function windowEventFile(env = process.env) {
