@@ -2,6 +2,14 @@
 
 ## [Unreleased]
 
+### Added — 设置里单独一栏「一起看视频」（和 see-now / 视频分镜并排）
+
+以前只有 `plugins.bundle.config`，入口藏在"插件 → 组合包配置"里，用户按名字翻不到 ——
+和 storyboard 那次"我是不是没装这个插件"是同一个坑。现在照 see-now 的接法注册
+`settings.section`（`id: 'watch-together'`，`order: 42`，排在 see-now 的 43、视频分镜的 44 前面），
+渲染同一套表单 `SettingsTab`。数据源不变：`src/settings/server.js` 通过
+`webserver/index-inject` 把带 token 的 URL 注成全局 `__DSH_WATCH_TOGETHER_SETTINGS__`。
+
 ### Added — 声音设置：引擎/音色/语速/声调/音量，带「试听」（ACT.TTS_CN 的"测试"同款）
 
 两套设置 UI（DSH 组合包页表单 `lib/client.js` + 独立设置页 `page.html`）都新增「声音」调节，

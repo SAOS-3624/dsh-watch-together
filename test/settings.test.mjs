@@ -166,7 +166,7 @@ test('watch settings server: token、保存、key 不适用但路径可读', asy
   assert.equal((await page.tool.execute()).available, true);
 });
 
-test('watch settings: client bundle 只在组合包页面注册，不占用设置 tab', () => {
+test('watch settings: client bundle 注册组合包页 + 设置侧边栏一栏（不占用插件 tab）', () => {
   const pkg = JSON.parse(readFileSync(new URL('../package.json', import.meta.url), 'utf8'));
   assert.equal(pkg.dsh.client.platform, 'web');
   assert.equal(pkg.exports['./client'], './lib/client.js');
@@ -182,6 +182,15 @@ test('watch settings: client bundle 只在组合包页面注册，不占用设�
   const bundle = registered.find((entry) => entry.options.name === 'plugins.bundle.config');
   assert.equal(bundle.options.key, 'dsh-watch-together');
   assert.equal(bundle.component({ view: 'summary' }), null);
+  /**
+   * 设置侧边栏那一栏：只挂组合包配置的话，用户按名字翻不到（storyboard 踩过的同一个坑）。
+   */
+  const section = registered.find((entry) => entry.options.name === 'settings.section');
+  assert.ok(section, '必须注册 settings.section，否则设置里没有「一起看视频」这一栏');
+  assert.equal(section.options.id, 'watch-together');
+  assert.equal(section.options.order, 42, '排在 see-now(43) / 视频分镜(44) 前面');
+  assert.equal(section.options.label(), '一起看视频');
+  assert.equal(typeof section.component, 'function');
 });
 
 test('watch settings server: 没有 webServer 时返回 null', () => {
