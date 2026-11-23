@@ -104,11 +104,11 @@
 
 并且**同时听到声音**。有这行 + 有声音，就接好了。
 
-**只想立刻试一句、不想等陪看**：手动念一句（这条走 edge-tts，读的就是你 `tts.json` 里的 `voice`）：
+**只想立刻试一句、不想等陪看**：手动念一句（默认走**本地 SAPI**，文本不出机器；`tts.json` 写 `{"engine":"edge"}` 显式开启后才走 edge-tts —— 文本会发给微软；音色读你 `tts.json` 里的 `voice`）：
 
 ```bash
 node watch.mjs say "你好，我是晓萱"
-# 强制用系统声音（不装 edge-tts 时兜底）：
+# 强制用系统声音（本地；开着云端时用它强制回本地）：
 node watch.mjs say "你好" sapi
 ```
 

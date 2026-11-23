@@ -14,6 +14,7 @@ main{max-width:900px;margin:0 auto;padding:32px 20px 64px}h1{font-size:24px;marg
 .grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(240px,1fr));gap:12px}
 label.field{display:flex;flex-direction:column;gap:6px;font-weight:600;font-size:13px}
 input[type=text],input[type=password],input[type=number],select{width:100%;padding:9px 10px;border:1px solid var(--line);border-radius:8px;background:var(--bg);color:var(--text);font:inherit}
+input[type=range]{width:100%;margin:8px 0}
 input[type=checkbox]{margin-right:8px}.check{display:flex;align-items:center;font-weight:500;color:var(--text)}
 .hint{font-size:12px;color:var(--muted);font-weight:400}.actions{display:flex;gap:10px;align-items:center;flex-wrap:wrap;margin-top:16px}
 button{padding:9px 14px;border:1px solid var(--line);border-radius:8px;background:var(--card);color:var(--text);font:inherit;cursor:pointer}
@@ -57,6 +58,49 @@ code{font:12px/1.5 ui-monospace,SFMono-Regular,Consolas,monospace;background:var
     <label class="field">语音适配器
       <input id="adapter" type="text" placeholder="D:/code/my-voice.mjs 或包名；留空关闭">
       <span class="hint">核心只负责 import 和转发，不自带 TTS。示例见 examples/voice-edge-tts。</span>
+    </label>
+    <label class="field">引擎
+      <select id="ttsEngine">
+        <option value="">自动 —— 默认本地 SAPI；配了 edgeTts 路径/环境变量才走云端</option>
+        <option value="sapi">本地 SAPI —— 文本不出机器（系统嗓）</option>
+        <option value="edge">微软 Edge —— 神经音色（文本会发给微软）</option>
+      </select>
+      <span class="hint">选 Edge = 要念的文本离开这台机器；不介意再选。</span>
+    </label>
+    <label class="field">人声选择
+      <select id="ttsVoice">
+        <option value="zh-CN-XiaoxiaoNeural">中文-普通-女声 晓晓</option>
+        <option value="zh-CN-XiaoxuanNeural">中文-普通-女声 晓萱</option>
+        <option value="zh-CN-XiaoyiNeural">中文-普通-女声 晓伊</option>
+        <option value="zh-CN-YunxiNeural">中文-普通-男声 云希</option>
+        <option value="zh-CN-YunjianNeural">中文-普通-男声 云健</option>
+        <option value="zh-CN-YunyangNeural">中文-多风格-男声 云扬</option>
+        <option value="zh-CN-YunxiaNeural">中文-普通-男声 云夏</option>
+        <option value="zh-CN-YunzeNeural">中文-普通-男声 云泽</option>
+        <option value="zh-CN-liaoning-XiaobeiNeural">中文-辽宁-女声 晓北</option>
+        <option value="zh-CN-shaanxi-XiaoniNeural">中文-陕西-女声 晓妮</option>
+      </select>
+      <span class="hint">Edge 引擎的神经音色；本地 SAPI 只有系统嗓，选了不生效。</span>
+    </label>
+    <label class="field">朗读速度
+      <input id="ttsRate" type="range" min="-10" max="10" step="0.5">
+      <span class="hint" id="rateHint">-10 ~ +10。</span>
+    </label>
+    <label class="field">朗读声调
+      <input id="ttsPitch" type="range" min="-20" max="20" step="1">
+      <span class="hint" id="pitchHint">负数更低沉、正数更清亮。</span>
+    </label>
+    <label class="field">朗读音量
+      <input id="ttsVolume" type="range" min="0" max="100" step="5">
+      <span class="hint" id="volumeHint">100 = 不增不减。</span>
+    </label>
+    <label class="field">试听文本
+      <input id="ttsTestText" type="text" placeholder="这是一句试听文本，听起来怎么样？">
+      <span class="hint">按面板当前参数念一句；试听不保存设置。</span>
+    </label>
+    <label class="field">试听
+      <button class="primary" id="ttsTest">试听</button>
+      <span class="hint" id="ttsTestStatus">点一下出声；结果会写明实际用的引擎。</span>
     </label>
   </div>
   <div class="banner" id="voiceHint">留空 = 台词只写进聊天记录，不念出来。</div>
@@ -142,11 +186,12 @@ code{font:12px/1.5 ui-monospace,SFMono-Regular,Consolas,monospace;background:var
   const token = new URLSearchParams(location.search).get('token') || '';
   const apiBase = '/dsh-watch-together/settings/api';
   const $ = (id) => document.getElementById(id);
-  const state = { video: null, watch: null, voice: null, window: null, checks: [], paths: {} };
+  const state = { video: null, watch: null, voice: null, tts: null, window: null, checks: [], paths: {} };
 
-  async function api(path, body) {
+  async function api(path, body, signal) {
     const res = await fetch(apiBase + path, {
       method: body ? 'POST' : 'GET',
+      signal: signal || undefined,
       headers: { 'x-settings-token': token, 'content-type': 'application/json' },
       body: body ? JSON.stringify(body) : undefined,
     });
@@ -165,14 +210,40 @@ code{font:12px/1.5 ui-monospace,SFMono-Regular,Consolas,monospace;background:var
     return String(value || '').replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
   }
 
+  // 面板当前的 tts 值：保存和试听共用同一份换算
+  function ttsPayload() {
+    const pitch = $('ttsPitch').value;
+    return {
+      engine: $('ttsEngine').value,
+      voice: $('ttsVoice').value,
+      rate: Number($('ttsRate').value) || 0,
+      pitch: pitch && Number(pitch) !== 0 ? (Number(pitch) > 0 ? '+' + Number(pitch) : pitch) : '',
+      volume: Number($('ttsVolume').value),
+    };
+  }
+
+  function renderTtsHints() {
+    const rate = Number($('ttsRate').value) || 0;
+    $('rateHint').textContent = '当前 ' + rate + ' 档（约 ' + Math.round(rate * 3) + '%）；-10 ~ +10。';
+    const pitch = Number($('ttsPitch').value) || 0;
+    $('pitchHint').textContent = '当前 ' + (pitch > 0 ? '+' : '') + pitch + 'Hz；负数更低沉、正数更清亮。';
+    $('volumeHint').textContent = '当前 ' + $('ttsVolume').value + '；100 = 不增不减。';
+  }
+
   function render() {
     const v = state.video || {};
     const w = state.watch || {};
     const s = state.voice || {};
+    const t = state.tts || {};
     const win = state.window || {};
     $('browserPort').value = v.browserPort || '';
     $('chatPort').value = w.chatPort || '';
     $('adapter').value = s.adapter || '';
+    $('ttsEngine').value = typeof t.engine === 'string' ? t.engine : '';
+    $('ttsVoice').value = (typeof t.voice === 'string' && t.voice) ? t.voice : 'zh-CN-XiaoxiaoNeural';
+    $('ttsRate').value = t.rate === undefined ? 0 : t.rate;
+    $('ttsPitch').value = String(t.pitch === undefined || t.pitch === '' ? 0 : t.pitch).replace(/[^\d+-]/g, '');
+    $('ttsVolume').value = t.volume === undefined ? 100 : t.volume;
     $('windowStyle').value = win.style || 'auto';
     $('windowMode').value = win.mode || 'full';
     $('windowDanmaku').value = win.danmaku ? 'on' : 'off';
@@ -189,9 +260,11 @@ code{font:12px/1.5 ui-monospace,SFMono-Regular,Consolas,monospace;background:var
         : win.style === 'live'
           ? '当前：实时玻璃 —— 每帧抓屏 + 模糊。觉得卡就换成「静态磨砂」。'
           : '当前：自动 —— 远程/录屏环境用纯色，其余用实时玻璃；觉得卡可以手动选「静态磨砂」。';
+    renderTtsHints();
     $('paths').innerHTML = '<div>video.json：<code>' + escapeHtml(state.paths.video || '') + '</code></div>'
       + '<div>watch.json：<code>' + escapeHtml(state.paths.watch || '') + '</code></div>'
       + '<div>voice.json：<code>' + escapeHtml(state.paths.voice || '') + '</code></div>'
+      + '<div>tts.json：<code>' + escapeHtml(state.paths.tts || '') + '</code></div>'
       + '<div>watch-window.json：<code>' + escapeHtml(state.paths.window || '') + '</code></div>';
   }
 
@@ -234,6 +307,7 @@ code{font:12px/1.5 ui-monospace,SFMono-Regular,Consolas,monospace;background:var
     try {
       const data = await api('/state');
       state.video = data.video; state.watch = data.watch; state.voice = data.voice;
+      state.tts = data.tts;
       state.window = data.window;
       state.checks = data.checks || []; state.paths = data.paths || {};
       render(); renderChecks();
@@ -250,16 +324,18 @@ code{font:12px/1.5 ui-monospace,SFMono-Regular,Consolas,monospace;background:var
       };
       const watch = { chatPort: Number($('chatPort').value) };
       const voice = { adapter: $('adapter').value };
+      const tts = ttsPayload();
       const win = {
         style: $('windowStyle').value,
         mode: $('windowMode').value,
         danmaku: $('windowDanmaku').value === 'on',
       };
-      const data = await api('/save', { video, watch, voice, window: win });
+      const data = await api('/save', { video, watch, voice, tts, window: win });
       state.video = data.video; state.watch = data.watch; state.voice = data.voice;
+      state.tts = data.tts;
       state.window = data.window;
       render();
-      setStatus('已保存；悬浮窗样式立刻生效，语音下一场生效，聊天端口若服务已在跑需重启 DSH。', 'ok');
+      setStatus('已保存；悬浮窗样式立刻生效，声音参数下一场生效，语音下一场生效，聊天端口若服务已在跑需重启 DSH。', 'ok');
     } catch (e) { setStatus(e.message, 'bad'); }
   }
 
@@ -273,8 +349,39 @@ code{font:12px/1.5 ui-monospace,SFMono-Regular,Consolas,monospace;background:var
     } catch (e) { setStatus(e.message, 'bad'); }
   }
 
+  // 试听：按面板当前参数念一句（不落盘）。**新顶旧** —— 上一次还在跑就掐掉重来，
+  // 按钮永不吞点击（跑着的时候静默空转，用户看到的就是「点了没反应」）。
+  let testAbort = null;
+  async function ttsTest() {
+    if (testAbort) { try { testAbort.abort(); } catch { /* 已经结束 */ } }
+    const controller = new AbortController();
+    testAbort = controller;
+    const btn = $('ttsTest');
+    btn.textContent = '试听中…（点击重试）';
+    $('ttsTestStatus').textContent = '试听中…（合成器常驻时约半秒出声）';
+    try {
+      const r = await api('/tts-test', { text: $('ttsTestText').value, tts: ttsPayload() }, controller.signal);
+      const engine = {
+        'edge-stream': '微软神经音（常驻通道）', 'edge-tts': '微软神经音（逐句兜底）', sapi: '本地系统嗓（SAPI）',
+      }[r.engine] || r.engine;
+      $('ttsTestStatus').textContent = r.ok
+        ? '已试听：' + engine + '（首声 ' + (r.firstMs ?? r.ms ?? '?') + 'ms）。'
+        : '试听失败：' + (r.reason || '未知原因');
+    } catch (e) {
+      $('ttsTestStatus').textContent = '试听失败：' + e.message;
+    } finally {
+      btn.textContent = '试听';
+      testAbort = null;
+    }
+  }
+
   $('save').addEventListener('click', save);
   $('check').addEventListener('click', check);
+  $('ttsTest').addEventListener('click', ttsTest);
+  // 滑块拖动实时刷新说明文字（真正落盘还是点保存）
+  for (const id of ['ttsRate', 'ttsPitch', 'ttsVolume']) {
+    $(id).addEventListener('input', renderTtsHints);
+  }
   // 下拉一改就把说明也换掉（真正落盘还是点保存；这里只是别让提示和选中的对不上）
   $('windowStyle').addEventListener('change', () => {
     state.window = { ...(state.window || {}), style: $('windowStyle').value };

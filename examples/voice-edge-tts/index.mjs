@@ -47,6 +47,7 @@ import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
 import { pythonFor, startStream } from './stream/client.mjs';
+import { buildSpeakCommand, edgeCliArgs } from '../../bin/tts.mjs';
 
 const run = (bin, args, timeoutMs = 60_000) => new Promise((resolve) => {
   execFile(bin, args, { timeout: timeoutMs, windowsHide: true }, (err) => resolve(!err));
@@ -121,11 +122,10 @@ function openStream(bin) {
 }
 
 /** 只合成，不播放。预取和"到点没赶上预取"两条路共用。 */
-async function synthEdge(text, { bin, voice, rate }) {
+async function synthEdge(text, { bin, voice, rate, pitch = null, volume = 100 }) {
   const out = join(tmpdir(), `voice-${Date.now()}-${Math.random().toString(36).slice(2, 7)}.mp3`);
-  const pct = Math.round(Math.max(-10, Math.min(10, Number(rate) || 0)) * 3);
-  const args = ['--voice', voice, '--text', text, '--write-media', out];
-  if (pct) args.push(`--rate=${pct > 0 ? '+' : ''}${pct}%`);
+  // 参数换算只写一份（bin/tts.mjs 的 edgeCliArgs）：语速/音调/音量口径与 say 命令、设置页试听共用
+  const args = edgeCliArgs({ text, voice, rate, pitch, volume, out });
   if (!(await run(bin, args))) {
     try { unlinkSync(out); } catch { /* 没有文件正常 */ }
     return { ok: false, reason: 'synth-failed' };
@@ -174,9 +174,9 @@ function playEdge(path, onStart = null) {
 }
 
 /** Windows 系统声音。Linux/macOS 会失败，失败就当没这个引擎。 */
-function speakSapi(text, rate, onStart = null) {
-  const lit = `'${String(text ?? '').replace(/'/g, "''")}'`;
-  const cmd = `$v = New-Object -ComObject SAPI.SpVoice; $v.Rate = ${Math.max(-10, Math.min(10, Number(rate) || 0))}; $null = $v.Speak(${lit})`;
+function speakSapi(text, { rate = 0, volume = 100, pitch = null, onStart = null } = {}) {
+  // SAPI 命令的口径在 bin/tts.mjs 的 buildSpeakCommand（音量/音调/XML 转义都管，只写一份）
+  const cmd = buildSpeakCommand({ text, rate, volume, pitch });
   // PowerShell 冷启动要几百毫秒，上报放在**起进程之前**，宁可略早也别晚（字等声音没关系，声音等字不行）
   try { onStart?.(); } catch { /* 上报失败不影响念 */ }
   // spawn 而不是 execFile：`SpVoice.Speak()` 是阻塞的，只有杀掉进程才能让它闭嘴 ——
@@ -221,6 +221,11 @@ export function attach(api) {
   if (!cfg.voice) console.error('[voice] 未配置 voice（~/.dsh/tts.json），用中性默认 zh-CN-YunxiNeural；'
     + '想用晓萱等音色请在该文件加 "voice": "zh-CN-XiaoxuanNeural"');
   const rate = Number(cfg.rate) || 0;
+  // 音调：口径和 ACT.TTS_CN 一致（"+0" 这种写法），三种引擎入口共用它换算
+  const pitch = cfg.pitch ?? null;
+  // 音量：0-100（100 = 不增不减）
+  const volume = cfg.volume === undefined || cfg.volume === null || cfg.volume === ''
+    ? 100 : Math.max(0, Math.min(100, Number(cfg.volume) || 0));
   const bin = edgeBin(cfg);
   // 常驻合成器：能起就用它（首声 170~200ms），起不来就是 null，全部逻辑退回老路。
   const stream = openStream(bin);
@@ -279,7 +284,7 @@ export function attach(api) {
       prefetched.delete(farthestKey);
       if (old) discard(old);
     }
-    const task = prefetchTail.then(() => synthEdge(e.text, { bin, voice, rate }));
+    const task = prefetchTail.then(() => synthEdge(e.text, { bin, voice, rate, pitch, volume }));
     prefetchTail = task.then(() => {}, () => {});
     const entry = { task, at: Number(e.at) };
     prefetched.set(key, entry);
@@ -372,7 +377,7 @@ export function attach(api) {
         if (ready) {
           audio = await ready.task.catch(() => ({ ok: false, reason: 'prefetch-failed' }));
         } else {
-          audio = await synthEdge(e.text, { bin, voice, rate });
+          audio = await synthEdge(e.text, { bin, voice, rate, pitch, volume });
         }
         if (audio?.ok) {
           console.error(`[voice ${mmss(e.at)}] ${ready ? 'prefetched' : 'synth'} `
@@ -384,7 +389,7 @@ export function attach(api) {
         }
       }
       console.error(`[voice ${mmss(e.at)}] sapi ${Date.now() - t0}ms (wait ${waited}ms): ${e.text}`);
-      if (!(await speakSapi(e.text, rate, onStart))) console.error('[voice] 系统声音也不可用，只打日志');
+      if (!(await speakSapi(e.text, { rate, volume, pitch, onStart }))) console.error('[voice] 系统声音也不可用，只打日志');
     }).catch((err) => console.error(`[voice] ${err?.message ?? err}`));
   });
 

@@ -40,6 +40,12 @@ stdin（每行一个 JSON）：
     {"op":"forget","id":N}                          丢掉这句的缓存
     {"op":"stop"}
 
+say / prefetch 可随包带**参数覆盖**（设置页试听用，滑块变化不用重启合成器）：
+voice / rate（-10..10）/ pitch（"+2"）/ volume（0-100） ——
+不带就用启动时 tts.json 的默认值；缓存键含参数，参数不同不共用缓存。
+`{"op":"interrupt"}` 会**取消正在合成的整个任务**（不只是掐播放），
+被掐断的那句回 `{"ev":"error","reason":"interrupted"}`。
+
 stdout（每行一个 JSON，全部是**状态**，不含音频）：
 
     {"ev":"ready"}                                  预热完成
@@ -250,12 +256,64 @@ class Player:
 # --------------------------------------------------------------- 合成
 
 
+def norm_pitch(pitch):
+    """归一化音调成 edge-tts 的 "+2Hz" 写法（和 ACT.TTS_CN 的口径一致：它配的就是 "+0"）。
+
+    没配 / 配了 0 / 格式不对 → "+0Hz"（行为和不带音调时完全一致）。
+    两端单位不同：edge 要赫兹，SAPI 要 `<pitch absmiddle>` 档位 —— 后者在 index.mjs 里换算。
+    """
+    s = str(pitch if pitch is not None else "").strip().lower()
+    if s.endswith("hz"):
+        s = s[:-2].strip()
+    try:
+        n = float(s)
+    except ValueError:
+        return "+0Hz"
+    if n == 0:
+        return "+0Hz"
+    n = max(-50.0, min(50.0, n))
+    return f"{'+' if n > 0 else ''}{n:g}Hz"
+
+
+def norm_volume(volume):
+    """0-100 的音量（100 = 不增不减）→ edge 的相对写法 "+0%"（和 bin/tts.mjs 的 edgeVolumeArg 同口径）。"""
+    try:
+        n = float(volume)
+    except (TypeError, ValueError):
+        return "+0%"
+    if n == 100:
+        return "+0%"
+    n = max(0.0, min(150.0, n))
+    d = max(-50.0, min(50.0, n - 100))
+    return f"{d:+g}%"
+
+
+def job_params(req, defaults):
+    """say/prefetch 随包带的参数覆盖（设置页试听用：滑块随便拉，合成器不用重启）。
+
+    没带的键回落到启动时 tts.json 的默认值。返回值同时是**缓存键**的一部分 ——
+    参数不同的两句不能共用一份缓存（换了音色/声调还播旧缓存就穿帮了）。
+    """
+    voice = str(req.get("voice") or "").strip() or defaults["voice"]
+    raw_rate = req.get("rate")
+    if raw_rate is None or raw_rate == "":
+        rate = defaults["rate"]
+    else:
+        try:
+            rate = f"{'+' if float(raw_rate) >= 0 else ''}{round(float(raw_rate) * 3)}%"
+        except (TypeError, ValueError):
+            rate = defaults["rate"]
+    pitch = norm_pitch(req.get("pitch")) if req.get("pitch") not in (None, "") else defaults["pitch"]
+    volume = norm_volume(req.get("volume")) if req.get("volume") not in (None, "") else defaults["volume"]
+    return voice, rate, pitch, volume
+
+
 class EdgeLink:
     """一条 WebSocket，连发多句。同一时刻只能有一个请求在飞（aiohttp 不允许并发 receive）。"""
 
-    def __init__(self, voice, rate):
-        self.conf = TTSConfig(voice=voice, rate=rate, volume="+0%",
-                              pitch="+0Hz", boundary="SentenceBoundary")
+    def __init__(self, voice, rate, pitch="+0Hz", volume="+0%"):
+        self.conf = TTSConfig(voice=voice, rate=rate, volume=volume,
+                              pitch=pitch, boundary="SentenceBoundary")
         self.ws = None
         self.session = None
         self.last_used = 0.0
@@ -301,30 +359,45 @@ class EdgeLink:
                 pass
             self.session = None
 
-    async def synth(self, text, on_chunk):
+    async def synth(self, text, on_chunk, params=None):
         """合成一句。`on_chunk(bytes)` 每块调一次 —— 想边收边播就把块直接写进管道。
+
+        `params` = `job_params()` 的返回值：这一句用哪套音色/语速/声调/音量。
+        不传就用启动时 tts.json 的默认值（老行为不变）。
 
         返回总字节数。连接中途断掉会重建并**整句重来**（半句音频已经写出去了，
         拼接会错位；这一句宁可慢一次也要完整）。
         """
-        for attempt in (0, 1):
-            try:
-                await self.ensure()
-                total = await self._run_turn(text, on_chunk if attempt == 0 else None)
-                if total is None and attempt == 0:
-                    continue  # 收到一半断了：重来一次，这次先收全再给
-                self.last_used = time.monotonic()
-                return total
-            except Exception as e:  # noqa: BLE001
-                if attempt == 1:
-                    raise
-                log(f"合成失败，重建连接重试：{e}")
-                await self.close()
-        return 0
+        try:
+            for attempt in (0, 1):
+                try:
+                    await self.ensure()
+                    total = await self._run_turn(text, on_chunk if attempt == 0 else None, params)
+                    if total is None and attempt == 0:
+                        continue  # 收到一半断了：重来一次，这次先收全再给
+                    self.last_used = time.monotonic()
+                    return total
+                except Exception as e:  # noqa: BLE001
+                    if attempt == 1:
+                        raise
+                    log(f"合成失败，重建连接重试：{e}")
+                    await self.close()
+            return 0
+        except asyncio.CancelledError:
+            # 被掐断（interrupt）：连接可能停在半句响应上 —— 必须重建，
+            # 否则上一句残留的响应帧会串进下一句的接收循环。
+            await self.close()
+            raise
 
-    async def _run_turn(self, text, on_chunk):
+    async def _run_turn(self, text, on_chunk, params=None):
         rid = uuid.uuid4().hex
-        ssml = mkssml(self.conf, escape(text))
+        if params is None:
+            conf = self.conf
+        else:
+            voice, rate, pitch, volume = params
+            conf = TTSConfig(voice=voice, rate=rate, volume=volume,
+                             pitch=pitch, boundary="SentenceBoundary")
+        ssml = mkssml(conf, escape(text))
         payload = (f"X-RequestId:{rid}\r\n"
                    "Content-Type:application/ssml+xml\r\n"
                    f"X-Timestamp:{date_to_string()}Z\r\n"
@@ -365,22 +438,30 @@ class Daemon:
         except ValueError:
             volume = 100
         self.player = Player(volume=volume, loglevel=os.environ.get("DSH_TTS_FFPLAY_LOG") or "quiet")
-        self.edge = EdgeLink(self.voice, self.rate)
-        self.cache = {}          # text -> bytes
+        self.pitch = norm_pitch(cfg.get("pitch"))
+        self.volume = norm_volume(cfg.get("volume"))
+        self.edge = EdgeLink(self.voice, self.rate, self.pitch, self.volume)
+        # 每请求参数的回落默认值（job_params 用）
+        self.defaults = {
+            "voice": self.voice, "rate": self.rate, "pitch": self.pitch,
+            "volume": self.volume,
+        }
+        self.cache = {}          # 参数+文本的缓存键 -> bytes
         self.order = []          # 缓存淘汰顺序
         self.jobs = asyncio.PriorityQueue()
         self.seq = 0
         self.said = {}           # id -> text（say 用，便于 forget 精确删）
         self.warm_task = None
+        self.job_task = None     # 正在跑的合成任务（interrupt 要取消它）
 
-    def cached(self, text):
-        return self.cache.get(text)
+    def cached(self, key):
+        return self.cache.get(key)
 
-    def remember(self, text, data):
-        if text in self.cache:
+    def remember(self, key, data):
+        if key in self.cache:
             return
-        self.cache[text] = data
-        self.order.append(text)
+        self.cache[key] = data
+        self.order.append(key)
         while len(self.order) > MAX_CACHED:
             old = self.order.pop(0)
             self.cache.pop(old, None)
@@ -417,15 +498,20 @@ class Daemon:
         if op == "forget":
             text = req.get("text") or self.said.get(req.get("id"))
             if text:
-                self.cache.pop(text, None)
-                try:
-                    self.order.remove(text)
-                except ValueError:
-                    pass
+                # 缓存键是 [文本, 参数…]：按文本把所有参数版本一起清掉
+                for k in [k for k in self.order if json.loads(k)[0] == text]:
+                    self.cache.pop(k, None)
+                    try:
+                        self.order.remove(k)
+                    except ValueError:
+                        pass
             emit(ev="skip", id=req.get("id"))
             return
         if op == "interrupt":
-            # 新的一句要开口了：把正在念的截断，别让它排队排到画面之外
+            # 新的一句要开口了：正在合成/念的这句**整个任务取消** ——
+            # 只掐播放是不够的：合成剩下的音频块会混进新一句里叠着响。
+            if self.job_task is not None:
+                self.job_task.cancel()
             self.player.interrupt()
             emit(ev="interrupted")
             return
@@ -438,7 +524,9 @@ class Daemon:
         if not text:
             emit(ev="error", id=rid, reason="empty-text")
             return
-        hit = self.cached(text)
+        params = job_params(req, self.defaults)
+        key = json.dumps([text, *params], ensure_ascii=False)
+        hit = self.cached(key)
         if hit is not None and req.get("op") == "say":
             # 预取已经合成好了：音频直接进管道，首声就是设备延迟（~50ms）。
             t0 = time.monotonic()
@@ -456,11 +544,11 @@ class Daemon:
             buf = bytearray()
             t0 = time.monotonic()
             try:
-                await self.edge.synth(text, buf.extend)
+                await self.edge.synth(text, buf.extend, params)
             except Exception as e:  # noqa: BLE001
                 emit(ev="error", id=rid, reason=str(e)[:160])
                 return
-            self.remember(text, bytes(buf))
+            self.remember(key, bytes(buf))
             emit(ev="done", id=rid, ms=round((time.monotonic() - t0) * 1000), bytes=len(buf))
             return
 
@@ -479,25 +567,31 @@ class Daemon:
                 self.player.play(chunk)
 
         try:
-            await self.edge.synth(text, sink)
+            await self.edge.synth(text, sink, params)
         except Exception as e:  # noqa: BLE001
             emit(ev="error", id=rid, reason=str(e)[:160])
             return
-        self.remember(text, bytes(buf))
+        self.remember(key, bytes(buf))
         emit(ev="done", id=rid, ms=round((time.monotonic() - t0) * 1000))
 
     async def worker(self):
         while True:
             _, _, req = await self.jobs.get()
+            # 每个任务一个 asyncio.Task：interrupt 才能整体取消（不只是掐播放）
+            self.job_task = asyncio.create_task(self.run_job(req))
             try:
-                await self.run_job(req)
+                await self.job_task
+            except asyncio.CancelledError:
+                # 被掐断：立刻给对端一个交代，别让它的 ask 干等到超时
+                emit(ev="error", id=req.get("id"), reason="interrupted")
             except Exception as e:  # noqa: BLE001
                 log(f"任务异常：{e}")
             finally:
+                self.job_task = None
                 self.jobs.task_done()
 
     async def main(self):
-        emit(ev="boot", voice=self.voice, rate=self.rate)
+        emit(ev="boot", voice=self.voice, rate=self.rate, pitch=self.pitch)
         asyncio.create_task(self.worker())
         loop = asyncio.get_running_loop()
         # 前台保持一根暖连接：进程起来就把建连（~700ms）花掉，别等第一句话。

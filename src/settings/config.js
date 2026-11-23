@@ -209,11 +209,92 @@ export function writeVoiceSettings(patch = {}, env = process.env) {
   return readVoiceSettings(env);
 }
 
+export function ttsConfigPath(env = process.env) { return join(dshHome(env), 'tts.json'); }
+
+/**
+ * 声音调节（`~/.dsh/tts.json`）。字段口径和 `bin/tts.mjs`、`examples/voice-edge-tts` 共用：
+ * `voice` / `rate`(-10..10) / `pitch`(±Hz) / `volume`(0-100)，
+ * 另有引擎策略键 `engine` / `edgeTts`（改它们 = 切换本地/云端，保存时单独校验）。
+ */
+export function readTtsSettings(env = process.env) {
+  const path = ttsConfigPath(env);
+  const raw = readObject(path);
+  const d = raw.data || {};
+  return {
+    path,
+    exists: raw.exists,
+    error: raw.error,
+    engine: d.engine === 'edge' || d.engine === 'sapi' ? d.engine : '',
+    voice: typeof d.voice === 'string' ? d.voice : '',
+    rate: Number.isFinite(Number(d.rate)) ? Number(d.rate) : 0,
+    pitch: d.pitch === undefined || d.pitch === null ? '' : String(d.pitch),
+    volume: Number.isFinite(Number(d.volume)) ? Number(d.volume) : 100,
+    edgeTts: typeof d.edgeTts === 'string' ? d.edgeTts : '',
+    envOverrides: ['DSH_TTS_ENGINE', 'DSH_TTS_BIN']
+      .filter((k) => env[k] !== undefined && env[k] !== ''),
+  };
+}
+
+/**
+ * 把一个 patch 应用到 tts 配置对象上（就地修改），校验和收敛口径只此一份：
+ * 保存（`writeTtsSettings`）和试听（`effectiveTtsSettings`）都用它，
+ * 保证「试听听到的参数」和「陪看会用的参数」永远同一套换算。
+ */
+export function applyTtsPatch(next, patch = {}) {
+  const num = (v, lo, hi, field) => {
+    const n = Number(v);
+    if (!Number.isFinite(n)) throw new Error(`${field} 必须是数字`);
+    return Math.max(lo, Math.min(hi, n));
+  };
+  if (patch.engine !== undefined) {
+    const e = String(patch.engine ?? '').trim().toLowerCase();
+    if (!e) delete next.engine;
+    else if (e === 'edge' || e === 'sapi') next.engine = e;
+    else throw new Error('engine 只能是 edge / sapi（留空 = 自动）');
+  }
+  if (patch.voice !== undefined) {
+    const v = String(patch.voice ?? '').trim();
+    if (v.length > MAX_TEXT) throw new Error('voice 太长');
+    if (v) next.voice = v; else delete next.voice;
+  }
+  if (patch.rate !== undefined) next.rate = num(patch.rate, -10, 10, 'rate');
+  if (patch.pitch !== undefined) {
+    const p = String(patch.pitch ?? '').trim();
+    if (p && !/^[+-]?\d+(?:\.\d+)?(?:\s*Hz)?$/i.test(p)) throw new Error('pitch 写法如 "+2" 或 "+2Hz"');
+    if (p && Number.parseFloat(p) !== 0) next.pitch = p; else delete next.pitch;
+  }
+  if (patch.volume !== undefined) next.volume = num(patch.volume, 0, 100, 'volume');
+  if (patch.edgeTts !== undefined) {
+    const t = String(patch.edgeTts ?? '').trim();
+    if (t.length > MAX_TEXT) throw new Error('edgeTts 太长');
+    if (t) next.edgeTts = t; else delete next.edgeTts;
+  }
+  return next;
+}
+
+export function writeTtsSettings(patch = {}, env = process.env) {
+  const path = ttsConfigPath(env);
+  const { data } = readObject(path);
+  const next = applyTtsPatch({ ...data }, patch);
+  writeObject(path, next);
+  return readTtsSettings(env);
+}
+
+/**
+ * 「这套设置生效后 tts.json 长什么样」——**不落盘**。
+ * 试听按钮用它拿面板当前值（patch 盖在已保存值上）喂合成器。
+ */
+export function effectiveTtsSettings(patch = {}, env = process.env) {
+  const { data } = readObject(ttsConfigPath(env));
+  return applyTtsPatch({ ...data }, patch);
+}
+
 export function configPaths(env = process.env) {
   return {
     home: dshHome(env),
     video: videoConfigPath(env),
     voice: voiceConfigPath(env),
+    tts: ttsConfigPath(env),
     watch: watchConfigPath(env),
     window: windowConfigPath(env),
   };

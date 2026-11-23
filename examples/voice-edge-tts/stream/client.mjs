@@ -32,12 +32,13 @@ export function pythonFor(edgeBin) {
 }
 
 /**
- * @param {{ python: string, script: string, args?: string[], onError?: Function, log?: Function }} o
+ * @param {{ python: string, script: string, args?: string[], env?: object|null, onError?: Function, log?: Function }} o
+ *   `env` 不传 = 继承当前进程环境；传了就整个替换（设置页试听用它塞临时 DSH_HOME）。
  */
-export function startStream({ python, script, args = ['-u', script], onError, log = () => {} }) {
+export function startStream({ python, script, args = ['-u', script], env = null, onError, log = () => {} }) {
   const extra = process.platform === 'win32' ? { windowsHide: true } : {};
   const proc = spawn(python, args, {
-    stdio: ['pipe', 'pipe', 'pipe'], ...extra,
+    stdio: ['pipe', 'pipe', 'pipe'], ...extra, ...(env ? { env } : {}),
   });
 
   /** id -> {resolve, reject, first} */
@@ -114,7 +115,7 @@ export function startStream({ python, script, args = ['-u', script], onError, lo
   };
 
   let seq = 0;
-  const ask = (op, text, timeoutMs, onFirst) => new Promise((resolve, reject) => {
+  const ask = (op, text, timeoutMs, onFirst, params = null) => new Promise((resolve, reject) => {
     if (dead) { reject(new Error(dead)); return; }
     seq += 1;
     const id = seq;
@@ -128,7 +129,7 @@ export function startStream({ python, script, args = ['-u', script], onError, lo
       resolve: (v) => { clearTimeout(timer); resolve(v); },
       reject: (e) => { clearTimeout(timer); reject(e); },
     });
-    if (!send({ op, id, text })) {
+    if (!send({ op, id, text, ...(params || {}) })) {
       clearTimeout(timer);
       pending.delete(id);
       reject(new Error(dead || 'send-failed'));
@@ -140,8 +141,8 @@ export function startStream({ python, script, args = ['-u', script], onError, lo
     get warm() { return ready; },
     get lastError() { return lastError; },
     warmUp() { send({ op: 'warm' }); },
-    say: (text, { timeoutMs = 30_000, onFirst = null } = {}) => ask('say', text, timeoutMs, onFirst),
-    prefetch: (text, timeoutMs = 30_000) => ask('prefetch', text, timeoutMs).catch(() => ({ failed: true })),
+    say: (text, { timeoutMs = 30_000, onFirst = null, params = null } = {}) => ask('say', text, timeoutMs, onFirst, params),
+    prefetch: (text, timeoutMs = 30_000, params = null) => ask('prefetch', text, timeoutMs, null, params).catch(() => ({ failed: true })),
     forget: (text) => send({ op: 'forget', text }),
     /**
      * 截断正在念的那一句（**不停进程**）。

@@ -40,8 +40,71 @@ export function psLiteral(text) {
   return `'${String(text ?? '').replace(/'/g, "''")}'`;
 }
 
+/**
+ * 归一化 pitch（音调）。接受 "+2" / "-3" / "+2Hz" / 2 这类写法 —— ACT.TTS_CN 的口径就是 "+0"。
+ *
+ * 两种引擎的单位不一样，都从这里出：
+ *   · edge-tts 要 `+2Hz` 这种**赫兹**写法；
+ *   · SAPI 没有音调属性，要靠 `<pitch absmiddle="2">` XML 标签（-10..10 的档位）。
+ * 没配 / 配了 0 / 格式不对 → 返回 null（不带任何参数，行为和以前完全一致）。
+ *
+ * @returns {{hz: string, mid: number}|null}
+ */
+export function normPitch(pitch) {
+  const s = String(pitch ?? '').trim();
+  if (!s) return null;
+  const m = s.match(/^([+-]?\d+(?:\.\d+)?)(?:\s*Hz)?$/i);
+  if (!m) return null;
+  const n = Number(m[1]);
+  if (!Number.isFinite(n) || n === 0) return null;
+  const hz = Math.max(-50, Math.min(50, n));
+  return {
+    hz: `${hz > 0 ? '+' : ''}${hz}Hz`,
+    mid: Math.max(-10, Math.min(10, Math.round(n))),
+  };
+}
+
+/** edge-tts 的 `--pitch=…` 实参；没配音调返回 null（调用方就不拼这个参数） */
+export function edgePitchArg(pitch) {
+  const p = normPitch(pitch);
+  return p ? p.hz : null;
+}
+
+/** 音量：我们的 0-100（100 = 不增不减）→ edge 的相对百分比；没调就不给参数 */
+export function edgeVolumeArg(volume) {
+  const v = Number(volume);
+  if (!Number.isFinite(v) || v === 100) return null;
+  const d = Math.max(-50, Math.min(50, Math.round(v - 100)));
+  return `${d > 0 ? '+' : ''}${d}%`;
+}
+
+/**
+ * edge-tts CLI 的完整实参。**只写这一份**：`speakViaEdgeTts`（say 命令）和
+ * `examples/voice-edge-tts` 的逐句合成共用 —— 两边各拼一遍就会长出两套口径。
+ */
+export function edgeCliArgs({ text, voice, rate = 0, pitch = null, volume = 100, out }) {
+  // 语速：edge-tts 用百分比（-10% ~ +50%），我们的 rate 是 SAPI 的 -10..10
+  const pct = Math.round(Math.max(-10, Math.min(10, Number(rate) || 0)) * 3);
+  const args = ['--voice', voice, '--text', text, '--write-media', out];
+  if (pct) args.push(`--rate=${pct > 0 ? '+' : ''}${pct}%`);
+  const hz = edgePitchArg(pitch);
+  if (hz) args.push(`--pitch=${hz}`);
+  const vol = edgeVolumeArg(volume);
+  if (vol) args.push(`--volume=${vol}`);
+  return args;
+}
+
+/** SAPI 的音调靠 XML `<pitch>` 标签 —— 文本里的 XML 字符必须先转义，否则念错/炸 */
+export function sapiPitchWrap(text, pitch) {
+  const p = normPitch(pitch);
+  const t = String(text ?? '');
+  if (!p) return t;
+  const esc = t.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
+  return `<pitch absmiddle="${p.mid}">${esc}</pitch>`;
+}
+
 /** 生成"念一句"的 PowerShell 命令（不执行，便于测试与排查） */
-export function buildSpeakCommand({ text, voice = null, rate = 0, volume = 100 } = {}) {
+export function buildSpeakCommand({ text, voice = null, rate = 0, volume = 100, pitch = null } = {}) {
   const parts = [
     '$v = New-Object -ComObject SAPI.SpVoice',
     `$v.Rate = ${Number.isFinite(rate) ? Math.max(-10, Math.min(10, rate)) : 0}`,
@@ -51,7 +114,7 @@ export function buildSpeakCommand({ text, voice = null, rate = 0, volume = 100 }
     // 选声音失败不该影响念内容，所以吞掉异常
     parts.push(`try { $v.Voice = $v.GetVoices() | Where-Object { $_.GetDescription() -like ${psLiteral(`*${voice}*`)} } | Select-Object -First 1 } catch { }`);
   }
-  parts.push(`$null = $v.Speak(${psLiteral(text)})`);
+  parts.push(`$null = $v.Speak(${psLiteral(sapiPitchWrap(text, pitch))})`);
   return parts.join('; ');
 }
 
@@ -82,30 +145,46 @@ export function edgeVoiceFor(voice, env = process.env) {
   return fallback;
 }
 
-/** 真正念出来（异步，等它念完再 resolve；失败不抛，返回原因） */
+/** 真正念出来（异步，等它念完再 resolve；失败不抛，返回原因）。
+ *  `signal`：AbortSignal —— 拧断时立刻杀进程并回 `{reason:'interrupted'}`（试听新顶旧要用）。 */
 export async function speak(text, {
   voice = PREFERRED_VOICES[0], rate = 0, volume = 100, timeoutMs = 30_000,
-  dryRun = false, engine = null,
+  pitch = null, dryRun = false, engine = null, env = process.env, signal = null,
 } = {}) {
-  // **edge-tts 优先**：SAPI 那三个中文声音是十年前的拼接合成，一听就是导航软件。
-  // 合成或播放失败（多半是断网 / 没装）才退回 SAPI —— 念台词不能因此哑掉。
-  // dryRun 不进这条路：它要的是"生成的命令长什么样"，那是 SAPI 的概念。
-  if (!dryRun && engine !== 'sapi') {
-    const exe = defaultEdgeTtsBin();
-    if (exe) {
-      const r = await speakViaEdgeTts(text, {
-        voice: edgeVoiceFor(voice), bin: exe, rate, timeoutMs: Math.max(timeoutMs, 60_000),
+  if (signal?.aborted) return { ok: false, reason: 'interrupted' };
+  // **云端必须显式开启**（2026-11-20 安全加固）：edge-tts 是微软的在线合成，走它 =
+  // 要念的文本离开这台机器。默认一律本机 SAPI（Huihui 们），文本不出机器。
+  // 开启云端见 ttsPolicy()：tts.json {"engine":"edge"} / edgeTts 指路径 / DSH_TTS_ENGINE=edge。
+  const policy = engine === 'sapi' || engine === 'edge' ? engine : ttsPolicy(env);
+  const exe = policy === 'edge' ? defaultEdgeTtsBin(env) : null;
+  // 音调：没显式给就用 tts.json 的 `pitch`（口径和 ACT.TTS_CN 一致："+0" 这种写法）
+  const pitchUse = pitch ?? configuredDshTts(env)?.pitch ?? null;
+
+  if (policy === 'edge' && exe) {
+    if (dryRun) {
+      const d = await speakViaEdgeTts(text, {
+        voice: edgeVoiceFor(voice, env), bin: exe, rate, pitch: pitchUse, volume, dryRun: true,
       });
-      if (r.ok) return r;
+      return { ...d, engine: 'edge-tts', policy };
     }
+    const r = await speakViaEdgeTts(text, {
+      voice: edgeVoiceFor(voice, env), bin: exe, rate, pitch: pitchUse, volume,
+      timeoutMs: Math.max(timeoutMs, 60_000), signal,
+    });
+    // 合成或播放失败（断网 / 没装全）退回 SAPI —— 念台词不能因此哑掉；退回本地是安全方向
+    if (r.ok) return r;
+    if (r.reason === 'interrupted') return r;   // 被拧断不算失败，别再兜底出声
   }
 
-  const command = buildSpeakCommand({ text, voice, rate, volume });
-  if (dryRun) return { ok: true, dryRun: true, command };
+  const command = buildSpeakCommand({ text, voice, rate, volume, pitch: pitchUse });
+  if (dryRun) return { ok: true, dryRun: true, engine: 'sapi', policy, command };
   return new Promise((resolve) => {
     execFile('powershell', ['-NoProfile', '-NonInteractive', '-Command', command],
-      { timeout: timeoutMs, windowsHide: true }, (err, _stdout, stderr) => {
-        if (err) resolve({ ok: false, reason: String(stderr || err.message).slice(0, 200) });
+      { timeout: timeoutMs, windowsHide: true, signal: signal || undefined }, (err, _stdout, stderr) => {
+        if (err) resolve({
+          ok: false,
+          reason: signal?.aborted ? 'interrupted' : String(stderr || err.message).slice(0, 200),
+        });
         else resolve({ ok: true, engine: 'sapi' });
       });
   });
@@ -129,6 +208,25 @@ export function configuredDshTts(env = process.env) {
     if (j) return j;
   } catch { /* 没有就算了 */ }
   return null;
+}
+
+/**
+ * 这一句该给哪个引擎：`'edge'`（云端，文本发给微软）还是 `'sapi'`（本机，文本不出机器）。
+ *
+ * **默认本地**（2026-11-20 安全加固）：以前"找到 edge-tts 就优先"，等于装了 edge-tts 的人
+ * 在不知情时把要念的文本送去了微软。现在云端是三个显式开关之一才开：
+ *   ① `~/.dsh/tts.json` 写 `{"engine": "edge"}`（写 `"sapi"` 强制本地，压过下面两条）
+ *   ② `tts.json` 点名 `edgeTts` 可执行文件路径（点名 = 明确选择）
+ *   ③ 环境变量 `DSH_TTS_ENGINE=edge`（或 `DSH_TTS_BIN=<edge-tts 路径>`）
+ * 插件侧的语音是另一条路（voice.json 显式配适配器），本来就是配了才生效。
+ */
+export function ttsPolicy(env = process.env) {
+  const cfg = configuredDshTts(env) || {};
+  const v = String(cfg.engine ?? env.DSH_TTS_ENGINE ?? '').trim().toLowerCase();
+  if (v === 'edge' || v === 'edge-tts' || v === 'edge_tts') return 'edge';
+  if (v === 'sapi' || v === 'local') return 'sapi';
+  if (cfg.edgeTts || env.DSH_TTS_BIN) return 'edge';
+  return 'sapi';
 }
 
 
@@ -184,21 +282,22 @@ export function defaultEdgeTtsBin(env = process.env) {
 
 /** 用 edge-tts 念一句：合成到临时 mp3，用 ffplay 播，播完删掉 */
 export async function speakViaEdgeTts(text, {
-  voice = 'zh-CN-XiaoxiaoNeural', bin = null, rate = 0, timeoutMs = 60_000, dryRun = false,
+  voice = 'zh-CN-XiaoxiaoNeural', bin = null, rate = 0, pitch = null, volume = 100,
+  timeoutMs = 60_000, dryRun = false, signal = null,
 } = {}) {
   const exe = bin || defaultEdgeTtsBin();
   if (!exe) return { ok: false, reason: 'edge-tts-not-installed' };
+  if (signal?.aborted) return { ok: false, reason: 'interrupted' };
   const out = join(tmpdir(), `edge-tts-${Date.now()}-${Math.random().toString(36).slice(2, 7)}.mp3`);
-  // 语速：edge-tts 用百分比（-10% ~ +50%），我们的 rate 是 SAPI 的 -10..10
-  const pct = Math.round(Math.max(-10, Math.min(10, Number(rate) || 0)) * 3);
-  const args = ['--voice', voice, '--text', text, '--write-media', out];
-  if (pct) args.push(`--rate=${pct > 0 ? '+' : ''}${pct}%`);
+  const args = edgeCliArgs({ text, voice, rate, pitch, volume, out });
 
   if (dryRun) return { ok: true, dryRun: true, args, exe };
 
   const made = await new Promise((resolve) => {
-    execFile(exe, args, { timeout: timeoutMs, windowsHide: true }, (err) => resolve(!err));
+    execFile(exe, args, { timeout: timeoutMs, windowsHide: true, signal: signal || undefined },
+      (err) => resolve(!err));
   });
+  if (signal?.aborted) return { ok: false, reason: 'interrupted' };
   if (!made) return { ok: false, reason: 'synth-failed' };
   try {
     if (!existsSync(out) || statSync(out).size < 800) return { ok: false, reason: 'empty-audio' };
@@ -206,10 +305,10 @@ export async function speakViaEdgeTts(text, {
 
   const played = await new Promise((resolve) => {
     execFile('ffplay', ['-nodisp', '-autoexit', '-loglevel', 'quiet', out],
-      { timeout: timeoutMs + 30_000, windowsHide: true }, (err) => resolve(!err));
+      { timeout: timeoutMs + 30_000, windowsHide: true, signal: signal || undefined }, (err) => resolve(!err));
   });
   try { unlinkSync(out); } catch { /* 删不掉就留着 */ }
-  if (!played) return { ok: false, reason: 'play-failed' };
+  if (!played) return { ok: false, reason: signal?.aborted ? 'interrupted' : 'play-failed' };
   return { ok: true, engine: 'edge-tts', voice };
 }
 

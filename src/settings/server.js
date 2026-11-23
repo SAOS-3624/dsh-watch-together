@@ -7,12 +7,13 @@
 
 import { checkEnvironment } from './deps.js';
 import {
-  configPaths, readVideoSettings, readVoiceSettings, readWatchSettings,
-  readWindowSettings, writeVideoSettings, writeVoiceSettings, writeWatchSettings,
+  configPaths, readTtsSettings, readVideoSettings, readVoiceSettings, readWatchSettings,
+  readWindowSettings, writeTtsSettings, writeVideoSettings, writeVoiceSettings, writeWatchSettings,
   writeWindowSettings,
 } from './config.js';
 import { settingsPage } from './page.js';
 import { settingsToken } from './token.js';
+import { runTtsTest, stopTtsTestStream } from './tts-test.js';
 
 const PAGE_PATH = '/dsh-watch-together/settings';
 const API_PREFIX = PAGE_PATH + '/api';
@@ -63,6 +64,7 @@ function statePayload(env) {
     video: readVideoSettings(env),
     watch: readWatchSettings(env),
     voice: readVoiceSettings(env),
+    tts: readTtsSettings(env),
     window: readWindowSettings(env),
     paths: configPaths(env),
   };
@@ -105,12 +107,20 @@ export function createSettingsPage({ ctx, env = process.env, log = () => {} } = 
         if (body.video !== undefined) writeVideoSettings(body.video, env);
         if (body.watch !== undefined) writeWatchSettings(body.watch, env);
         if (body.voice !== undefined) writeVoiceSettings(body.voice, env);
+        // 声音调节：写 tts.json（音色/语速/语调/音量），下一场陪看时读取
+        if (body.tts !== undefined) writeTtsSettings(body.tts, env);
         // 悬浮窗样式：写 watch-window.json，窗口下一拍（250ms）自己换过来
         if (body.window !== undefined) writeWindowSettings(body.window, env);
         return json(res, 200, statePayload(env));
       }
       if (req.method === 'POST' && action === '/check') {
         return json(res, 200, { checks: await checkEnvironment(ctx, env) });
+      }
+      // 试听：按请求里的面板当前参数念一句（不落盘），回实际出声的引擎和首声耗时
+      if (req.method === 'POST' && action === '/tts-test') {
+        const body = await readBody(req);
+        if (!body || typeof body !== 'object') throw new Error('请求体必须是对象');
+        return json(res, 200, await runTtsTest({ text: body.text, tts: body.tts, env }));
       }
       return json(res, 404, { error: 'not found' });
     } catch (e) {
@@ -193,6 +203,7 @@ export function createSettingsPage({ ctx, env = process.env, log = () => {} } = 
     dispose() {
       if (disposed) return;
       disposed = true;
+      try { stopTtsTestStream(); } catch { /* ignore */ }
       try { offIndex?.(); } catch { /* ignore */ }
       try { routeDispose?.(); } catch { /* ignore */ }
     },

@@ -223,6 +223,8 @@ scripts/start-edge-debug.cmd 9444     # 换端口
 {
   "voice": "zh-CN-XiaoxuanNeural",
   "rate": 0,
+  "pitch": "+0",
+  "volume": 100,
   "edgeTts": "C:/Users/你/.workbuddy/binaries/python/envs/tts/Scripts/edge-tts.exe"
 }
 ```
@@ -233,7 +235,10 @@ node bin/watch.mjs say "试一下声音"
 node bin/watch.mjs voices     # 列出可选音色（不联网的那几个是系统声音）
 ```
 
-`rate` 是**语速偏移**（-10 ~ 10），不是"每秒几个字"。
+`rate` 是**语速偏移**（-10 ~ 10），不是"每秒几个字"；`pitch` 声调（±Hz）、`volume` 音量（0-100）。
+这些都在设置页「声音」里可调（带「试听」）。
+**引擎默认本地 SAPI**（文本不出机器）：`tts.json` 写 `{"engine":"edge"}`（或 `edgeTts` 指路径 /
+`DSH_TTS_ENGINE=edge`）才走微软 edge-tts（文本会发给微软）；写 `"sapi"` 强制本地。
 
 ### 4.3 它的节奏是怎么控制的
 
