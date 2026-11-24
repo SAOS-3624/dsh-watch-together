@@ -1,6 +1,12 @@
 # Changelog
 
-## [Unreleased]
+## [0.3.6] - 2026-11-24
+
+### Changed — 依赖升到 `dsh-video-storyboard@^0.8.0`
+
+storyboard 0.8.0 加了两个新工具（`video_index` / `video_danmaku`，都是不解码的 B 站旁路数据）。
+本包**没有改一行逻辑**，只是依赖范围跟着升：`^0.7.0` 不满足 0.8.0，不跟着升就会复现 #60 那种
+「依赖不覆」。主线版本号跟到 0.3.6，是为了让它和 storyboard 0.8.0 一起被装到一个 profile 里。
 
 ### Added — 设置里单独一栏「一起看视频」（和 see-now / 视频分镜并排）
 
