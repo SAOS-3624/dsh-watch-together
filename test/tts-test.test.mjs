@@ -24,6 +24,22 @@ import {
 const home = () => mkdtempSync(join(tmpdir(), 'watch-tts-test-'));
 const envOf = (dir) => ({ DSH_HOME: dir });
 
+/**
+ * 这个文件守的链路里有一条**只在 Windows 上存在**：SAPI（`powershell -Command` 念系统嗓）。
+ * Linux / macOS 上陪看根本没有这条链，硬跑会把 `spawn powershell ENOENT` 当成被测代码的 bug
+ * —— CI（ubuntu）从 PR #65 合进来起就一直红在这两个用例上。
+ *
+ * 所以分两类：
+ *   - **纯策略 / 文件探测**（planTtsTest、常驻合成器复用）：路径按平台取，两边都真跑，不 skip；
+ *   - **真要 SAPI 出声**（`/tts-test` 实跑、新顶旧的掐断时序）：非 Windows 上没有可测的东西，
+ *     skip 并把原因写出来，不假装通过。
+ */
+const WIN = process.platform === 'win32';
+const VENV_DIR = WIN ? 'Scripts' : 'bin';
+const EDGE_EXE = WIN ? 'edge-tts.exe' : 'edge-tts';
+const PY_EXE = WIN ? 'python.exe' : 'python';
+const needSapi = { skip: WIN ? false : 'SAPI 只在 Windows 上有；这里测的是系统嗓的实播与掐断时序' };
+
 test('试听配置：面板当前值盖过已保存的 tts.json，且不落盘', () => {
   const dir = home();
   const env = envOf(dir);
@@ -49,23 +65,24 @@ test('试听配置：面板当前值盖过已保存的 tts.json，且不落盘',
 test('试听链路：选了什么引擎就走哪条，自动才逐级兜底', () => {
   const dir = home();
   const profile = home();
-  const venv = join(profile, '.dsh', 'tts-venv', 'Scripts');
+  // venv 目录名和可执行名都按平台取（Linux 是 bin/edge-tts、Scripts 那条在那边根本不存在）
+  const venv = join(profile, '.dsh', 'tts-venv', VENV_DIR);
   mkdirSync(venv, { recursive: true });
-  writeFileSync(join(venv, 'edge-tts.exe'), '');
+  writeFileSync(join(venv, EDGE_EXE), '');
   const env = { DSH_HOME: dir, USERPROFILE: profile, PATH: '' };
 
   // 显式 Edge + 有 python.exe：常驻通道打头阵，不悄悄退回系统嗓
-  writeFileSync(join(venv, 'python.exe'), '');
+  writeFileSync(join(venv, PY_EXE), '');
   let plan = planTtsTest({ engine: 'edge' }, env);
   assert.deepEqual(plan.chain, ['edge-stream', 'edge-tts']);
 
   // 没有 python.exe：只剩逐句兜底
-  rmSync(join(venv, 'python.exe'));
+  rmSync(join(venv, PY_EXE));
   plan = planTtsTest({ engine: 'edge' }, env);
   assert.deepEqual(plan.chain, ['edge-tts']);
 
   // 显式 Edge 但什么都没装：直接报错，不许静默换系统嗓蒙混
-  rmSync(join(venv, 'edge-tts.exe'));
+  rmSync(join(venv, EDGE_EXE));
   plan = planTtsTest({ engine: 'edge' }, env);
   assert.deepEqual(plan.chain, []);
 
@@ -75,9 +92,9 @@ test('试听链路：选了什么引擎就走哪条，自动才逐级兜底', ()
   // 自动：按 tts.json 的策略；默认（没配）是本地，不把文本悄悄送出去
   writeFileSync(join(dir, 'tts.json'), JSON.stringify({ engine: 'sapi' }));
   assert.deepEqual(planTtsTest({}, env).chain, ['sapi']);
-  writeFileSync(join(dir, 'tts.json'), JSON.stringify({ engine: 'edge', edgeTts: join(venv, 'edge-tts.exe') }));
-  writeFileSync(join(venv, 'edge-tts.exe'), '');
-  writeFileSync(join(venv, 'python.exe'), '');
+  writeFileSync(join(dir, 'tts.json'), JSON.stringify({ engine: 'edge', edgeTts: join(venv, EDGE_EXE) }));
+  writeFileSync(join(venv, EDGE_EXE), '');
+  writeFileSync(join(venv, PY_EXE), '');
   assert.deepEqual(planTtsTest({}, env).chain, ['edge-stream', 'edge-tts', 'sapi']);
   rmSync(join(dir, 'tts.json'));
   assert.deepEqual(planTtsTest({}, env).chain, ['sapi'], '没配 engine = 默认本地');
@@ -86,10 +103,10 @@ test('试听链路：选了什么引擎就走哪条，自动才逐级兜底', ()
 test('常驻合成器：连点复用同一个，不许每次冷启动（延迟问题的根子）', () => {
   const dir = home();
   const profile = home();
-  const venv = join(profile, '.dsh', 'tts-venv', 'Scripts');
+  const venv = join(profile, '.dsh', 'tts-venv', VENV_DIR);
   mkdirSync(venv, { recursive: true });
-  writeFileSync(join(venv, 'edge-tts.exe'), '');
-  writeFileSync(join(venv, 'python.exe'), '');
+  writeFileSync(join(venv, EDGE_EXE), '');
+  writeFileSync(join(venv, PY_EXE), '');
   const env = { DSH_HOME: dir, USERPROFILE: profile, PATH: '' };
 
   stopTtsTestStream();
@@ -149,7 +166,7 @@ async function invoke(handler, { method = 'GET', url = '/', headers = {}, body }
   return res.out;
 }
 
-test('设置 API：/tts-test 走完整出声链路（SAPI 静音实跑）、文本上限、/state 带 tts 段', async () => {
+test('设置 API：/tts-test 走完整出声链路（SAPI 静音实跑）、文本上限、/state 带 tts 段', needSapi, async () => {
   const dir = home();
   const env = envOf(dir);
   const web = fakeWeb();
@@ -212,7 +229,7 @@ test('试听入口：runTtsTest 对超长文本直接拒绝，不碰任何引擎
   );
 });
 
-test('跑着的试听会被下一次立刻掐断（新顶旧，不许叠着响、不许干等）', async () => {
+test('跑着的试听会被下一次立刻掐断（新顶旧，不许叠着响、不许干等）', needSapi, async () => {
   const env = envOf(home());
   const long = '这是一段比较长的试听文本，让第一次试听念上好几秒，用来验证重叠时的掐断。';
   // volume: 0 静音跑（耗时和出声一样，时序断言不受影响）：被掐断的半句会往外冒
